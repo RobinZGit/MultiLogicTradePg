@@ -534,7 +534,7 @@ ALTER TABLE indicators ADD COLUMN IF NOT EXISTS is_custom BOOLEAN NOT NULL DEFAU
 UPDATE indicators SET formula = 'sma(pp)', is_custom = FALSE WHERE code = 'SMA';
 UPDATE indicators SET formula = 'ema(pp)', is_custom = FALSE WHERE code = 'EMA';
 UPDATE indicators SET formula = 'pp * (1; -2; 1)', is_custom = TRUE WHERE code = 'PACC';
-UPDATE indicators SET formula = 'sma(pp) * ww() * ww()', is_custom = TRUE WHERE code = 'SMAT3';
+UPDATE indicators SET formula = 'sma(pp) * sma(pp) * sma(pp)', is_custom = TRUE WHERE code = 'SMAT3';
 UPDATE indicators SET formula = 'sma(sma(sma(pp)))', is_custom = TRUE WHERE code = 'SMAT3COMP';
 
 -- Подробные описания индикаторов с функциями расчёта в PostgreSQL
@@ -621,25 +621,26 @@ Price Acceleration (PACC) — ускорение цены
 $desc$ WHERE code = 'PACC';
 
 UPDATE indicators SET description = $desc$
-SMA Triple (SMAT3) — тройное SMA через свёртку
+SMA Triple (SMAT3) — тройная свёртка ряда SMA
 
-Расчёт: один раз sma(pp), затем дважды свёртка с ядром SMA(N): sma(pp) * ww() * ww(),
-где ww() — ядро (1/N; …; 1/N), N = param_period (по умолчанию 20). Оператор * — свёртка (не покомponentное умножение).
+Расчёт: sma(pp) * sma(pp) * sma(pp). Оператор * — всегда свёртка уже вычисленных многочленов (рядов).
+Сначала считается S = sma(pp); затем S сворачивается сам с собой трижды: ((S * S) * S).
+Это не композиция функций: значения на баре зависят от перекрёстных лагов сглаженной цены.
 
-Сигналы: гладкая линия на шкале цены; пересечение цены и SMAT3 — смена тренда с задержкой.
+Сигналы: более «тяжёлая», нелинейная кривая на шкале цены; от SMAT3COMP отличается численно.
 
-Применение: фильтр шума, подтверждение тренда. Отличается от SMAT3COMP (композиция sma(sma(sma(pp)))).
+Применение: запись «свёртка многочленов»; сравнение с композицией sma(sma(sma(pp))).
 $desc$ WHERE code = 'SMAT3';
 
 UPDATE indicators SET description = $desc$
 SMA Triple Comp (SMAT3COMP) — тройное SMA через композицию функций
 
-Расчёт: вложенные вызовы sma: sma(sma(sma(pp))) — каждый sma() снова усредняет результат предыдущего.
-Математически близко к тройной свёртке, но формула записывается как композиция, не как sma(pp)*ww()*ww().
+Расчёт: sma(sma(sma(pp))) — к close применяется sma(), затем sma() к результату, затем ещё раз.
+Эквивалентно pp * ww() * ww() * ww() (цепочка ядер без свёртки ряда с самим собой).
 
-Сигналы: ещё более сглаженная линия, чем SMAT3-свёртка; сравнение двух вариантов на одном графике.
+Сигналы: класическое тройное сглаживание; гладкая линия на шкале цены.
 
-Применение: эксперименты с двумя способами записи «SMA³» в многочленном парсере.
+Применение: «композиция» vs «sma(pp)*sma(pp)*sma(pp)» (SMAT3) — два разных способа записи и расчёта.
 $desc$ WHERE code = 'SMAT3COMP';
 
 -- ============================================
@@ -684,7 +685,7 @@ JOIN (VALUES
     ('ATR', 'ATR', 'Значение ATR', 'float', FALSE, NULL, 'ATR', 1),
     ('ATR', 'ATR_PCT', 'ATR в процентах', 'float', FALSE, NULL, 'ATR %', 2),
     ('PACC', 'VALUE', 'Ускорение цены', 'float', FALSE, NULL, 'pp * (1;-2;1)', 1),
-    ('SMAT3', 'VALUE', 'SMA³ свёртка', 'float', FALSE, NULL, 'sma(pp)*ww()*ww()', 1),
+    ('SMAT3', 'VALUE', 'SMA³ свёртка', 'float', FALSE, NULL, 'sma(pp)*sma(pp)*sma(pp)', 1),
     ('SMAT3COMP', 'VALUE', 'SMA³ композ.', 'float', FALSE, NULL, 'sma(sma(sma(pp)))', 1),
     ('SMA', 'VALUE', 'Значение MA', 'float', FALSE, NULL, 'SMA value', 1),
     ('EMA', 'VALUE', 'Значение EMA', 'float', FALSE, NULL, 'EMA value', 1),

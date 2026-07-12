@@ -15,14 +15,14 @@ export const INDICATOR_FORMULA_HELP_BASE = `Многочленная форму�
   Пример: pp * (1; -2; 1) — ускорение цены (PACC)
 
 Операции
-  * — свёртка (скользящий фильтр)
+  * — свёртка (скользящий фильтр): левый и правый операнды вычисляются как ряды, затем сворачиваются
   #, /# — покомponentное умножение / деление
   +, − — покомponentное сложение / вычитание
 
 Функции (строят ряд из выражения)
   sma(expr) — простое MA от expr
   ema(expr) — экспоненциальное MA
-  ww() — только ядро SMA периода N (для цепочек свёрток)
+  ww() — только ядро SMA периода N (для pp * ww() * ww() … без sma)
 
 @CODE — ссылка на индикатор из справочника
   Код индикатора в таблице (SMA, RSI, MACD, SMAT3…) = короткое обозначение в формулах.
@@ -33,11 +33,13 @@ export const INDICATOR_FORMULA_HELP_BASE = `Многочленная форму�
   sma(pp), ema(pp) — собираете новый ряд из цены и ядер в этой формуле.
   @SMA — берёте уже заданный индикатор SMA (тот же период, что param_period серии на бумаге).
   Для комбинаций (@RSI # pp, @MACD:HISTOGRAM - @MACD:SIGNAL) используйте @.
-  Для цепочек свёрток (sma(pp)*ww()*ww(), PACC) — функции и *.
+  Для свёртки с ядром: pp * ww() или pp * (1; -2; 1) (PACC).
+  Для свёртки ряда с самим собой: sma(pp) * sma(pp) (SMAT3).
 
 SMAT3 vs SMAT3COMP
-  SMAT3 — тройная свёртка: sma(pp) * ww() * ww()
-  SMAT3COMP — композиция: sma(sma(sma(pp)))`;
+  SMAT3 — sma(pp) * sma(pp) * sma(pp): * = свёртка вычисленных рядов (S сворачивается с S)
+  SMAT3COMP — sma(sma(sma(pp))): композиция — каждый sma() снова фильтрует результат
+  При том же N значения разные; композиция ≈ pp * ww() * ww() * ww()`;
 
 const IMPLEMENTED_CODES = new Set([
   'RSI',
@@ -96,8 +98,9 @@ export function buildIndicatorCatalogHelp(indicators: IndicatorRow[]): string {
 
   lines.push('');
   lines.push('Примеры');
-  lines.push('  sma(pp) * ww() * ww()     — SMAT3 (тройная свёртка)');
-  lines.push('  sma(sma(sma(pp)))         — SMAT3COMP (композиция)');
+  lines.push('  sma(pp) * sma(pp) * sma(pp) — SMAT3 (свёртка ряда SMA с собой)');
+  lines.push('  sma(sma(sma(pp)))         — SMAT3COMP (композиция, другие числа)');
+  lines.push('  pp * ww() * ww() * ww()   — то же что SMAT3COMP при том же N');
   lines.push('  @RSI # pp                  — RSI покомponentно × цена');
   lines.push('  @MACD:HISTOGRAM            — гистограмма MACD');
   lines.push('  pp * (1; -2; 1)            — PACC');

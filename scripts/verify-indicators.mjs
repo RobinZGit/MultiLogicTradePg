@@ -244,7 +244,7 @@ try {
   assertEq(
     'SMAT3 formula (convolution)',
     runPsql(psql, `SELECT btrim(formula) FROM indicators WHERE code = 'SMAT3'`),
-    'sma(pp) * ww() * ww()'
+    'sma(pp) * sma(pp) * sma(pp)'
   );
   assertEq(
     'SMAT3COMP formula (composition)',
@@ -256,11 +256,43 @@ try {
     runPsql(
       psql,
       `SELECT COUNT(*)::text FROM calc_poly_formula_array(
-         'sma(pp) * ww() * ww()', 'VALUE', ${sberId}, ${m15Id}, 15, NULL, 20, NULL, NULL, NULL, NULL, NULL, NULL, NULL
+         'sma(pp) * sma(pp) * sma(pp)', 'VALUE', ${sberId}, ${m15Id}, 15, NULL, 20, NULL, NULL, NULL, NULL, NULL, NULL, NULL
        )`
     ),
     1
   );
+  const smat3Last = runPsql(
+    psql,
+    `SELECT value::text FROM calc_poly_formula_array(
+       'sma(pp) * sma(pp) * sma(pp)', 'VALUE', ${sberId}, ${m15Id}, 15, NULL, 20, NULL, NULL, NULL, NULL, NULL, NULL, NULL
+     ) ORDER BY dt DESC LIMIT 1`
+  );
+  const smat3compLast = runPsql(
+    psql,
+    `SELECT value::text FROM calc_poly_formula_array(
+       'sma(sma(sma(pp)))', 'VALUE', ${sberId}, ${m15Id}, 15, NULL, 20, NULL, NULL, NULL, NULL, NULL, NULL, NULL
+     ) ORDER BY dt DESC LIMIT 1`
+  );
+  const smat3wwLast = runPsql(
+    psql,
+    `SELECT value::text FROM calc_poly_formula_array(
+       'pp * ww() * ww() * ww()', 'VALUE', ${sberId}, ${m15Id}, 15, NULL, 20, NULL, NULL, NULL, NULL, NULL, NULL, NULL
+     ) ORDER BY dt DESC LIMIT 1`
+  );
+  if (Math.abs(Number(smat3compLast) - Number(smat3wwLast)) > 0.0001) {
+    console.error(
+      `verify-indicators: FAIL SMAT3COMP vs pp*ww^3: ${smat3compLast} vs ${smat3wwLast}`
+    );
+    process.exit(1);
+  }
+  console.log('verify-indicators: OK SMAT3COMP matches pp*ww()*ww()*ww()');
+  if (Math.abs(Number(smat3Last) - Number(smat3compLast)) <= 0.0001) {
+    console.error(
+      `verify-indicators: FAIL SMAT3 must differ from SMAT3COMP: both ${smat3Last}`
+    );
+    process.exit(1);
+  }
+  console.log(`verify-indicators: OK SMAT3 (${smat3Last}) differs from SMAT3COMP (${smat3compLast})`);
   assertGte(
     'calc_poly SMAT3COMP composition',
     runPsql(
