@@ -1,6 +1,15 @@
 <section class="panel">
   <header class="panel-head">
-    <h2>Индикаторы</h2>
+    <div class="panel-title-row">
+      <h2>Индикаторы</h2>
+      <button
+        type="button"
+        class="icon-btn add-btn"
+        title="Добавить индикатор"
+        aria-label="Добавить индикатор"
+        (click)="openCreate()"
+      >+</button>
+    </div>
     <p class="panel-note">Перетащите индикатор на бумагу справа</p>
   </header>
 
@@ -30,11 +39,17 @@
               class="indicator-draggable"
               draggable="true"
               [class.row-inactive]="!row.is_active"
+              [class.row-custom]="row.is_custom"
               (dragstart)="onDragStart($event, row)"
               (dragend)="onDragEnd()"
             >
               <td class="mono">{{ row.code }}</td>
-              <td>{{ row.name }}</td>
+              <td>
+                {{ row.name }}
+                @if (row.formula) {
+                  <span class="formula-hint" [title]="row.formula">{{ row.formula }}</span>
+                }
+              </td>
               <td class="desc-cell" [title]="row.description || ''">{{ descriptionPreview(row.description) }}</td>
               <td class="col-actions">
                 <button type="button" class="icon-btn" title="Редактировать" aria-label="Редактировать" (click)="openEdit(row)">
@@ -54,7 +69,8 @@
   <app-indicator-editor
     [open]="editorOpen"
     [indicator]="editTarget"
-    (closed)="editorOpen = false"
+    [createMode]="createMode"
+    (closed)="onEditorClosed()"
     (saved)="load()"
   />
 </section>

@@ -22,6 +22,7 @@ export class IndicatorsPanelComponent implements OnInit {
 
   editorOpen = false;
   editTarget: IndicatorRow | null = null;
+  createMode = false;
 
   constructor(
     private readonly refs: ReferencesService,
@@ -48,8 +49,21 @@ export class IndicatorsPanelComponent implements OnInit {
   }
 
   openEdit(row: IndicatorRow): void {
+    this.createMode = false;
     this.editTarget = row;
     this.editorOpen = true;
+  }
+
+  openCreate(): void {
+    this.createMode = true;
+    this.editTarget = null;
+    this.editorOpen = true;
+  }
+
+  onEditorClosed(): void {
+    this.editorOpen = false;
+    this.createMode = false;
+    this.editTarget = null;
   }
 
   descriptionPreview(description: string | null): string {

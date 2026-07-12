@@ -451,6 +451,10 @@ CREATE TABLE IF NOT EXISTS indicators (
     -- Плейсхолдеры :period, :fast_period, :series, :security_id, :timeframe_id, :dt, :indicator_id и др.
     -- :series — код серии из indicator_value_types (RSI, MACD, UPPER, …).
     script TEXT,
+    -- Многочленная формула для массивного расчёта (sync / calc_poly_formula_array):
+    -- pp, sma(pp), pp * (1;-2;1), @RSI, sma() * sma() * sma() и т.д.
+    formula TEXT,
+    is_custom BOOLEAN NOT NULL DEFAULT FALSE,
     -- Подробное описание: полное название, расчёт, сигналы, применение (многострочный TEXT).
     description TEXT,
     category VARCHAR(50),
@@ -459,7 +463,13 @@ CREATE TABLE IF NOT EXISTS indicators (
 );
 
 COMMENT ON COLUMN indicators.script IS
-'Шаблон SQL для динамического расчёта: SELECT calc_ind_*(…). Плейсхолдеры подставляются при EXECUTE.';
+'Устаревший per-bar шаблон SELECT calc_ind_*(…). Для новых индикаторов — поле formula.';
+
+COMMENT ON COLUMN indicators.formula IS
+'Многочленная формула массивного расчёта: pp, sma(pp), @SMA, pp * (1;-2;1), sma() * sma() * sma().';
+
+COMMENT ON COLUMN indicators.is_custom IS
+'TRUE — пользовательская/составная формула (подсветка в списке индикаторов).';
 
 COMMENT ON COLUMN indicators.description IS
 'Справочное описание: полное наименование, расчёт, типичные сигналы и область применения.';
@@ -495,7 +505,8 @@ INSERT INTO indicators (code, name, description, category) VALUES
     ('AROON', 'Aroon Indicator', 'Индикатор Арун', 'trend'),
     ('SAR', 'Stop And Reverse', 'Стоп и реверс', 'trend'),
     ('HMA', 'Hull Moving Average', 'Скользящее среднее Халла', 'trend'),
-    ('ZLEMA', 'Zero Lag EMA', 'EMA с нулевым запаздыванием', 'trend')
+    ('ZLEMA', 'Zero Lag EMA', 'EMA с нулевым запаздыванием', 'trend'),
+    ('SMAT3', 'SMA Triple', 'Тройное SMA (средняя³)', 'trend')
 ON CONFLICT (code) DO NOTHING;
 
 -- Шаблоны расчёта (функция + параметры; :series подставляется для каждой линии индикатора)
@@ -506,7 +517,15 @@ UPDATE indicators SET script = 'SELECT calc_ind_macd(:fast_period, :slow_period,
 UPDATE indicators SET script = 'SELECT calc_ind_bb(:period, :std_dev, :series, :security_id, :timeframe_id, :dt, :indicator_id)' WHERE code = 'BB';
 UPDATE indicators SET script = 'SELECT calc_ind_atr(:period, :series, :security_id, :timeframe_id, :dt, :indicator_id)' WHERE code = 'ATR';
 UPDATE indicators SET script = 'SELECT calc_ind_stoch(:k_period, :d_period, :smooth, :series, :security_id, :timeframe_id, :dt, :indicator_id)' WHERE code = 'STOCH';
-UPDATE indicators SET script = 'pp * (1; -2; 1)' WHERE code = 'PACC';
+
+ALTER TABLE indicators ADD COLUMN IF NOT EXISTS formula TEXT;
+ALTER TABLE indicators ADD COLUMN IF NOT EXISTS is_custom BOOLEAN NOT NULL DEFAULT FALSE;
+
+-- Многочленные формулы (массивный расчёт — единый парсер, без SELECT)
+UPDATE indicators SET formula = 'sma(pp)', is_custom = FALSE WHERE code = 'SMA';
+UPDATE indicators SET formula = 'ema(pp)', is_custom = FALSE WHERE code = 'EMA';
+UPDATE indicators SET formula = 'pp * (1; -2; 1)', is_custom = TRUE WHERE code = 'PACC';
+UPDATE indicators SET formula = 'sma(sma(sma(pp)))', is_custom = TRUE WHERE code = 'SMAT3';
 
 -- Подробные описания индикаторов с функциями расчёта в PostgreSQL
 UPDATE indicators SET description = $desc$
@@ -591,6 +610,17 @@ Price Acceleration (PACC) — ускорение цены
 Применение: фильтр импульса, подтверждение пробоев, оценка «кривизны» траектории цены; линия строится на шкале цены (как SMA).
 $desc$ WHERE code = 'PACC';
 
+UPDATE indicators SET description = $desc$
+SMA Triple (SMAT3) — тройное простое скользящее среднее
+
+Расчёт: три последовательных свёртки с ядром SMA(N): sma(sma(sma(pp))) = pp * ww * ww * ww,
+где ww = (1/N; …; 1/N), N = param_period (по умолчанию 20). Эквивалент: sma() * sma() * sma() после pp.
+
+Сигналы: более гладкая линия, чем SMA; пересечение цены и SMAT3 — смена тренда с задержкой; наклон линии — направление.
+
+Применение: фильтр шума, подтверждение тренда, сравнение с одинарной SMA на графике.
+$desc$ WHERE code = 'SMAT3';
+
 -- ============================================
 -- Таблица: indicator_value_types (линии индикаторов)
 -- ============================================
@@ -633,6 +663,7 @@ JOIN (VALUES
     ('ATR', 'ATR', 'Значение ATR', 'float', FALSE, NULL, 'ATR', 1),
     ('ATR', 'ATR_PCT', 'ATR в процентах', 'float', FALSE, NULL, 'ATR %', 2),
     ('PACC', 'VALUE', 'Ускорение цены', 'float', FALSE, NULL, 'pp * (1;-2;1)', 1),
+    ('SMAT3', 'VALUE', 'SMA³', 'float', FALSE, NULL, 'sma(sma(sma(pp)))', 1),
     ('SMA', 'VALUE', 'Значение MA', 'float', FALSE, NULL, 'SMA value', 1),
     ('EMA', 'VALUE', 'Значение EMA', 'float', FALSE, NULL, 'EMA value', 1),
     ('WMA', 'VALUE', 'Значение WMA', 'float', FALSE, NULL, 'WMA value', 1)

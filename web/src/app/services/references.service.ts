@@ -10,6 +10,7 @@ import {
   BrokerRow,
   ExchangePayload,
   ExchangeRow,
+  IndicatorCreatePayload,
   IndicatorPayload,
   IndicatorRow,
 } from '../models/lookup.model';
@@ -124,6 +125,13 @@ export class ReferencesService {
   updateIndicator(id: number, payload: IndicatorPayload): Observable<IndicatorRow> {
     return this.http.put<IndicatorRow>(
       `${this.appConfig.apiUrl}/indicators/${id}`,
+      payload
+    );
+  }
+
+  createIndicator(payload: IndicatorCreatePayload): Observable<IndicatorRow> {
+    return this.http.post<IndicatorRow>(
+      `${this.appConfig.apiUrl}/indicators`,
       payload
     );
   }

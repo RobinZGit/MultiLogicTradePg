@@ -92,6 +92,8 @@ export interface IndicatorRow {
   code: string;
   name: string;
   script: string | null;
+  formula: string | null;
+  is_custom: boolean;
   description: string | null;
   category: string | null;
   is_active: boolean;
@@ -103,5 +105,15 @@ export interface IndicatorPayload {
   description: string | null;
   category: string | null;
   script: string | null;
+  formula?: string | null;
+  is_active: boolean;
+}
+
+export interface IndicatorCreatePayload {
+  code: string;
+  name: string;
+  description: string | null;
+  category: string | null;
+  formula: string;
   is_active: boolean;
 }

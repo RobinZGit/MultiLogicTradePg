@@ -240,6 +240,32 @@ try {
     1
   );
 
+  // SMAT3: sma(sma(sma(pp))) через единый парсер
+  const smat3Id = runPsql(psql, `SELECT id::text FROM indicators WHERE code = 'SMAT3' LIMIT 1`);
+  assertEq(
+    'SMAT3 formula set',
+    runPsql(psql, `SELECT btrim(formula) FROM indicators WHERE code = 'SMAT3'`),
+    'sma(sma(sma(pp)))'
+  );
+  assertEq(
+    'SMAT3 is_custom',
+    runPsql(
+      psql,
+      `SELECT CASE WHEN is_custom THEN 1 ELSE 0 END::text FROM indicators WHERE code = 'SMAT3'`
+    ),
+    '1'
+  );
+  assertGte(
+    'calc_poly SMAT3 on synthetic prices',
+    runPsql(
+      psql,
+      `SELECT COUNT(*)::text FROM calc_poly_formula_array(
+         'sma(sma(sma(pp)))', 'VALUE', ${sberId}, ${m15Id}, 15, NULL, 20, NULL, NULL, NULL, NULL, NULL, NULL, NULL
+       )`
+    ),
+    1
+  );
+
   // Линейный ряд close → вторая разность ≈ 0
   const paccLast = runPsql(
     psql,

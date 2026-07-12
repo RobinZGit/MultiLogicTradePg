@@ -1910,6 +1910,55 @@ BEGIN
 END;
 $$;
 
+CREATE OR REPLACE FUNCTION poly_ctx_period(p_ctx JSONB)
+RETURNS INTEGER
+LANGUAGE sql IMMUTABLE AS $$
+    SELECT GREATEST(COALESCE(NULLIF(p_ctx ->> 'param_period', '')::INTEGER, 20), 2);
+$$;
+
+CREATE OR REPLACE FUNCTION poly_pp_from_ctx(p_ctx JSONB)
+RETURNS NUMERIC[]
+LANGUAGE plpgsql IMMUTABLE AS $$
+BEGIN
+    IF p_ctx ? 'm_pp' THEN
+        RETURN ARRAY(SELECT jsonb_array_elements_text(p_ctx -> 'm_pp')::NUMERIC);
+    END IF;
+    RAISE EXCEPTION 'poly_eval: pp not loaded in context';
+END;
+$$;
+
+CREATE OR REPLACE FUNCTION poly_build_sma_kernel(p_period INTEGER)
+RETURNS NUMERIC[]
+LANGUAGE plpgsql IMMUTABLE AS $$
+DECLARE
+    v_n INTEGER := GREATEST(COALESCE(p_period, 20), 1);
+    v_out NUMERIC[] := ARRAY[]::NUMERIC[];
+    i INTEGER;
+BEGIN
+    FOR i IN 1 .. v_n LOOP
+        v_out := array_append(v_out, 1.0 / v_n);
+    END LOOP;
+    RETURN v_out;
+END;
+$$;
+
+CREATE OR REPLACE FUNCTION poly_build_ema_kernel(p_period INTEGER)
+RETURNS NUMERIC[]
+LANGUAGE plpgsql IMMUTABLE AS $$
+DECLARE
+    v_n INTEGER := GREATEST(COALESCE(p_period, 20), 2);
+    v_alpha NUMERIC := 2.0 / (v_n + 1);
+    v_len INTEGER := GREATEST(v_n * 4, 24);
+    v_out NUMERIC[] := ARRAY[]::NUMERIC[];
+    i INTEGER;
+BEGIN
+    FOR i IN 0 .. v_len - 1 LOOP
+        v_out := array_append(v_out, v_alpha * power(1 - v_alpha, i));
+    END LOOP;
+    RETURN v_out;
+END;
+$$;
+
 CREATE OR REPLACE FUNCTION poly_tokenize(p_formula TEXT)
 RETURNS TEXT[]
 LANGUAGE plpgsql IMMUTABLE AS $$
@@ -2094,6 +2143,29 @@ BEGIN
             RAISE EXCEPTION 'poly_parse: expected )';
         END IF;
         RETURN jsonb_build_object('n', v_inner -> 'n', 'p', v_pos + 1);
+    END IF;
+
+    IF v_t LIKE 'ID:%' AND lower(substr(v_t, 4)) IN ('sma', 'ema', 'ww') THEN
+        v_pos := v_pos + 1;
+        IF poly_peek_token(p_tokens, v_pos) <> 'LP' THEN
+            RAISE EXCEPTION 'poly_parse: expected ( after %', substr(v_t, 4);
+        END IF;
+        v_pos := v_pos + 1;
+        IF poly_peek_token(p_tokens, v_pos) = 'RP' THEN
+            RETURN jsonb_build_object(
+                'n', jsonb_build_object('fn', lower(substr(v_t, 4)), 'has_arg', FALSE),
+                'p', v_pos + 1
+            );
+        END IF;
+        v_inner := poly_parse_add(p_tokens, v_pos);
+        v_pos := (v_inner ->> 'p')::INTEGER;
+        IF poly_peek_token(p_tokens, v_pos) <> 'RP' THEN
+            RAISE EXCEPTION 'poly_parse: expected ) after %()', substr(v_t, 4);
+        END IF;
+        RETURN jsonb_build_object(
+            'n', jsonb_build_object('fn', lower(substr(v_t, 4)), 'has_arg', TRUE, 'arg', v_inner -> 'n'),
+            'p', v_pos + 1
+        );
     END IF;
 
     IF v_t LIKE 'ID:%' THEN
@@ -2395,6 +2467,9 @@ DECLARE
     v_ind JSONB;
     v_code TEXT;
     v_series TEXT;
+    v_fn TEXT;
+    v_period INTEGER;
+    v_arg NUMERIC[];
     i INTEGER;
 BEGIN
     IF p_node ? 'num' THEN
@@ -2411,6 +2486,32 @@ BEGIN
 
     IF p_node ? 'dd' THEN
         RETURN poly_delta_kernel((p_node ->> 'dd')::INTEGER);
+    END IF;
+
+    IF p_node ? 'fn' THEN
+        v_fn := lower(p_node ->> 'fn');
+        v_period := poly_ctx_period(p_ctx);
+        IF COALESCE((p_node ->> 'has_arg')::BOOLEAN, FALSE) THEN
+            v_arg := poly_eval_node(p_node -> 'arg', p_ctx);
+        ELSE
+            v_arg := NULL;
+        END IF;
+        CASE v_fn
+            WHEN 'ww' THEN
+                RETURN poly_build_sma_kernel(v_period);
+            WHEN 'sma' THEN
+                RETURN poly_convolve(
+                    COALESCE(v_arg, poly_pp_from_ctx(p_ctx)),
+                    poly_build_sma_kernel(v_period)
+                );
+            WHEN 'ema' THEN
+                RETURN poly_convolve(
+                    COALESCE(v_arg, poly_pp_from_ctx(p_ctx)),
+                    poly_build_ema_kernel(v_period)
+                );
+            ELSE
+                RAISE EXCEPTION 'poly_eval: unknown function %', v_fn;
+        END CASE;
     END IF;
 
     IF p_node ? 'var' THEN
@@ -2494,7 +2595,7 @@ DECLARE
     v_start INTEGER;
     i INTEGER;
 BEGIN
-    IF p_series IS NOT NULL AND p_series NOT IN ('VALUE', 'PACC') THEN
+    IF p_series IS NOT NULL AND p_series NOT IN ('VALUE', 'PACC', 'SMA', 'EMA', 'SMAT3') THEN
         RETURN;
     END IF;
 
@@ -2585,7 +2686,20 @@ CREATE OR REPLACE FUNCTION calc_indicator_series_array(
 )
 RETURNS TABLE (dt TIMESTAMP, value NUMERIC)
 LANGUAGE plpgsql STABLE AS $$
+DECLARE
+    v_formula TEXT;
 BEGIN
+    SELECT NULLIF(btrim(formula), '') INTO v_formula
+    FROM indicators WHERE code = upper(btrim(p_indicator_code));
+
+    IF poly_is_formula(v_formula) THEN
+        RETURN QUERY SELECT * FROM calc_poly_formula_array(
+            v_formula, p_series, p_security_id, p_timeframe_id, p_point_count, p_end_dt,
+            p_period, p_fast_period, p_slow_period, p_signal_period,
+            p_std_dev, p_k_period, p_d_period, p_smooth);
+        RETURN;
+    END IF;
+
     CASE upper(btrim(p_indicator_code))
         WHEN 'RSI' THEN
             RETURN QUERY SELECT * FROM calc_ind_rsi_array(
@@ -2610,11 +2724,6 @@ BEGIN
             RETURN QUERY SELECT * FROM calc_ind_stoch_array(
                 COALESCE(p_k_period, 14), COALESCE(p_d_period, 3), COALESCE(p_smooth, 3),
                 p_series, p_security_id, p_timeframe_id, p_point_count, p_end_dt);
-        WHEN 'PACC' THEN
-            RETURN QUERY SELECT * FROM calc_poly_formula_array(
-                'pp * (1; -2; 1)', p_series, p_security_id, p_timeframe_id, p_point_count, p_end_dt,
-                p_period, p_fast_period, p_slow_period, p_signal_period,
-                p_std_dev, p_k_period, p_d_period, p_smooth);
         ELSE
             RETURN;
     END CASE;
@@ -2637,7 +2746,7 @@ LANGUAGE plpgsql STABLE AS $$
 BEGIN
     param_period := CASE upper(p_indicator_code)
         WHEN 'RSI' THEN 14 WHEN 'SMA' THEN 20 WHEN 'EMA' THEN 20 WHEN 'BB' THEN 20
-        WHEN 'ATR' THEN 14 WHEN 'STOCH' THEN 14 ELSE 14 END;
+        WHEN 'ATR' THEN 14 WHEN 'STOCH' THEN 14 WHEN 'SMAT3' THEN 20 ELSE 14 END;
     BEGIN
         SELECT pv.value::INTEGER INTO param_period
         FROM parameter_values pv
@@ -2659,18 +2768,13 @@ $$;
 
 CREATE OR REPLACE FUNCTION default_invoke_formula(p_indicator_code VARCHAR)
 RETURNS TEXT
-LANGUAGE sql IMMUTABLE AS $$
-    SELECT CASE upper(btrim(p_indicator_code))
-        WHEN 'RSI' THEN 'calc_ind_rsi_array(:param_period, :series, :security_id, :timeframe_id, :point_count, :end_dt)'
-        WHEN 'SMA' THEN 'calc_ind_sma_array(:param_period, :series, :security_id, :timeframe_id, :point_count, :end_dt)'
-        WHEN 'EMA' THEN 'calc_ind_ema_array(:param_period, :series, :security_id, :timeframe_id, :point_count, :end_dt)'
-        WHEN 'MACD' THEN 'calc_ind_macd_array(:param_fast_period, :param_slow_period, :param_signal_period, :series, :security_id, :timeframe_id, :point_count, :end_dt)'
-        WHEN 'BB' THEN 'calc_ind_bb_array(:param_period, :param_std_dev, :series, :security_id, :timeframe_id, :point_count, :end_dt)'
-        WHEN 'ATR' THEN 'calc_ind_atr_array(:param_period, :series, :security_id, :timeframe_id, :point_count, :end_dt)'
-        WHEN 'STOCH' THEN 'calc_ind_stoch_array(:param_k_period, :param_d_period, :param_smooth, :series, :security_id, :timeframe_id, :point_count, :end_dt)'
-        WHEN 'PACC' THEN 'pp * (1; -2; 1)'
-        ELSE 'calc_indicator_series_array(:indicator_code, :series, :security_id, :timeframe_id, :point_count, :end_dt)'
-    END;
+LANGUAGE sql STABLE AS $$
+    SELECT COALESCE(
+        NULLIF(btrim(i.formula), ''),
+        'calc_indicator_series_array(:indicator_code, :series, :security_id, :timeframe_id, :point_count, :end_dt)'
+    )
+    FROM indicators i
+    WHERE i.code = upper(btrim(p_indicator_code));
 $$;
 
 -- Создать все серии индикатора на бумаге (при drop)

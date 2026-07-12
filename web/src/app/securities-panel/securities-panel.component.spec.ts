@@ -73,10 +73,14 @@ describe('SecuritiesPanelComponent', () => {
     securities.syncIndicatorSeries.and.returnValue(of({ ok: true }));
     securities.getIndicatorValues.and.returnValue(of([]));
 
-    const refs = jasmine.createSpyObj('ReferencesService', ['getExchanges']);
+    const refs = jasmine.createSpyObj('ReferencesService', [
+      'getExchanges',
+      'getIndicators',
+    ]);
     refs.getExchanges.and.returnValue(
       of([{ id: 1, name: 'MOEX', is_active: true }])
     );
+    refs.getIndicators.and.returnValue(of([]));
 
     await TestBed.configureTestingModule({
       imports: [SecuritiesPanelComponent],

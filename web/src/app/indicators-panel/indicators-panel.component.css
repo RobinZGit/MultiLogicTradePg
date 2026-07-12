@@ -9,6 +9,36 @@
   margin-bottom: 0.75rem;
 }
 
+.panel-title-row {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+}
+
+.panel-title-row h2 {
+  margin: 0;
+  font-size: 1.1rem;
+}
+
+.add-btn {
+  font-size: 1.2rem;
+  font-weight: 600;
+  line-height: 1;
+  width: 1.65rem;
+  height: 1.65rem;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: #2563eb;
+  border: 1px solid #bfdbfe;
+  border-radius: 6px;
+  background: #eff6ff;
+}
+
+.add-btn:hover {
+  background: #dbeafe;
+}
+
 .panel-head h2 {
   margin: 0;
   font-size: 1.1rem;
@@ -78,6 +108,26 @@ th {
 
 .row-inactive {
   opacity: 0.55;
+}
+
+.row-custom {
+  background: #eff6ff;
+}
+
+.row-custom:hover {
+  background: #dbeafe;
+}
+
+.formula-hint {
+  display: block;
+  margin-top: 0.15rem;
+  font-family: ui-monospace, monospace;
+  font-size: 0.72rem;
+  color: #2563eb;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 180px;
 }
 
 .indicator-draggable {

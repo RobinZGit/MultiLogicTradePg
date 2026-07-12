@@ -40,6 +40,8 @@ app.get('/api/indicators', async (req, res) => {
         i.code,
         i.name,
         i.script,
+        i.formula,
+        i.is_custom,
         i.description,
         i.category,
         i.is_active,
@@ -60,7 +62,7 @@ app.get('/api/indicators', async (req, res) => {
         ) AS value_types
       FROM indicators i
       LEFT JOIN indicator_value_types vt ON vt.indicator_id = i.id
-      WHERE ($1::boolean = FALSE OR (i.script IS NOT NULL AND BTRIM(i.script) <> ''))
+      WHERE ($1::boolean = FALSE OR (BTRIM(COALESCE(i.script, '')) <> '' OR BTRIM(COALESCE(i.formula, '')) <> ''))
       GROUP BY i.id
       ORDER BY i.code
     `,
@@ -70,6 +72,56 @@ app.get('/api/indicators', async (req, res) => {
   } catch (err) {
     console.error('GET /api/indicators', err);
     res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/api/indicators', async (req, res) => {
+  const parsed = parseIndicatorCreateBody(req.body);
+  if (parsed.error) {
+    res.status(400).json({ error: parsed.error });
+    return;
+  }
+  const client = await pool.connect();
+  try {
+    const { rows: formulaOk } = await client.query(
+      'SELECT poly_is_formula($1) AS ok',
+      [parsed.formula]
+    );
+    if (!formulaOk[0]?.ok) {
+      res.status(400).json({
+        error: 'Формула должна быть многочленной (pp, sma(pp), @RSI, …), не calc_*',
+      });
+      return;
+    }
+    await client.query('BEGIN');
+    const { rows: inserted } = await client.query(
+      `INSERT INTO indicators (code, name, description, category, formula, is_custom, is_active)
+       VALUES ($1, $2, $3, $4, $5, TRUE, $6)
+       RETURNING id`,
+      [
+        parsed.code,
+        parsed.name,
+        parsed.description,
+        parsed.category,
+        parsed.formula,
+        parsed.is_active,
+      ]
+    );
+    const indicatorId = inserted[0].id;
+    await client.query(
+      `INSERT INTO indicator_value_types
+         (indicator_id, code, name, value_type, is_threshold, threshold_value, description, display_order)
+       VALUES ($1, 'VALUE', $2, 'float', FALSE, NULL, $3, 1)`,
+      [indicatorId, parsed.name, parsed.formula]
+    );
+    await client.query('COMMIT');
+    const full = await fetchIndicatorById(client, indicatorId);
+    res.status(201).json(full);
+  } catch (err) {
+    await client.query('ROLLBACK');
+    handleDbError(res, err, 'POST /api/indicators');
+  } finally {
+    client.release();
   }
 });
 
@@ -85,57 +137,58 @@ app.put('/api/indicators/:id', async (req, res) => {
     return;
   }
   try {
-    const { rows } = await pool.query(
-      `UPDATE indicators
-       SET name = $1, description = $2, category = $3, script = $4, is_active = $5
-       WHERE id = $6
-       RETURNING id, code, name, script, description, category, is_active`,
-      [
-        parsed.name,
-        parsed.description,
-        parsed.category,
-        parsed.script,
-        parsed.is_active,
-        id,
-      ]
+    const { rows: existing } = await pool.query(
+      'SELECT id, is_custom FROM indicators WHERE id = $1',
+      [id]
     );
-    if (rows.length === 0) {
+    if (existing.length === 0) {
       res.status(404).json({ error: 'Indicator not found' });
       return;
     }
-    const { rows: full } = await pool.query(
-      `
-      SELECT
-        i.id,
-        i.code,
-        i.name,
-        i.script,
-        i.description,
-        i.category,
-        i.is_active,
-        COALESCE(
-          json_agg(
-            json_build_object(
-              'id', vt.id,
-              'code', vt.code,
-              'name', vt.name,
-              'value_type', vt.value_type,
-              'is_threshold', vt.is_threshold,
-              'threshold_value', vt.threshold_value,
-              'display_order', vt.display_order
-            )
-            ORDER BY vt.display_order, vt.id
-          ) FILTER (WHERE vt.id IS NOT NULL),
-          '[]'::json
-        ) AS value_types
-      FROM indicators i
-      LEFT JOIN indicator_value_types vt ON vt.indicator_id = i.id
-      WHERE i.id = $1
-      GROUP BY i.id
-    `,
-      [id]
-    );
-    res.json(full[0]);
+    const isCustom = Boolean(existing[0].is_custom);
+    if (parsed.formula !== undefined && isCustom) {
+      const { rows: formulaOk } = await pool.query(
+        'SELECT poly_is_formula($1) AS ok',
+        [parsed.formula]
+      );
+      if (!parsed.formula || !formulaOk[0]?.ok) {
+        res.status(400).json({
+          error: 'Формула должна быть многочленной (pp, sma(pp), @RSI, …), не calc_*',
+        });
+        return;
+      }
+    }
+    if (isCustom) {
+      await pool.query(
+        `UPDATE indicators
+         SET name = $1, description = $2, category = $3, formula = $4, is_active = $5
+         WHERE id = $6`,
+        [
+          parsed.name,
+          parsed.description,
+          parsed.category,
+          parsed.formula ?? null,
+          parsed.is_active,
+          id,
+        ]
+      );
+    } else {
+      await pool.query(
+        `UPDATE indicators
+         SET name = $1, description = $2, category = $3, script = $4, is_active = $5
+         WHERE id = $6`,
+        [
+          parsed.name,
+          parsed.description,
+          parsed.category,
+          parsed.script,
+          parsed.is_active,
+          id,
+        ]
+      );
+    }
+    const full = await fetchIndicatorById(pool, id);
+    res.json(full);
   } catch (err) {
     handleDbError(res, err, 'PUT /api/indicators/:id');
   }
@@ -1408,12 +1461,88 @@ function parseIndicatorBody(body) {
     body?.script == null || body.script === ''
       ? null
       : String(body.script).trim();
+  let formula;
+  if (body?.formula !== undefined) {
+    formula =
+      body.formula == null || body.formula === ''
+        ? null
+        : String(body.formula).trim();
+  }
   const is_active = body?.is_active === undefined ? true : Boolean(body.is_active);
 
   if (!name) return { error: 'Укажите название индикатора' };
   if (name.length > 100) return { error: 'Название индикатора не длиннее 100 символов' };
   if (category && category.length > 50) return { error: 'Категория не длиннее 50 символов' };
-  return { name, description, category, script, is_active };
+  const out = { name, description, category, script, is_active };
+  if (formula !== undefined) out.formula = formula;
+  return out;
+}
+
+function parseIndicatorCreateBody(body) {
+  const code =
+    typeof body?.code === 'string' ? body.code.trim().toUpperCase() : '';
+  const name = typeof body?.name === 'string' ? body.name.trim() : '';
+  const description =
+    body?.description == null || body.description === ''
+      ? null
+      : String(body.description).trim();
+  const category =
+    body?.category == null || body.category === ''
+      ? null
+      : String(body.category).trim();
+  const formula =
+    typeof body?.formula === 'string' ? body.formula.trim() : '';
+  const is_active = body?.is_active === undefined ? true : Boolean(body.is_active);
+
+  if (!code) return { error: 'Укажите код индикатора' };
+  if (!/^[A-Z][A-Z0-9_]{0,19}$/.test(code)) {
+    return {
+      error: 'Код: латиница A–Z, цифры и _, до 20 символов, начинается с буквы',
+    };
+  }
+  if (!name) return { error: 'Укажите название индикатора' };
+  if (name.length > 100) return { error: 'Название индикатора не длиннее 100 символов' };
+  if (category && category.length > 50) return { error: 'Категория не длиннее 50 символов' };
+  if (!formula) return { error: 'Укажите формулу индикатора' };
+  return { code, name, description, category, formula, is_active };
+}
+
+async function fetchIndicatorById(db, id) {
+  const { rows } = await db.query(
+    `
+    SELECT
+      i.id,
+      i.code,
+      i.name,
+      i.script,
+      i.formula,
+      i.is_custom,
+      i.description,
+      i.category,
+      i.is_active,
+      COALESCE(
+        json_agg(
+          json_build_object(
+            'id', vt.id,
+            'code', vt.code,
+            'name', vt.name,
+            'value_type', vt.value_type,
+            'is_threshold', vt.is_threshold,
+            'threshold_value', vt.threshold_value,
+            'display_order', vt.display_order
+          )
+          ORDER BY vt.display_order, vt.id
+        ) FILTER (WHERE vt.id IS NOT NULL),
+        '[]'::json
+      ) AS value_types
+    FROM indicators i
+    LEFT JOIN indicator_value_types vt ON vt.indicator_id = i.id
+    WHERE i.id = $1
+    GROUP BY i.id
+  `,
+    [id]
+  );
+  return rows[0] ?? null;
 }
 
 function parseSecurityBody(body) {

@@ -77,6 +77,14 @@ export class SecuritiesPanelComponent implements OnInit {
     '#059669',
     '#4f46e5',
   ];
+  /** Индикаторы с серией VALUE на шкале цены (SMA, PACC, пользовательские …) */
+  private readonly priceScaleOverlayCodes = new Set([
+    'SMA',
+    'EMA',
+    'WMA',
+    'PACC',
+    'SMAT3',
+  ]);
 
   loading = true;
   error: string | null = null;
@@ -491,10 +499,16 @@ export class SecuritiesPanelComponent implements OnInit {
     forkJoin({
       exchanges: this.refs.getExchanges(),
       timeframes: this.securities.getTimeframes(),
+      indicators: this.refs.getIndicators(true),
     }).subscribe({
-      next: ({ exchanges, timeframes }) => {
+      next: ({ exchanges, timeframes, indicators }) => {
         this.exchanges = exchanges;
         this.timeframes = timeframes;
+        for (const ind of indicators) {
+          if (ind.is_custom && ind.formula) {
+            this.priceScaleOverlayCodes.add(ind.code);
+          }
+        }
         this.exchangeId =
           exchanges.find((e) => e.name === 'MOEX')?.id ?? exchanges[0]?.id ?? null;
         const m15 = timeframes.find((t) => t.tf === 'M15');
@@ -739,7 +753,7 @@ export class SecuritiesPanelComponent implements OnInit {
   }
 
   private isPriceScaleSeries(indicatorCode: string, lineCode: string): boolean {
-    if (['SMA', 'EMA', 'WMA', 'PACC'].includes(indicatorCode) && lineCode === 'VALUE') {
+    if (this.priceScaleOverlayCodes.has(indicatorCode) && lineCode === 'VALUE') {
       return true;
     }
     if (indicatorCode === 'BB' && ['UPPER', 'MIDDLE', 'LOWER'].includes(lineCode)) {
