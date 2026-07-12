@@ -15,6 +15,9 @@
   Если шаг 2 упал на CREATE EXTENSION http — установите pgsql-http (шаг 2a)
   и повторите:  .\scripts\run_multilogictrade.ps1 -Steps 2
 
+  Правило проекта: после изменений схемы править CREATE TABLE в 01/02 и прогонять
+  этот скрипт (обычно шаги 0,1,2). См. .cursor/rules/database-scripts.mdc
+
 .EXAMPLE
   $env:PGPASSWORD = '<пароль postgres>'
   .\scripts\run_multilogictrade.ps1

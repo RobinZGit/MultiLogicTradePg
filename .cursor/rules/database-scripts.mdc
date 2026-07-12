@@ -1,0 +1,47 @@
+---
+description: SQL-схема MultiLogicTradePg — актуальные скрипты и локальная БД
+globs: "**/*.sql,api/**,docs/**"
+alwaysApply: true
+---
+
+# База данных MultiLogicTradePg
+
+## Правило (Sergey)
+
+1. **Любое изменение схемы** — сразу в исходные скрипты создания (`00`–`02`), не отдельными одноразовыми миграциями.
+2. **Новые поля** — добавлять **в `CREATE TABLE`**, а не через `ALTER TABLE ADD COLUMN` в скриптах создания.
+3. **После правок SQL** — **прогнать скрипты локально** и убедиться, что локальная PostgreSQL актуальна.
+4. **Не оставлять** локальную БД и репозиторий в расхождении.
+
+## Порядок прогона (локально)
+
+```
+00_create_database.sql          → подключение: postgres (DROP + CREATE)
+01_multilogictrade_tables_and_data.sql → multilogictrade
+02_multilogictrade_functions_and_procedures.sql → multilogictrade
+03_multilogictrade_examples.sql → по желанию
+```
+
+`00` пересоздаёт базу — данные сбрасываются. Это нормальный способ подтянуть схему после изменений в `CREATE TABLE`.
+
+**Локально (Windows):**
+```bat
+set PGPASSWORD=111
+"C:\Program Files\PostgreSQL\15\bin\psql.exe" -U postgres -d postgres -f 00_create_database.sql
+"C:\Program Files\PostgreSQL\15\bin\psql.exe" -U postgres -d multilogictrade -f 01_multilogictrade_tables_and_data.sql
+"C:\Program Files\PostgreSQL\15\bin\psql.exe" -U postgres -d multilogictrade -f 02_multilogictrade_functions_and_procedures.sql
+```
+
+После `01`/`02` — перегенерировать `web/src/assets/schema-offline.json` (`npm run generate:schema` в `web/`).
+
+## Что не делать
+
+- Не добавлять поля только в `api/migrate-*.js` или только в Angular/API без SQL.
+- Не плодить `ALTER TABLE ADD COLUMN` в `01`/`02`, если поле можно описать в `CREATE TABLE`.
+- Исключение: осмысленные `ALTER` для смены ограничений/индексов на уже существующих инсталляциях — только если без них нельзя; предпочитать полный цикл `00`→`01`.
+
+## Связанные файлы
+
+- Скрипты: `00_create_database.sql`, `01_*.sql`, `02_*.sql`
+- Запуск UI: `web/MultiLogic_Trade_Progress_Start.bat`
+- Контекст: `docs/PROJECT_CONTEXT.md`

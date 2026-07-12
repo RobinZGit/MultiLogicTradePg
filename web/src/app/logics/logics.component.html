@@ -1,59 +1,251 @@
 <section class="page">
+
   <header class="page-header">
-    <h1>Торговые логики</h1>
-    <p class="subtitle">Таблица <code>logics</code> — одна строка = одна торговля</p>
-    <button type="button" class="btn" (click)="loadLogics()" [disabled]="loading">
-      Обновить
-    </button>
+
+    <div class="title-row">
+
+      <h1>Торговые операции</h1>
+
+      <button
+
+        type="button"
+
+        class="icon-btn icon-add"
+
+        title="Добавить"
+
+        aria-label="Добавить"
+
+        (click)="openAdd()"
+
+      >
+
+        +
+
+      </button>
+
+    </div>
+
+    <p class="subtitle">
+
+      Таблица <code>logics</code> — одна строка = одна торговля.
+
+      <span class="poll-hint">Обновление каждые {{ pollIntervalMs / 1000 }} с</span>
+
+    </p>
+
   </header>
 
-  @if (loading) {
+
+
+  @if (loading && logics.length === 0) {
+
     <p class="status">Загрузка…</p>
+
   }
+
+
 
   @if (error) {
+
     <div class="error-banner" role="alert">
+
       <strong>Нет связи с базой данных</strong>
+
       <p>{{ error }}</p>
+
     </div>
+
   }
 
-  @if (!loading && !error) {
-    <div class="table-wrap">
+
+
+  @if (!error || logics.length > 0) {
+
+    <div class="table-wrap" [class.table-dimmed]="loading && logics.length > 0">
+
       <table>
+
         <thead>
+
           <tr>
+
+            <th class="col-check">Вкл.</th>
+
             <th>ID</th>
+
             <th>Логика</th>
+
             <th>account_id</th>
+
             <th>Счёт</th>
+
             <th>Тип счёта</th>
+
             <th>Брокер</th>
+
             <th>Счёт активен</th>
+
+            <th class="col-actions"></th>
+
           </tr>
+
         </thead>
+
         <tbody>
+
           @for (row of logics; track row.id) {
-            <tr>
-              <td>{{ row.id }}</td>
-              <td>{{ row.name }}</td>
-              <td>{{ row.account_id }}</td>
-              <td>{{ row.account_code }} — {{ row.account_name }}</td>
-              <td>
-                <span class="badge" [class.badge-fake]="row.account_type === 'fake'">
-                  {{ accountTypeLabel(row.account_type) }}
-                </span>
+
+            <tr
+
+              [class.row-enabled]="row.is_enabled"
+
+              [class.row-disabled]="!row.is_enabled"
+
+            >
+
+              <td class="col-check">
+
+                <input
+
+                  type="checkbox"
+
+                  class="enable-check"
+
+                  [checked]="row.is_enabled"
+
+                  [disabled]="isSaving(row)"
+
+                  (change)="onEnabledChange(row, $any($event.target).checked)"
+
+                  [attr.aria-label]="'Включить логику ' + row.name"
+
+                />
+
               </td>
+
+              <td>{{ row.id }}</td>
+
+              <td>{{ row.name }}</td>
+
+              <td>{{ row.account_id }}</td>
+
+              <td>{{ row.account_code }} — {{ row.account_name }}</td>
+
+              <td>
+
+                <span class="badge" [class.badge-fake]="row.account_type === 'fake'">
+
+                  {{ accountTypeLabel(row.account_type) }}
+
+                </span>
+
+              </td>
+
               <td>{{ row.broker_code }}</td>
+
               <td>{{ row.account_is_active ? 'да' : 'нет' }}</td>
+
+              <td class="col-actions">
+
+                <button
+
+                  type="button"
+
+                  class="icon-btn"
+
+                  title="Редактировать"
+
+                  aria-label="Редактировать"
+
+                  (click)="openEdit(row)"
+
+                >
+
+                  <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true">
+
+                    <path
+
+                      fill="currentColor"
+
+                      d="M3 17.25V21h3.75L17.81 9.94l-3.75-3.75L3 17.25zM20.71 7.04a1.003 1.003 0 0 0 0-1.42l-2.34-2.34a1.003 1.003 0 0 0-1.42 0l-1.83 1.83 3.75 3.75 1.84-1.82z"
+
+                    />
+
+                  </svg>
+
+                </button>
+
+                <button
+
+                  type="button"
+
+                  class="icon-btn icon-danger"
+
+                  title="Удалить"
+
+                  aria-label="Удалить"
+
+                  (click)="deleteLogic(row)"
+
+                >
+
+                  <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true">
+
+                    <path
+
+                      fill="currentColor"
+
+                      d="M6 19c0 1.1.9 2 2 2h8c1.1 0 2-.9 2-2V7H6v12zM19 4h-3.5l-1-1h-5l-1 1H5v2h14V4z"
+
+                    />
+
+                  </svg>
+
+                </button>
+
+              </td>
+
             </tr>
+
           } @empty {
-            <tr>
-              <td colspan="7" class="empty">Нет записей в logics</td>
-            </tr>
+
+            @if (!loading && !error) {
+
+              <tr>
+
+                <td colspan="9" class="empty">Нет записей в logics</td>
+
+              </tr>
+
+            }
+
           }
+
         </tbody>
+
       </table>
+
     </div>
+
   }
+
+
+
+  <app-logic-editor
+
+    [open]="editorOpen"
+
+    [mode]="editorMode"
+
+    [logic]="editorLogic"
+
+    (closed)="closeEditor()"
+
+    (saved)="onEditorSaved()"
+
+  />
+
 </section>
+
+

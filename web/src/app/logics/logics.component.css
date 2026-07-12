@@ -18,10 +18,80 @@
   font-size: 1.5rem;
 }
 
+.title-row {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  flex: 1 1 auto;
+}
+
+.icon-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 2rem;
+  height: 2rem;
+  padding: 0;
+  border: 1px solid #d1d5db;
+  border-radius: 8px;
+  background: #fff;
+  color: #374151;
+  cursor: pointer;
+  line-height: 1;
+}
+
+.icon-btn:hover {
+  background: #f3f4f6;
+  border-color: #9ca3af;
+  color: #111827;
+}
+
+.icon-add {
+  font-size: 1.35rem;
+  font-weight: 500;
+  color: #2563eb;
+  border-color: #bfdbfe;
+}
+
+.icon-add:hover {
+  background: #eff6ff;
+  border-color: #93c5fd;
+  color: #1d4ed8;
+}
+
+.icon-danger:hover {
+  background: #fef2f2;
+  border-color: #fca5a5;
+  color: #b91c1c;
+}
+
+.col-actions {
+  width: 5.5rem;
+  white-space: nowrap;
+  text-align: right;
+}
+
+.col-actions .icon-btn {
+  width: 1.85rem;
+  height: 1.85rem;
+  border: none;
+  background: transparent;
+}
+
+.col-actions .icon-btn + .icon-btn {
+  margin-left: 0.15rem;
+}
+
 .subtitle {
   margin: 0;
   color: #555;
   flex: 1 1 100%;
+}
+
+.poll-hint {
+  margin-left: 0.5rem;
+  color: #6b7280;
+  font-size: 0.88rem;
 }
 
 .btn {
@@ -98,6 +168,43 @@ th {
 
 tbody tr:hover {
   background: #f9fafb;
+}
+
+.row-enabled {
+  font-weight: 700;
+  color: #111827;
+}
+
+.row-disabled {
+  font-weight: 400;
+  opacity: 0.32;
+  color: #9ca3af;
+}
+
+.row-disabled:hover {
+  opacity: 0.42;
+  background: #fafafa;
+}
+
+.col-check {
+  width: 3rem;
+  text-align: center;
+}
+
+.enable-check {
+  width: 1.05rem;
+  height: 1.05rem;
+  cursor: pointer;
+  accent-color: #2563eb;
+}
+
+.enable-check:disabled {
+  cursor: wait;
+  opacity: 0.5;
+}
+
+.table-dimmed {
+  opacity: 0.85;
 }
 
 .empty {

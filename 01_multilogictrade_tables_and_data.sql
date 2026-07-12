@@ -115,9 +115,6 @@ CREATE TABLE IF NOT EXISTS security_prefixes (
     note VARCHAR(200)
 );
 
-ALTER TABLE security_prefixes ADD COLUMN IF NOT EXISTS instrument_market VARCHAR(20);
-ALTER TABLE security_prefixes ADD COLUMN IF NOT EXISTS tbank_figi VARCHAR(50);
-ALTER TABLE security_prefixes ADD COLUMN IF NOT EXISTS note VARCHAR(200);
 UPDATE security_prefixes SET instrument_market = 'stock' WHERE instrument_market IS NULL;
 
 CREATE UNIQUE INDEX IF NOT EXISTS idx_security_prefixes_security_exchange
@@ -284,8 +281,6 @@ CREATE TABLE IF NOT EXISTS timeframes (
     sec INTEGER NOT NULL CHECK (sec > 0),
     is_active BOOLEAN NOT NULL DEFAULT TRUE
 );
-
-ALTER TABLE timeframes ADD COLUMN IF NOT EXISTS is_active BOOLEAN NOT NULL DEFAULT TRUE;
 
 INSERT INTO timeframes (tf, full_name, sec, is_active) VALUES
     ('M1', '1 минута', 60, TRUE), ('M2', '2 минуты', 120, TRUE), ('M3', '3 минуты', 180, TRUE),
@@ -563,17 +558,16 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_indicator_values_unique
 CREATE TABLE IF NOT EXISTS logics (
     id SERIAL PRIMARY KEY,
     name VARCHAR(100) NOT NULL UNIQUE,
-    account_id INTEGER NOT NULL REFERENCES accounts(id) ON DELETE RESTRICT
+    account_id INTEGER NOT NULL REFERENCES accounts(id) ON DELETE RESTRICT,
+    is_enabled BOOLEAN NOT NULL DEFAULT TRUE
 );
-
--- Миграция v12+: account_id для уже существующей таблицы logics
-ALTER TABLE logics ADD COLUMN IF NOT EXISTS account_id INTEGER REFERENCES accounts(id) ON DELETE RESTRICT;
 
 CREATE INDEX IF NOT EXISTS idx_logics_account_id ON logics(account_id);
 
 COMMENT ON TABLE logics IS 'Торговые логики: одна строка — одна торговля (трейд); главная таблица, от которой смотрятся связанные данные';
 COMMENT ON COLUMN logics.name IS 'Уникальное имя логики';
 COMMENT ON COLUMN logics.account_id IS 'Счёт (accounts), на котором выполняется эта торговля';
+COMMENT ON COLUMN logics.is_enabled IS 'Логика включена (активна) или выключена';
 
 -- Пример: одна демо-логика на фейковом счёте T-Bank
 INSERT INTO logics (name, account_id)
@@ -617,8 +611,6 @@ CREATE TABLE IF NOT EXISTS futures_expirations (
     is_active BOOLEAN NOT NULL DEFAULT TRUE,
     created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
-
-ALTER TABLE futures_expirations ADD COLUMN IF NOT EXISTS tbank_figi VARCHAR(50);
 
 CREATE INDEX IF NOT EXISTS idx_futures_exp_security_id ON futures_expirations(security_id);
 CREATE INDEX IF NOT EXISTS idx_futures_exp_prefix ON futures_expirations(prefix);

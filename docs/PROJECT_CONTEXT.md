@@ -54,9 +54,15 @@
 
 ### Торговая логика (заготовка)
 
-- `logics` — **главная таблица**: одна строка = одна торговля (трейд); поле `account_id` → `accounts`;
+- `logics` — **главная таблица**: одна строка = одна торговля (трейд); поля `account_id` → `accounts`, `is_enabled` (вкл/выкл);
 - `logics_detail` (формула + Open/Close + Long/Short) — **движок формул ещё не реализован**;
-- UI: планируется Angular в подпапке репо, API через Express (см. обсуждение 2026-07-12).
+- UI: Angular `web/` + Express `api/` — страница logics, автообновление 2 с, галочка `is_enabled`.
+
+### Правило схемы БД (2026-07-12)
+
+- Изменения схемы — **только в скрипты `00`–`02`**, поля добавлять в **`CREATE TABLE`**, не через `ALTER ADD COLUMN`.
+- После правок — **прогон локально** `00`→`01`→`02`; локальная PostgreSQL всегда актуальна.
+- Правило Cursor: `.cursor/rules/database-scripts.mdc`.
 
 ---
 
@@ -70,7 +76,9 @@
 6. Установлено расширение **pgsql-http** (`http` v1.6) — бинарники из `pg15http_w64.zip`, скрипт `scripts/install_pgsql_http.ps1`.
 7. Исправлен синтаксис `FOREACH` в `calculate_indicator` (RSI value types).
 8. **`logics.account_id`** → `accounts`; демо-строка `Demo RSI SBER M5` на фейковом счёте.
-9. **UI v1:** `api/` (Express) + `web/` (Angular 17) — страница таблицы `logics`; запуск `web\MultiLogic_Trade_Progress_Start.bat`.
+9. **UI v1:** `api/` (Express) + `web/` (Angular 17) — страница `logics`; GitHub Pages + offline-схема из SQL.
+10. **`logics.is_enabled`**, автообновление таблицы 2 с, PATCH API; правило БД в `.cursor/rules/database-scripts.mdc`.
+11. **Редактор логик** (`logic-editor`): добавить / редактировать / удалить; справочники brokers + accounts.
 
 ---
 
@@ -130,3 +138,6 @@
 
 8. **Первый экран Angular**  
    «Сделай Angular для локального доступа к БД: одна страница logics, одна демо-строка, bat для запуска в web/.»
+
+9. **Правило БД и скрипты**  
+   «Все скрипты изменений — в исходные скрипты создания; не ALTER, а поле в CREATE TABLE. Прогонять локально. Локальная БД и скрипты всегда актуальны — правило проекта.»

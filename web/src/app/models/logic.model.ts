@@ -2,6 +2,8 @@ export interface LogicRow {
   id: number;
   name: string;
   account_id: number;
+  broker_id: number;
+  is_enabled: boolean;
   account_code: string;
   account_name: string;
   account_type: 'real' | 'fake';

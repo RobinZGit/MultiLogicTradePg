@@ -551,6 +551,13 @@
           "nullable": false,
           "default": null,
           "comment": "Счёт (accounts), на котором выполняется эта торговля"
+        },
+        {
+          "name": "is_enabled",
+          "type": "BOOLEAN",
+          "nullable": false,
+          "default": "TRUE",
+          "comment": "Логика включена (активна) или выключена"
         }
       ],
       "indexes": [

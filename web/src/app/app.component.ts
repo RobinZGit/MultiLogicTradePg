@@ -1,11 +1,11 @@
 import { Component } from '@angular/core';
-import { RouterOutlet } from '@angular/router';
+import { RouterLink, RouterLinkActive, RouterOutlet } from '@angular/router';
 import { DbSchemaPanelComponent } from './db-schema/db-schema-panel.component';
 
 @Component({
   selector: 'app-root',
   standalone: true,
-  imports: [RouterOutlet, DbSchemaPanelComponent],
+  imports: [RouterOutlet, RouterLink, RouterLinkActive, DbSchemaPanelComponent],
   template: `
     <header class="app-bar">
       <div class="app-bar-left">
@@ -28,6 +28,14 @@ import { DbSchemaPanelComponent } from './db-schema/db-schema-panel.component';
         </svg>
       </button>
     </header>
+    <nav class="app-tabs">
+      <a routerLink="/operations" routerLinkActive="active" [routerLinkActiveOptions]="{ exact: true }">
+        Торговые операции
+      </a>
+      <a routerLink="/references" routerLinkActive="active">
+        Счета, Брокеры, Торговые площадки
+      </a>
+    </nav>
     <main>
       <router-outlet />
     </main>
@@ -71,8 +79,31 @@ import { DbSchemaPanelComponent } from './db-schema/db-schema-panel.component';
       .gear-btn:hover .gear-icon {
         filter: drop-shadow(0 0 4px rgba(255, 255, 255, 0.45));
       }
+      .app-tabs {
+        display: flex;
+        gap: 0;
+        padding: 0 1.5rem;
+        background: #fff;
+        border-bottom: 1px solid #e5e7eb;
+      }
+      .app-tabs a {
+        padding: 0.65rem 1rem;
+        color: #6b7280;
+        text-decoration: none;
+        font-size: 0.92rem;
+        border-bottom: 2px solid transparent;
+        margin-bottom: -1px;
+      }
+      .app-tabs a:hover {
+        color: #111827;
+      }
+      .app-tabs a.active {
+        color: #2563eb;
+        border-bottom-color: #2563eb;
+        font-weight: 600;
+      }
       main {
-        min-height: calc(100vh - 52px);
+        min-height: calc(100vh - 96px);
         background: #f3f4f6;
       }
     `,
