@@ -474,7 +474,7 @@ COMMENT ON COLUMN indicators.script IS
 'Устаревший per-bar шаблон SELECT calc_ind_*(…). Для новых индикаторов — поле formula.';
 
 COMMENT ON COLUMN indicators.formula IS
-'Многочленная формула массивного расчёта: pp, sma(pp), @SMA, pp * (1;-2;1). Код индикатора (SMA, RSI) = ссылка @CODE в других формулах.';
+'Многочленная формула массивного расчёта: pp, sma, @SMA, pp * (1;-2;1). Код индикатора (SMA, RSI) = ссылка @CODE в других формулах.';
 
 COMMENT ON COLUMN indicators.is_custom IS
 'TRUE — пользовательская/составная формула (подсветка в списке индикаторов).';
@@ -514,8 +514,7 @@ INSERT INTO indicators (code, name, description, category) VALUES
     ('SAR', 'Stop And Reverse', 'Стоп и реверс', 'trend'),
     ('HMA', 'Hull Moving Average', 'Скользящее среднее Халла', 'trend'),
     ('ZLEMA', 'Zero Lag EMA', 'EMA с нулевым запаздыванием', 'trend'),
-    ('SMAT3', 'SMA Triple', 'Тройное SMA (тройная свёртка)', 'trend'),
-    ('SMAT3COMP', 'SMA Triple Comp', 'Тройное SMA (композиция sma∘sma∘sma)', 'trend')
+    ('SMAT3', 'SMA Triple', 'Тройное SMA (тройная свёртка)', 'trend')
 ON CONFLICT (code) DO NOTHING;
 
 -- Шаблоны расчёта (функция + параметры; :series подставляется для каждой линии индикатора)
@@ -531,11 +530,10 @@ ALTER TABLE indicators ADD COLUMN IF NOT EXISTS formula TEXT;
 ALTER TABLE indicators ADD COLUMN IF NOT EXISTS is_custom BOOLEAN NOT NULL DEFAULT FALSE;
 
 -- Многочленные формулы (массивный расчёт — единый парсер, без SELECT)
-UPDATE indicators SET formula = 'sma(pp)', is_custom = FALSE WHERE code = 'SMA';
-UPDATE indicators SET formula = 'ema(pp)', is_custom = FALSE WHERE code = 'EMA';
+UPDATE indicators SET formula = 'sma', is_custom = FALSE WHERE code = 'SMA';
+UPDATE indicators SET formula = 'ema', is_custom = FALSE WHERE code = 'EMA';
 UPDATE indicators SET formula = 'pp * (1; -2; 1)', is_custom = TRUE WHERE code = 'PACC';
-UPDATE indicators SET formula = 'sma(pp) * sma(pp) * sma(pp)', is_custom = TRUE WHERE code = 'SMAT3';
-UPDATE indicators SET formula = 'sma(sma(sma(pp)))', is_custom = TRUE WHERE code = 'SMAT3COMP';
+UPDATE indicators SET formula = 'sma * sma * sma', is_custom = TRUE WHERE code = 'SMAT3';
 
 -- Подробные описания индикаторов с функциями расчёта в PostgreSQL
 UPDATE indicators SET description = $desc$
@@ -623,25 +621,15 @@ $desc$ WHERE code = 'PACC';
 UPDATE indicators SET description = $desc$
 SMA Triple (SMAT3) — тройная свёртка ряда SMA
 
-Расчёт: sma(pp) * sma(pp) * sma(pp). Оператор * — всегда свёртка уже вычисленных многочленов (рядов).
-Сначала считается S = sma(pp); затем S сворачивается сам с собой трижды: ((S * S) * S).
-Это не композиция функций: значения на баре зависят от перекрёстных лагов сглаженной цены.
+Расчёт: sma * sma * sma. Функция sma — SMA от close (pp); * — свёртка вычисленных рядов.
+S = sma, затем ((S * S) * S) с нормализацией при равной длине рядов.
 
-Сигналы: более «тяжёлая», нелинейная кривая на шкале цены; от SMAT3COMP отличается численно.
+Сигналы: усиленное сглаживание на шкале цены; отлично от одинарного SMA.
 
-Применение: запись «свёртка многочленов»; сравнение с композицией sma(sma(sma(pp))).
+Применение: тройная свёртка многочленов; запись через * без скобок и без композиции.
 $desc$ WHERE code = 'SMAT3';
 
-UPDATE indicators SET description = $desc$
-SMA Triple Comp (SMAT3COMP) — тройное SMA через композицию функций
-
-Расчёт: sma(sma(sma(pp))) — к close применяется sma(), затем sma() к результату, затем ещё раз.
-Эквивалентно pp * ww() * ww() * ww() (цепочка ядер без свёртки ряда с самим собой).
-
-Сигналы: класическое тройное сглаживание; гладкая линия на шкале цены.
-
-Применение: «композиция» vs «sma(pp)*sma(pp)*sma(pp)» (SMAT3) — два разных способа записи и расчёта.
-$desc$ WHERE code = 'SMAT3COMP';
+-- SMAT3COMP удалён (композиция sma(sma(...)) не используется)
 
 -- ============================================
 -- Таблица: indicator_value_types (линии индикаторов)
@@ -685,8 +673,7 @@ JOIN (VALUES
     ('ATR', 'ATR', 'Значение ATR', 'float', FALSE, NULL, 'ATR', 1),
     ('ATR', 'ATR_PCT', 'ATR в процентах', 'float', FALSE, NULL, 'ATR %', 2),
     ('PACC', 'VALUE', 'Ускорение цены', 'float', FALSE, NULL, 'pp * (1;-2;1)', 1),
-    ('SMAT3', 'VALUE', 'SMA³ свёртка', 'float', FALSE, NULL, 'sma(pp)*sma(pp)*sma(pp)', 1),
-    ('SMAT3COMP', 'VALUE', 'SMA³ композ.', 'float', FALSE, NULL, 'sma(sma(sma(pp)))', 1),
+    ('SMAT3', 'VALUE', 'SMA³ свёртка', 'float', FALSE, NULL, 'sma*sma*sma', 1),
     ('SMA', 'VALUE', 'Значение MA', 'float', FALSE, NULL, 'SMA value', 1),
     ('EMA', 'VALUE', 'Значение EMA', 'float', FALSE, NULL, 'EMA value', 1),
     ('WMA', 'VALUE', 'Значение WMA', 'float', FALSE, NULL, 'WMA value', 1)

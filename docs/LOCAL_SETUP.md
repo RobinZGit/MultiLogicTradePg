@@ -138,7 +138,7 @@ SELECT COUNT(*) AS securities FROM securities;
 SELECT code, name FROM indicators ORDER BY id LIMIT 5;
 ```
 
-Ожидается: ~54 бумаги, 33 индикатора (SMA, SMAT3, SMAT3COMP, PACC, …).
+Ожидается: ~54 бумаги, 32 индикатора (SMA, SMAT3, PACC, …).
 
 **T-Bank токен после пересоздания БД:** при первой «Загрузить цены» UI предложит ввести токен; он сохранится в `parameter_values` (`TBANK_API_TOKEN`, набор Default). Отмена — загрузка через MOEX. Альтернатива: `CALL set_tbank_token('ваш_токен');` в psql.
 

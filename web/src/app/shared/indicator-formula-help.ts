@@ -2,7 +2,7 @@ import { IndicatorRow } from '../models/lookup.model';
 
 /** Краткая подсказка под полем формулы (create / edit). */
 export const INDICATOR_FORMULA_HINT =
-  'pp, sma(pp), * — свёртка, @CODE — ряд индикатора по коду из справочника (SMA, RSI…). Кнопка «И.» — полный список.';
+  'pp, sma, ema, * — свёртка, @CODE — ряд индикатора (SMA, RSI…). Кнопка «И.» — полный список.';
 
 /** Базовая справка (без каталога индикаторов). */
 export const INDICATOR_FORMULA_HELP_BASE = `Многочленная формула — выражение над числовыми рядами (массивами по барам).
@@ -15,31 +15,27 @@ export const INDICATOR_FORMULA_HELP_BASE = `Многочленная форму�
   Пример: pp * (1; -2; 1) — ускорение цены (PACC)
 
 Операции
-  * — свёртка (скользящий фильтр): левый и правый операнды вычисляются как ряды, затем сворачиваются
+  * — свёртка: левый и правый операнды вычисляются как ряды, затем сворачиваются
   #, /# — покомponentное умножение / деление
   +, − — покомponentное сложение / вычитание
 
-Функции (строят ряд из выражения)
-  sma(expr) — простое MA от expr
-  ema(expr) — экспоненциальное MA
-  ww() — только ядро SMA периода N (для pp * ww() * ww() … без sma)
+Функции (всегда от close, pp)
+  sma — простое MA от close; sma() то же
+  ema — экспоненциальное MA от close
+  ww() — только ядро SMA периода N (для pp * ww() …)
 
 @CODE — ссылка на индикатор из справочника
-  Код индикатора в таблице (SMA, RSI, MACD, SMAT3…) = короткое обозначение в формулах.
-  @SMA — основная серия SMA; @MACD:HISTOGRAM — конкретная линия (серия из indicator_value_types).
-  Без «:СЕРИЯ» берётся первая нетreshold-серия или VALUE.
+  Код в таблице (SMA, RSI, MACD, SMAT3…) = @CODE в формулах.
+  @SMA — серия SMA; @MACD:HISTOGRAM — конкретная линия.
+  Без «:СЕРИЯ» — первая нетreshold-серия или VALUE.
 
-Когда @CODE, когда sma(pp)?
-  sma(pp), ema(pp) — собираете новый ряд из цены и ядер в этой формуле.
-  @SMA — берёте уже заданный индикатор SMA (тот же период, что param_period серии на бумаге).
-  Для комбинаций (@RSI # pp, @MACD:HISTOGRAM - @MACD:SIGNAL) используйте @.
-  Для свёртки с ядром: pp * ww() или pp * (1; -2; 1) (PACC).
-  Для свёртки ряда с самим собой: sma(pp) * sma(pp) (SMAT3).
+Когда @CODE, когда sma?
+  sma, ema — новый ряд от close в этой формуле (без sma(pp) в скобках).
+  @SMA — уже рассчитанный индикатор с param_period серии на бумаге.
+  Для комбинаций (@RSI # pp) — @; для свёрток (sma * sma, PACC) — функции и *.
 
-SMAT3 vs SMAT3COMP
-  SMAT3 — sma(pp) * sma(pp) * sma(pp): * = свёртка вычисленных рядов (S сворачивается с S)
-  SMAT3COMP — sma(sma(sma(pp))): композиция — каждый sma() снова фильтрует результат
-  При том же N значения разные; композиция ≈ pp * ww() * ww() * ww()`;
+SMAT3
+  sma * sma * sma — три раза SMA(close), свёртка ряда с собой (нормализация на шкале цены)`;
 
 const IMPLEMENTED_CODES = new Set([
   'RSI',
@@ -51,7 +47,6 @@ const IMPLEMENTED_CODES = new Set([
   'STOCH',
   'PACC',
   'SMAT3',
-  'SMAT3COMP',
 ]);
 
 function seriesRef(code: string, seriesCode: string, isThreshold: boolean): string {
@@ -98,12 +93,11 @@ export function buildIndicatorCatalogHelp(indicators: IndicatorRow[]): string {
 
   lines.push('');
   lines.push('Примеры');
-  lines.push('  sma(pp) * sma(pp) * sma(pp) — SMAT3 (свёртка ряда SMA с собой)');
-  lines.push('  sma(sma(sma(pp)))         — SMAT3COMP (композиция, другие числа)');
-  lines.push('  pp * ww() * ww() * ww()   — то же что SMAT3COMP при том же N');
-  lines.push('  @RSI # pp                  — RSI покомponentно × цена');
-  lines.push('  @MACD:HISTOGRAM            — гистограмма MACD');
-  lines.push('  pp * (1; -2; 1)            — PACC');
+  lines.push('  sma * sma * sma         — SMAT3');
+  lines.push('  sma                     — SMA от close');
+  lines.push('  @RSI # pp               — RSI покомponentно × цена');
+  lines.push('  @MACD:HISTOGRAM         — гистограмма MACD');
+  lines.push('  pp * (1; -2; 1)         — PACC');
 
   return lines.join('\n');
 }
@@ -111,6 +105,3 @@ export function buildIndicatorCatalogHelp(indicators: IndicatorRow[]): string {
 export function buildFullFormulaHelp(indicators: IndicatorRow[]): string {
   return INDICATOR_FORMULA_HELP_BASE + buildIndicatorCatalogHelp(indicators);
 }
-
-/** @deprecated используйте buildFullFormulaHelp */
-export const INDICATOR_FORMULA_HELP_DETAIL = INDICATOR_FORMULA_HELP_BASE;

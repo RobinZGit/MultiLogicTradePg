@@ -4,8 +4,8 @@
   "scripts": {
     "ng": "ng",
     "generate:schema": "node ../scripts/generate-offline-schema.mjs",
-    "verify:sql": "node ../scripts/verify-sql.mjs && node ../scripts/verify-indicators.mjs",
-    "verify:sql:core": "node ../scripts/verify-sql.mjs --core-only && node ../scripts/verify-indicators.mjs",
+    "verify:sql": "node ../scripts/verify-sql.mjs && node ../scripts/verify-indicators.mjs && node ../scripts/verify-async-sync.mjs",
+    "verify:sql:core": "node ../scripts/verify-sql.mjs --core-only && node ../scripts/verify-indicators.mjs && node ../scripts/verify-async-sync.mjs",
     "verify:indicators": "node ../scripts/verify-indicators.mjs",
     "prebuild": "npm run verify:sql && npm run test:unit && npm run generate:schema",
     "start": "ng serve",

@@ -1,4 +1,4 @@
-import { ComponentFixture, TestBed, fakeAsync, tick } from '@angular/core/testing';
+import { ComponentFixture, TestBed, fakeAsync, tick, discardPeriodicTasks } from '@angular/core/testing';
 import { NO_ERRORS_SCHEMA } from '@angular/core';
 import { of, delay } from 'rxjs';
 import { SecuritiesPanelComponent } from './securities-panel.component';
@@ -198,4 +198,137 @@ describe('SecuritiesPanelComponent', () => {
     component.toggleSecurity(sberRow);
     expect(component.isSecurityExpanded(29)).toBeFalse();
   });
+
+  it('assignIndicator triggers async sync and clears assigning flag immediately', fakeAsync(() => {
+    const paccSeries: SecurityIndicatorSeriesRow[] = [
+      {
+        id: 10,
+        security_id: 29,
+        indicator_id: 33,
+        series_code: 'VALUE',
+        invoke_formula: 'pp * (1; -2; 1)',
+        indicator_code: 'PACC',
+        indicator_name: 'PACC',
+        point_count: 100,
+        display_order: 1,
+        is_active: true,
+      },
+    ];
+    securities.assignIndicatorSeries.and.returnValue(of(paccSeries));
+    securities.syncIndicatorSeries.and.returnValue(
+      of({ ok: true, status: 'started' })
+    );
+    securities.getIndicatorValues.and.returnValue(
+      of([
+        {
+          indicator_id: 33,
+          line_code: 'VALUE',
+          line_name: 'VALUE',
+          indicator_code: 'PACC',
+          display_order: 1,
+          dt: '2026-01-02T10:00:00',
+          value: 0,
+          is_threshold: false,
+        },
+      ])
+    );
+
+    component.expandedSecurities.add(29);
+    component.charts.set(29, {
+      candles: [
+        {
+          dt: '2026-01-02T10:00:00',
+          open_price: 1,
+          high_price: 1,
+          low_price: 1,
+          close_price: 1,
+          volume: 1,
+        },
+      ],
+      loading: false,
+      loadingOlder: false,
+      hasMore: false,
+      error: null,
+    });
+
+    component['assignIndicator'](sberRow, 33);
+    tick();
+
+    expect(securities.assignIndicatorSeries).toHaveBeenCalled();
+    expect(securities.syncIndicatorSeries).toHaveBeenCalledWith(
+      jasmine.objectContaining({ async: true, indicator_id: 33 })
+    );
+    expect(component.indicatorAssigning.has(29)).toBeFalse();
+    expect(component.isIndicatorRecalcActive(29)).toBeTrue();
+
+    tick(500);
+    expect(securities.getIndicatorValues).toHaveBeenCalled();
+    expect(component.isIndicatorRecalcActive(29)).toBeFalse();
+  }));
+
+  it('syncIndicatorsForRange uses async sync (non-blocking HTTP)', fakeAsync(() => {
+    securities.syncIndicatorSeries.and.returnValue(
+      of({ ok: true, status: 'started' })
+    );
+    securities.getIndicatorValues.and.returnValue(
+      of([
+        {
+          indicator_id: 7,
+          line_code: 'K',
+          line_name: 'K',
+          indicator_code: 'STOCH',
+          display_order: 1,
+          dt: '2026-01-02T10:00:00',
+          value: 50,
+          is_threshold: false,
+        },
+      ])
+    );
+
+    component.securityIndicatorSeries.set(29, stochSeries);
+    component.charts.set(29, {
+      candles: [
+        {
+          dt: '2026-01-02T10:00:00',
+          open_price: 1,
+          high_price: 1,
+          low_price: 1,
+          close_price: 1,
+          volume: 1,
+        },
+        {
+          dt: '2026-01-02T10:15:00',
+          open_price: 2,
+          high_price: 2,
+          low_price: 2,
+          close_price: 2,
+          volume: 2,
+        },
+      ],
+      loading: false,
+      loadingOlder: false,
+      hasMore: false,
+      error: null,
+    });
+
+    component['syncIndicatorsForRange'](
+      29,
+      {
+        startDt: '2026-01-02T10:00:00',
+        endDt: '2026-01-02T10:15:00',
+        count: 2,
+        viewStart: 0,
+      },
+      { incremental: true }
+    );
+
+    expect(securities.syncIndicatorSeries).toHaveBeenCalledWith(
+      jasmine.objectContaining({ async: true })
+    );
+    expect(component.isIndicatorsLoading(29)).toBeFalse();
+    expect(component.isIndicatorRecalcActive(29)).toBeTrue();
+
+    tick(500);
+    discardPeriodicTasks();
+  }));
 });

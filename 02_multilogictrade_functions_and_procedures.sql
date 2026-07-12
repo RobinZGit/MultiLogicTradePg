@@ -1917,24 +1917,40 @@ DECLARE
     v_na INTEGER := poly_len(p_a);
     v_nb INTEGER := poly_len(p_b);
     v_out NUMERIC[];
+    v_normalize BOOLEAN;
     i INTEGER;
     j INTEGER;
     v_sum NUMERIC;
+    v_weight NUMERIC;
 BEGIN
     IF v_na = 0 OR v_nb = 0 THEN RETURN ARRAY[]::NUMERIC[]; END IF;
+    -- Два ряда одинаковой длины (sma(pp)*sma(pp)…): взвешенная свёртка, шкала ~ цена.
+    -- Короткое ядро (ww, PACC): без деления — как раньше.
+    v_normalize := (v_na = v_nb AND v_na > 8);
     v_out := array_fill(0::NUMERIC, ARRAY[v_na]);
     FOR i IN 1 .. v_na LOOP
         v_sum := 0;
+        v_weight := 0;
         FOR j IN 1 .. v_nb LOOP
             IF i - j + 1 >= 1 AND i - j + 1 <= v_na THEN
                 v_sum := v_sum + p_a[i - j + 1] * p_b[j];
+                IF v_normalize THEN
+                    v_weight := v_weight + p_b[j];
+                END IF;
             END IF;
         END LOOP;
-        v_out[i] := v_sum;
+        IF v_normalize AND ABS(v_weight) > 1e-12 THEN
+            v_out[i] := v_sum / v_weight;
+        ELSE
+            v_out[i] := v_sum;
+        END IF;
     END LOOP;
     RETURN v_out;
 END;
 $$;
+
+COMMENT ON FUNCTION poly_convolve IS
+'Свёртка рядов; при равной длине >8 — нормализация по сумме весов правого ряда (sma* sma)';
 
 CREATE OR REPLACE FUNCTION poly_delta_kernel(p_k INTEGER)
 RETURNS NUMERIC[]
@@ -2188,24 +2204,19 @@ BEGIN
     END IF;
 
     IF v_t LIKE 'ID:%' AND lower(substr(v_t, 4)) IN ('sma', 'ema', 'ww') THEN
-        v_pos := v_pos + 1;
-        IF poly_peek_token(p_tokens, v_pos) <> 'LP' THEN
-            RAISE EXCEPTION 'poly_parse: expected ( after %', substr(v_t, 4);
-        END IF;
-        v_pos := v_pos + 1;
-        IF poly_peek_token(p_tokens, v_pos) = 'RP' THEN
+        -- sma / ema / ww — всегда от close (pp); без аргументов в скобках
+        IF poly_peek_token(p_tokens, v_pos + 1) IS DISTINCT FROM 'LP' THEN
             RETURN jsonb_build_object(
                 'n', jsonb_build_object('fn', lower(substr(v_t, 4)), 'has_arg', FALSE),
                 'p', v_pos + 1
             );
         END IF;
-        v_inner := poly_parse_add(p_tokens, v_pos);
-        v_pos := (v_inner ->> 'p')::INTEGER;
+        v_pos := v_pos + 2;
         IF poly_peek_token(p_tokens, v_pos) <> 'RP' THEN
-            RAISE EXCEPTION 'poly_parse: expected ) after %()', substr(v_t, 4);
+            RAISE EXCEPTION 'poly_parse: %() without arguments only (from close); use bare %', substr(v_t, 4), substr(v_t, 4);
         END IF;
         RETURN jsonb_build_object(
-            'n', jsonb_build_object('fn', lower(substr(v_t, 4)), 'has_arg', TRUE, 'arg', v_inner -> 'n'),
+            'n', jsonb_build_object('fn', lower(substr(v_t, 4)), 'has_arg', FALSE),
             'p', v_pos + 1
         );
     END IF;
@@ -2666,7 +2677,10 @@ BEGIN
         'dts', to_jsonb(v_dts)
     );
 
-    IF position('pp' IN lower(btrim(p_formula))) > 0 THEN
+    IF position('pp' IN lower(btrim(p_formula))) > 0
+       OR position('sma' IN lower(btrim(p_formula))) > 0
+       OR position('ema' IN lower(btrim(p_formula))) > 0
+       OR position('ww' IN lower(btrim(p_formula))) > 0 THEN
         v_ctx := v_ctx || jsonb_build_object(
             'm_pp', to_jsonb(poly_load_market_array('pp', p_security_id, p_timeframe_id, v_end, v_bars))
         );
@@ -2788,7 +2802,7 @@ LANGUAGE plpgsql STABLE AS $$
 BEGIN
     param_period := CASE upper(p_indicator_code)
         WHEN 'RSI' THEN 14 WHEN 'SMA' THEN 20 WHEN 'EMA' THEN 20 WHEN 'BB' THEN 20
-        WHEN 'ATR' THEN 14 WHEN 'STOCH' THEN 14 WHEN 'SMAT3' THEN 20 WHEN 'SMAT3COMP' THEN 20 ELSE 14 END;
+        WHEN 'ATR' THEN 14 WHEN 'STOCH' THEN 14 WHEN 'SMAT3' THEN 20 ELSE 14 END;
     BEGIN
         SELECT pv.value::INTEGER INTO param_period
         FROM parameter_values pv

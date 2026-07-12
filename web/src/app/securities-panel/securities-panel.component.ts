@@ -1,7 +1,7 @@
 import { Component, OnInit } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { FormsModule } from '@angular/forms';
-import { finalize, forkJoin, switchMap } from 'rxjs';
+import { forkJoin } from 'rxjs';
 import { ReferencesService } from '../services/references.service';
 import { SecuritiesService } from '../services/securities.service';
 import { ExchangeRow } from '../models/lookup.model';
@@ -90,7 +90,6 @@ export class SecuritiesPanelComponent implements OnInit {
     'WMA',
     'PACC',
     'SMAT3',
-    'SMAT3COMP',
   ]);
 
   loading = true;
@@ -284,69 +283,109 @@ export class SecuritiesPanelComponent implements OnInit {
   ): void {
     if (!this.timeframeId) return;
 
-    this.clearIndicatorPoll(securityId);
     const range = this.candleRange(this.chartState(securityId).candles);
     const seriesLabel = this.formatIndicatorRecalcLabel(indicatorCode, seriesRows);
 
+    this.runAsyncIndicatorSync(securityId, {
+      message: `Пересчёт ${seriesLabel}…`,
+      indicatorId,
+      seriesRows,
+      range,
+      mergeOnly: true,
+    });
+  }
+
+  /** Неблокирующий sync: POST async: true → опрос indicator_values. */
+  private runAsyncIndicatorSync(
+    securityId: number,
+    opts: {
+      message: string;
+      indicatorId?: number;
+      seriesRows: SecurityIndicatorSeriesRow[];
+      range: ChartVisibleRange | null;
+      incremental?: boolean;
+      mergeOnly?: boolean;
+    }
+  ): void {
+    if (!this.timeframeId) return;
+
+    this.clearIndicatorPoll(securityId);
     this.indicatorRecalc.set(securityId, {
       active: true,
-      message: `Пересчёт ${seriesLabel}…`,
+      message: opts.message,
       error: null,
     });
 
-    this.securities
-      .syncIndicatorSeries({
-        security_id: securityId,
-        timeframe_id: this.timeframeId,
-        indicator_id: indicatorId,
-        end_dt: range?.endDt,
-        point_count: range?.count,
-        incremental: true,
-        async: true,
-      })
-      .subscribe({
-        next: () => {
-          this.pollIndicatorValuesAfterSync(
-            securityId,
-            indicatorId,
-            indicatorCode,
-            seriesRows,
-            range,
-            0
-          );
-        },
-        error: (err) => {
-          const msg =
-            err?.name === 'TimeoutError'
-              ? 'Не удалось запустить пересчёт индикатора'
-              : err?.error?.error || err?.message || 'Ошибка запуска пересчёта';
-          this.indicatorRecalc.set(securityId, {
-            active: false,
-            message: null,
-            error: msg,
-          });
-          this.indicatorCalcError.set(securityId, msg);
-        },
-      });
+    const body: Parameters<SecuritiesService['syncIndicatorSeries']>[0] = {
+      security_id: securityId,
+      timeframe_id: this.timeframeId,
+      end_dt: opts.range?.endDt,
+      point_count: opts.range?.count,
+      incremental: opts.incremental !== false,
+      async: true,
+    };
+    if (opts.indicatorId) {
+      body.indicator_id = opts.indicatorId;
+    }
+
+    this.securities.syncIndicatorSeries(body).subscribe({
+      next: () => {
+        this.pollIndicatorValuesAfterSync(
+          securityId,
+          opts.indicatorId ? [opts.indicatorId] : null,
+          opts.seriesRows,
+          opts.range,
+          opts.mergeOnly === true,
+          0
+        );
+      },
+      error: (err) => {
+        const msg =
+          err?.name === 'TimeoutError'
+            ? 'Не удалось запустить пересчёт индикаторов'
+            : err?.error?.error || err?.message || 'Ошибка запуска пересчёта';
+        this.finishIndicatorRecalc(securityId, msg);
+      },
+    });
+  }
+
+  private finishIndicatorRecalc(securityId: number, error: string | null): void {
+    this.indicatorRecalc.set(securityId, {
+      active: false,
+      message: null,
+      error,
+    });
+    if (error) {
+      this.indicatorCalcError.set(securityId, error);
+    } else {
+      this.indicatorCalcError.set(securityId, null);
+    }
+    this.indicatorPollTimers.delete(securityId);
   }
 
   private pollIndicatorValuesAfterSync(
     securityId: number,
-    indicatorId: number,
-    indicatorCode: string,
+    indicatorIds: number[] | null,
     seriesRows: SecurityIndicatorSeriesRow[],
     range: ChartVisibleRange | null,
+    mergeOnly: boolean,
     attempt: number
   ): void {
     const maxAttempts = 90;
+    const label =
+      indicatorIds?.length === 1
+        ? seriesRows[0]?.indicator_code ?? 'индикатора'
+        : 'индикаторов';
     if (attempt >= maxAttempts) {
-      const msg = `Таймаут пересчёта ${indicatorCode}`;
-      this.indicatorRecalc.set(securityId, {
-        active: false,
-        message: null,
-        error: msg,
-      });
-      this.indicatorCalcError.set(securityId, msg);
+      this.finishIndicatorRecalc(securityId, `Таймаут пересчёта ${label}`);
+      return;
+    }
+
+    const ids =
+      indicatorIds ??
+      [...new Set(seriesRows.map((s) => s.indicator_id))].filter(Boolean);
+    if (ids.length === 0) {
+      this.finishIndicatorRecalc(securityId, null);
       return;
     }
 
@@ -357,7 +396,7 @@ export class SecuritiesPanelComponent implements OnInit {
         .getIndicatorValues(
           securityId,
           this.timeframeId,
-          [indicatorId],
+          ids,
           range?.startDt,
           range?.endDt
         )
@@ -366,30 +405,31 @@ export class SecuritiesPanelComponent implements OnInit {
             if (values.length === 0) {
               this.pollIndicatorValuesAfterSync(
                 securityId,
-                indicatorId,
-                indicatorCode,
+                indicatorIds,
                 seriesRows,
                 range,
+                mergeOnly,
                 attempt + 1
               );
               return;
             }
-            this.mergeIndicatorChartSeries(securityId, values, seriesRows);
-            this.indicatorRecalc.set(securityId, {
-              active: false,
-              message: null,
-              error: null,
-            });
-            this.indicatorCalcError.set(securityId, null);
-            this.indicatorPollTimers.delete(securityId);
+            if (mergeOnly && indicatorIds?.length === 1) {
+              this.mergeIndicatorChartSeries(securityId, values, seriesRows);
+            } else {
+              this.indicatorSeries.set(
+                securityId,
+                this.buildChartSeries(values, seriesRows)
+              );
+            }
+            this.finishIndicatorRecalc(securityId, null);
           },
           error: () => {
             this.pollIndicatorValuesAfterSync(
               securityId,
-              indicatorId,
-              indicatorCode,
+              indicatorIds,
               seriesRows,
               range,
+              mergeOnly,
               attempt + 1
             );
           },
@@ -903,48 +943,18 @@ export class SecuritiesPanelComponent implements OnInit {
       this.maxIndicatorCandles
     );
     const incremental = opts?.incremental !== false;
-    const indicatorIds = [...new Set(assigned.map((a) => a.indicator_id))];
 
-    this.indicatorsLoading.add(securityId);
-    this.indicatorCalcError.set(securityId, null);
-
-    this.securities
-      .syncIndicatorSeries({
-        security_id: securityId,
-        timeframe_id: this.timeframeId,
-        end_dt: range.endDt,
-        point_count: pointCount,
-        incremental,
-      })
-      .pipe(
-        switchMap(() =>
-          this.securities.getIndicatorValues(
-            securityId,
-            this.timeframeId!,
-            indicatorIds,
-            range.startDt,
-            range.endDt
-          )
-        ),
-        finalize(() => this.indicatorsLoading.delete(securityId))
-      )
-      .subscribe({
-        next: (values) => {
-          this.indicatorCalcError.set(securityId, null);
-          this.indicatorSeries.set(
-            securityId,
-            this.buildChartSeries(values, assigned)
-          );
-        },
-        error: (err) => {
-          const msg =
-            err?.name === 'TimeoutError'
-              ? 'Таймаут расчёта индикаторов'
-              : err?.error?.error || err?.message || 'Ошибка расчёта индикаторов';
-          this.indicatorCalcError.set(securityId, msg);
-          this.indicatorSeries.set(securityId, []);
-        },
-      });
+    this.indicatorsLoading.delete(securityId);
+    this.runAsyncIndicatorSync(securityId, {
+      message: 'Расчёт индикаторов…',
+      seriesRows: assigned,
+      range: {
+        ...range,
+        count: pointCount,
+      },
+      incremental,
+      mergeOnly: false,
+    });
   }
 
   private buildChartSeries(

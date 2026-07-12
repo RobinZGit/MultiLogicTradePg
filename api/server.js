@@ -117,7 +117,7 @@ app.post('/api/indicators', async (req, res) => {
     );
     if (!formulaOk[0]?.ok) {
       res.status(400).json({
-        error: 'Формула должна быть многочленной (pp, sma(pp), @RSI, …), не calc_*',
+        error: 'Формула должна быть многочленной (pp, sma, @RSI, …), не calc_*',
       });
       return;
     }
@@ -181,7 +181,7 @@ app.put('/api/indicators/:id', async (req, res) => {
       );
       if (!parsed.formula || !formulaOk[0]?.ok) {
         res.status(400).json({
-          error: 'Формула должна быть многочленной (pp, sma(pp), @RSI, …), не calc_*',
+          error: 'Формула должна быть многочленной (pp, sma, @RSI, …), не calc_*',
         });
         return;
       }
