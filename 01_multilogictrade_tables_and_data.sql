@@ -399,7 +399,8 @@ INSERT INTO parameter_types (name, short_name, value_type, description, default_
     ('EMA период', 'EMA_PERIOD', 'integer', 'Период расчёта EMA', '20', 2, 500),
     ('BB период', 'BB_PERIOD', 'integer', 'Период полос Боллинджера', '20', 2, 500),
     ('ATR период', 'ATR_PERIOD', 'integer', 'Период ATR', '14', 2, 100),
-    ('STOCH период K', 'STOCH_PERIOD', 'integer', 'Период %K стохастика', '14', 2, 100)
+    ('STOCH период K', 'STOCH_PERIOD', 'integer', 'Период %K стохастика', '14', 2, 100),
+    ('T-Bank API токен', 'TBANK_API_TOKEN', 'secret', 'Глобальный токен Invest API T-Bank для загрузки цен (не привязан к счёту)', '', NULL, NULL)
 ON CONFLICT (short_name) DO NOTHING;
 
 -- ============================================
@@ -437,6 +438,13 @@ INSERT INTO parameter_values (parameter_set_id, parameter_type_id, value)
 SELECT ps.id, pt.id, pt.default_value
 FROM parameter_sets ps
 CROSS JOIN parameter_types pt
+WHERE ps.name = 'Default'
+ON CONFLICT (parameter_set_id, parameter_type_id) DO NOTHING;
+
+INSERT INTO parameter_values (parameter_set_id, parameter_type_id, value)
+SELECT ps.id, pt.id, ''
+FROM parameter_sets ps
+JOIN parameter_types pt ON pt.short_name = 'TBANK_API_TOKEN'
 WHERE ps.name = 'Default'
 ON CONFLICT (parameter_set_id, parameter_type_id) DO NOTHING;
 

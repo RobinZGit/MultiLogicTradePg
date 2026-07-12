@@ -1,0 +1,39 @@
+@if (open) {
+  <div class="backdrop" (click)="closeCancel()" role="presentation"></div>
+  <dialog class="dialog" open>
+    <header class="dialog-header">
+      <h2>Токен T-Bank</h2>
+      <button type="button" class="icon-btn" title="Закрыть" [disabled]="saving" (click)="closeCancel()">✕</button>
+    </header>
+    <div class="dialog-body">
+      <p class="intro">
+        Токен не найден. Введите API-токен T-Bank Invest для загрузки цен через T-Bank.
+        Токен сохраняется в глобальных параметрах (не в счетах).
+      </p>
+      @if (error) {
+        <p class="error">{{ error }}</p>
+      }
+      <form class="form" (ngSubmit)="save()">
+        <label class="field">
+          <span class="label">API-токен</span>
+          <input
+            type="password"
+            autocomplete="off"
+            [(ngModel)]="token"
+            name="token"
+            [disabled]="saving"
+            placeholder="t.xxxxx…"
+          />
+        </label>
+        <footer class="dialog-footer">
+          <button type="button" class="btn btn-secondary" [disabled]="saving" (click)="closeCancel()">
+            Отмена — загрузить через MOEX
+          </button>
+          <button type="submit" class="btn btn-primary" [disabled]="saving">
+            {{ saving ? 'Сохранение…' : 'Сохранить и загрузить' }}
+          </button>
+        </footer>
+      </form>
+    </div>
+  </dialog>
+}

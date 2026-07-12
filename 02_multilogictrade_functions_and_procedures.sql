@@ -272,6 +272,18 @@ RETURNS TEXT AS $$
 DECLARE
     v_token TEXT;
 BEGIN
+    SELECT btrim(pv.value) INTO v_token
+    FROM parameter_values pv
+    JOIN parameter_types pt ON pt.id = pv.parameter_type_id
+    JOIN parameter_sets ps ON ps.id = pv.parameter_set_id
+    WHERE ps.name = 'Default'
+      AND pt.short_name = 'TBANK_API_TOKEN'
+      AND btrim(COALESCE(pv.value, '')) <> ''
+    LIMIT 1;
+    IF v_token IS NOT NULL THEN
+        RETURN v_token;
+    END IF;
+
     IF p_account_code IS NOT NULL AND btrim(p_account_code) <> '' THEN
         SELECT btrim(a.token_encrypted) INTO v_token
         FROM accounts a
@@ -301,7 +313,37 @@ END;
 $$ LANGUAGE plpgsql;
 
 COMMENT ON FUNCTION get_tbank_token(VARCHAR) IS 
-'Токен T-Bank: по account_code или первый активный счёт с токеном (is_efficient DESC)';
+'Токен T-Bank: сначала parameter_values TBANK_API_TOKEN (Default), иначе token_encrypted в accounts';
+
+CREATE OR REPLACE FUNCTION tbank_token_is_configured()
+RETURNS BOOLEAN
+LANGUAGE sql STABLE AS $$
+    SELECT get_tbank_token() IS NOT NULL;
+$$;
+
+COMMENT ON FUNCTION tbank_token_is_configured IS
+'TRUE, если задан глобальный TBANK_API_TOKEN или токен в accounts';
+
+CREATE OR REPLACE PROCEDURE set_tbank_token(p_token TEXT)
+LANGUAGE plpgsql AS $$
+DECLARE
+    v_set_id INTEGER;
+    v_type_id INTEGER;
+BEGIN
+    SELECT id INTO v_set_id FROM parameter_sets WHERE name = 'Default' LIMIT 1;
+    SELECT id INTO v_type_id FROM parameter_types WHERE short_name = 'TBANK_API_TOKEN' LIMIT 1;
+    IF v_set_id IS NULL OR v_type_id IS NULL THEN
+        RAISE EXCEPTION 'TBANK_API_TOKEN not found in parameter_types';
+    END IF;
+    INSERT INTO parameter_values (parameter_set_id, parameter_type_id, value)
+    VALUES (v_set_id, v_type_id, COALESCE(btrim(p_token), ''))
+    ON CONFLICT (parameter_set_id, parameter_type_id)
+    DO UPDATE SET value = EXCLUDED.value, record_date = CURRENT_TIMESTAMP;
+END;
+$$;
+
+COMMENT ON PROCEDURE set_tbank_token IS
+'Сохраняет глобальный T-Bank API токен в parameter_values (набор Default)';
 
 -- ============================================
 -- Процедура: insert_candle
@@ -398,7 +440,7 @@ BEGIN
     -- Получаем токен
     v_token := get_tbank_token();
     IF v_token IS NULL THEN
-        RAISE EXCEPTION 'T-Bank токен не найден. Заполните token_encrypted в accounts.';
+        RAISE EXCEPTION 'T-Bank токен не найден. Задайте TBANK_API_TOKEN в параметрах или token_encrypted в accounts.';
     END IF;
 
     v_start_ts := p_date_from::TIMESTAMP;
@@ -4420,7 +4462,7 @@ BEGIN
     END IF;
     v_token := get_tbank_token();
     IF v_token IS NULL THEN
-        RAISE EXCEPTION 'T-Bank токен не найден. Заполните token_encrypted в accounts.';
+        RAISE EXCEPTION 'T-Bank токен не найден. Задайте TBANK_API_TOKEN в параметрах или token_encrypted в accounts.';
     END IF;
 
     -- ============================================================

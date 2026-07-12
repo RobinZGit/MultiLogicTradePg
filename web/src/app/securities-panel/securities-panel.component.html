@@ -462,6 +462,12 @@
 
   />
 
+  <app-tbank-token-dialog
+    [open]="tbankTokenDialogOpen"
+    (saved)="onTbankTokenSaved()"
+    (cancelled)="onTbankTokenCancelled()"
+  />
+
 </section>
 
 

@@ -30,6 +30,34 @@ app.get('/api/health', async (_req, res) => {
   }
 });
 
+app.get('/api/settings/tbank-token', async (_req, res) => {
+  try {
+    const { rows } = await pool.query(
+      'SELECT tbank_token_is_configured() AS has_token'
+    );
+    res.json({ has_token: Boolean(rows[0]?.has_token) });
+  } catch (err) {
+    console.error('GET /api/settings/tbank-token', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.put('/api/settings/tbank-token', async (req, res) => {
+  const token =
+    typeof req.body?.token === 'string' ? req.body.token.trim() : '';
+  if (!token) {
+    res.status(400).json({ error: 'Укажите токен T-Bank' });
+    return;
+  }
+  try {
+    await pool.query('CALL set_tbank_token($1)', [token]);
+    res.json({ ok: true, has_token: true });
+  } catch (err) {
+    console.error('PUT /api/settings/tbank-token', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
 app.get('/api/indicators', async (req, res) => {
   const withCalc = req.query.with_calc === '1';
   try {

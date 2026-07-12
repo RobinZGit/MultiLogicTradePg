@@ -24,6 +24,8 @@ import {
 } from '../services/app-config.service';
 import { PriceChartComponent } from '../price-chart/price-chart.component';
 import { SecurityEditorComponent } from '../security-editor/security-editor.component';
+import { TbankTokenDialogComponent } from '../tbank-token-dialog/tbank-token-dialog.component';
+import { SettingsService } from '../services/settings.service';
 
 @Component({
   selector: 'app-securities-panel',
@@ -33,6 +35,7 @@ import { SecurityEditorComponent } from '../security-editor/security-editor.comp
     FormsModule,
     PriceChartComponent,
     SecurityEditorComponent,
+    TbankTokenDialogComponent,
   ],
   templateUrl: './securities-panel.component.html',
   styleUrl: './securities-panel.component.css',
@@ -96,9 +99,13 @@ export class SecuritiesPanelComponent implements OnInit {
   editorOpen = false;
   editorKind: 'stock' | 'futures' = 'stock';
 
+  tbankTokenDialogOpen = false;
+  private pendingPriceLoadRow: SecurityRow | null = null;
+
   constructor(
     private readonly refs: ReferencesService,
     private readonly securities: SecuritiesService,
+    private readonly settings: SettingsService,
     private readonly appConfig: AppConfigService
   ) {}
 
@@ -572,6 +579,36 @@ export class SecuritiesPanelComponent implements OnInit {
 
   startLoadPrices(row: SecurityRow, event: Event): void {
     event.stopPropagation();
+    if (!this.timeframeId || this.isPriceLoadActive(row.id)) return;
+
+    this.settings.getTbankTokenStatus().subscribe({
+      next: ({ has_token }) => {
+        if (!has_token) {
+          this.pendingPriceLoadRow = row;
+          this.tbankTokenDialogOpen = true;
+          return;
+        }
+        this.beginPriceLoad(row);
+      },
+      error: () => this.beginPriceLoad(row),
+    });
+  }
+
+  onTbankTokenSaved(): void {
+    this.tbankTokenDialogOpen = false;
+    const row = this.pendingPriceLoadRow;
+    this.pendingPriceLoadRow = null;
+    if (row) this.beginPriceLoad(row);
+  }
+
+  onTbankTokenCancelled(): void {
+    this.tbankTokenDialogOpen = false;
+    const row = this.pendingPriceLoadRow;
+    this.pendingPriceLoadRow = null;
+    if (row) this.beginPriceLoad(row);
+  }
+
+  private beginPriceLoad(row: SecurityRow): void {
     if (!this.timeframeId || this.isPriceLoadActive(row.id)) return;
 
     this.loadAbort.set(row.id, true);

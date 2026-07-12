@@ -5,6 +5,7 @@ import { SecuritiesPanelComponent } from './securities-panel.component';
 import { SecuritiesService } from '../services/securities.service';
 import { ReferencesService } from '../services/references.service';
 import { AppConfigService } from '../services/app-config.service';
+import { SettingsService } from '../services/settings.service';
 import {
   SecurityIndicatorSeriesRow,
   SecurityRow,
@@ -82,11 +83,18 @@ describe('SecuritiesPanelComponent', () => {
     );
     refs.getIndicators.and.returnValue(of([]));
 
+    const settings = jasmine.createSpyObj('SettingsService', [
+      'getTbankTokenStatus',
+      'saveTbankToken',
+    ]);
+    settings.getTbankTokenStatus.and.returnValue(of({ has_token: true }));
+
     await TestBed.configureTestingModule({
       imports: [SecuritiesPanelComponent],
       providers: [
         { provide: SecuritiesService, useValue: securities },
         { provide: ReferencesService, useValue: refs },
+        { provide: SettingsService, useValue: settings },
         { provide: AppConfigService, useValue: { apiUrl: 'http://localhost:3000/api' } },
       ],
       schemas: [NO_ERRORS_SCHEMA],
