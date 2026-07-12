@@ -11,3 +11,15 @@ export interface LogicRow {
   broker_code: string;
   broker_name: string;
 }
+
+export interface LogicIndicatorSignalRow {
+  id: number;
+  logic_id: number;
+  indicator_id: number;
+  signal_kind: 'trend' | 'counter';
+  formula: string;
+  display_order: number;
+  is_active: boolean;
+  indicator_code: string;
+  indicator_name: string;
+}

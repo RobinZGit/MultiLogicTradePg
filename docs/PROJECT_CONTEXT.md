@@ -70,6 +70,8 @@
 ### Индикаторы и logics
 
 - справочник `indicators` (32 шт.: + **SMAT3**), классические + **PACC** + пользовательские через `formula`;
+- **`indicators.sig_trend_def`**, **`indicators.sig_ct_def`** — условия тренда/контртренда по умолчанию (на сериях: `VALUE > 50`, `pp > VALUE`, …);
+- **`logic_indicator_signals`** — сигналы индикаторов на логике (`logic_id`, `indicator_id`, `signal_kind` trend|counter, `formula`);
 - **`indicators.formula`** — многочлен для `calc_poly_formula_array`; **`is_custom`** — подсветка в списке;
 - **`sma`**, **`ema`**, **`ww()`** — от close; **`sma(period=20)`**, **`sma(period=20, series=VALUE)`** — параметры в ();
 - **`@CODE`**, `*`, `#`, ядра `(1;-2;1)` — единый парсер `poly_*` в `02`;
@@ -77,6 +79,8 @@
 - UI: **«+»** у «Индикаторы» → форма (код, название, описание, формула); **«И.»** — справка по синтаксису;
 - API: `GET/POST /api/indicators`, `PUT /api/indicators/:id` (formula для `is_custom`);
 - `logics` + `logics_detail` — движок формул **ещё не реализован**;
+- UI **Операции** (`/operations`): разворот строки логики → **«Сигналы индикаторов»** (+ тренд / + контртренд, мультивыбор, inline-формула `@RSI(…) VALUE > 50`);
+- API: `GET/POST/PUT/DELETE /api/logic-indicator-signals`; парсер-заготовка `web/src/app/shared/signal-formula.ts`;
 
 ### Правило схемы БД
 
@@ -100,10 +104,14 @@
 20. **Создание индикатора в UI:** «+» в списке; POST `/api/indicators` + серия VALUE; форма с подсказкой и «И.»; синяя подсветка `is_custom`.
 21. **Фоновый пересчёт после drag:** POST assign → список сразу; async sync в PostgreSQL; спиннер «Пересчёт …».
 22. **T-Bank токен:** `parameter_types.TBANK_API_TOKEN` → `parameter_values`; `get_tbank_token` / `set_tbank_token`; диалог при «Загрузить цены»; API `GET/PUT /api/settings/tbank-token`.
+23. **SMAT3 / график:** локальная свёртка по `period`; sync без зависания при scroll/fullscreen/expand (`verify-chart-sync.mjs`, `userInitiated`, suppress до готовности).
+24. **Logics — сигналы индикаторов:** таблица `logic_indicator_signals`, дефолты `sig_*_def`, UI с inline-редактированием формулы.
 
 ### Автотесты
 
-- `scripts/verify-indicators.mjs` — smoke SQL (sync без цен, calc_ind_*_array, seed STOCH).
+- `scripts/verify-indicators.mjs` — smoke SQL (sync без цен, calc_ind_*_array, seed STOCH, sig_*_def).
+- `scripts/verify-chart-sync.mjs` — регрессия зависания индикаторов на графике.
+- `scripts/verify-async-sync.mjs` — async assign/sync.
 - `npm run test:unit` — Karma/ChromeHeadless (разворот бумаги, fullscreen, recalc).
 - `prebuild`: verify:sql → test:unit → generate:schema; CI: unit-тесты + verify-indicators.
 
@@ -155,7 +163,8 @@
 
 | Дата | Суть |
 |------|------|
-| 2026-07-12 | Split SQL v12, контекст, LOCAL_SETUP, logics UI |
+| 2026-07-12 | SMAT3 локальная свёртка; chart sync без зависания; verify-chart-sync |
+| 2026-07-12 | logics: logic_indicator_signals, sig_*_def, UI сигналов, signal-formula |
 | 2026-07-12 | pgsql-http, локальная БД 00–02 |
 | 2026-07-12 | Фьючерсы: sync MOEX, moex_secid, rollover, verify:sql, scroll lists |
 | 2026-07-12 | TRUNCATE + load test; fix вечный CNYRUBF; правило контекста при выкладке |

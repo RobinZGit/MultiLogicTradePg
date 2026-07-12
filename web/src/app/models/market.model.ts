@@ -133,4 +133,6 @@ export interface ChartVisibleRange {
   endDt: string;
   count: number;
   viewStart: number;
+  /** true — пользователь перемотал/масштабировал; false — автоматически при загрузке свечей */
+  userInitiated?: boolean;
 }

@@ -71,6 +71,8 @@
 
           <tr>
 
+            <th class="col-expand"></th>
+
             <th class="col-check">Вкл.</th>
 
             <th>ID</th>
@@ -99,11 +101,23 @@
 
             <tr
 
+              class="logic-main-row"
+
               [class.row-enabled]="row.is_enabled"
 
               [class.row-disabled]="!row.is_enabled"
 
+              [class.row-expanded]="isLogicExpanded(row.id)"
+
+              (click)="toggleLogicExpand(row, $event)"
+
             >
+
+              <td class="col-expand" aria-hidden="true">
+
+                <span class="expand-chevron" [class.open]="isLogicExpanded(row.id)">▸</span>
+
+              </td>
 
               <td class="col-check">
 
@@ -117,7 +131,7 @@
 
                   [disabled]="isSaving(row)"
 
-                  (change)="onEnabledChange(row, $any($event.target).checked)"
+                  (change)="onEnabledChange(row, $any($event.target).checked, $event)"
 
                   [attr.aria-label]="'Включить логику ' + row.name"
 
@@ -159,7 +173,7 @@
 
                   aria-label="Редактировать"
 
-                  (click)="openEdit(row)"
+                  (click)="openEdit(row, $event)"
 
                 >
 
@@ -187,7 +201,7 @@
 
                   aria-label="Удалить"
 
-                  (click)="deleteLogic(row)"
+                  (click)="deleteLogic(row, $event)"
 
                 >
 
@@ -209,13 +223,295 @@
 
             </tr>
 
+            @if (isLogicExpanded(row.id)) {
+
+              <tr class="logic-detail-row">
+
+                <td colspan="10">
+
+                  <div class="logic-signals-panel" (click)="$event.stopPropagation()">
+
+                    <details class="signals-block" [open]="isSignalsBlockExpanded(row.id)">
+
+                      <summary (click)="toggleSignalsBlock(row.id, $event)">
+
+                        Сигналы индикаторов
+
+                        @if (isSignalsLoading(row.id)) {
+
+                          <span class="signals-loading"> — загрузка…</span>
+
+                        }
+
+                      </summary>
+
+                      <div class="signals-toolbar">
+
+                        <button
+
+                          type="button"
+
+                          class="btn btn-sm btn-trend"
+
+                          (click)="openSignalPicker(row.id, 'trend', $event)"
+
+                        >
+
+                          + Трендовый сигнал
+
+                        </button>
+
+                        <button
+
+                          type="button"
+
+                          class="btn btn-sm btn-counter"
+
+                          (click)="openSignalPicker(row.id, 'counter', $event)"
+
+                        >
+
+                          + Контртрендовый сигнал
+
+                        </button>
+
+                      </div>
+
+                      @if (isPickerOpen(row.id, 'trend') || isPickerOpen(row.id, 'counter')) {
+
+                        <div class="indicator-picker">
+
+                          <p class="picker-title">
+
+                            Выберите индикаторы
+
+                            ({{ signalKindLabel(signalPicker!.kind) }}) — двойной клик или галочки + «Добавить»
+
+                          </p>
+
+                          @if (!indicatorsLoaded) {
+
+                            <p class="picker-empty">Загрузка справочника…</p>
+
+                          } @else {
+
+                            <ul class="picker-list">
+
+                              @for (ind of indicatorsCatalog; track ind.id) {
+
+                                <li
+
+                                  class="picker-item"
+
+                                  [class.selected]="isPickerSelected(ind.id)"
+
+                                  (dblclick)="onPickerRowDblClick(ind)"
+
+                                >
+
+                                  <label>
+
+                                    <input
+
+                                      type="checkbox"
+
+                                      [checked]="isPickerSelected(ind.id)"
+
+                                      (change)="togglePickerSelection(ind.id)"
+
+                                    />
+
+                                    <span class="picker-code">{{ ind.code }}</span>
+
+                                    <span class="picker-name">{{ ind.name }}</span>
+
+                                  </label>
+
+                                </li>
+
+                              }
+
+                            </ul>
+
+                          }
+
+                          <div class="picker-actions">
+
+                            <button
+
+                              type="button"
+
+                              class="btn btn-sm btn-ok"
+
+                              [disabled]="pickerSelectedIds.size === 0"
+
+                              (click)="addSelectedSignals()"
+
+                            >
+
+                              ОК — добавить ({{ pickerSelectedIds.size }})
+
+                            </button>
+
+                            <button type="button" class="btn btn-sm btn-muted" (click)="closeSignalPicker()">
+
+                              Отмена
+
+                            </button>
+
+                          </div>
+
+                        </div>
+
+                      }
+
+                      <table class="signals-table">
+
+                        <thead>
+
+                          <tr>
+
+                            <th>Тип</th>
+
+                            <th>Индикатор</th>
+
+                            <th>Формула сигнала</th>
+
+                            <th class="col-sig-actions"></th>
+
+                          </tr>
+
+                        </thead>
+
+                        <tbody>
+
+                          @for (sig of signalsFor(row.id); track sig.id) {
+
+                            <tr [class.sig-inactive]="!sig.is_active">
+
+                              <td>
+
+                                <span
+
+                                  class="sig-badge"
+
+                                  [class.sig-trend]="sig.signal_kind === 'trend'"
+
+                                  [class.sig-counter]="sig.signal_kind === 'counter'"
+
+                                >
+
+                                  {{ signalKindLabel(sig.signal_kind) }}
+
+                                </span>
+
+                              </td>
+
+                              <td>
+
+                                <strong>{{ sig.indicator_code }}</strong>
+
+                                <span class="sig-ind-name">{{ sig.indicator_name }}</span>
+
+                              </td>
+
+                              <td class="col-formula">
+
+                                <input
+
+                                  type="text"
+
+                                  class="formula-input"
+
+                                  [value]="formulaDraft(sig)"
+
+                                  [disabled]="isFormulaSaving(sig.id)"
+
+                                  (input)="onFormulaInput(sig, $any($event.target).value)"
+
+                                  (blur)="saveSignalFormula(sig)"
+
+                                  (keydown.enter)="saveSignalFormula(sig); $any($event.target).blur()"
+
+                                  spellcheck="false"
+
+                                />
+
+                                @if (formulaParseHint(sig); as hint) {
+
+                                  <span class="formula-hint" title="Предварительный разбор">{{ hint }}</span>
+
+                                }
+
+                              </td>
+
+                              <td class="col-sig-actions">
+
+                                <button
+
+                                  type="button"
+
+                                  class="icon-btn icon-danger"
+
+                                  title="Удалить сигнал"
+
+                                  aria-label="Удалить сигнал"
+
+                                  (click)="deleteSignal(sig, $event)"
+
+                                >
+
+                                  ✕
+
+                                </button>
+
+                              </td>
+
+                            </tr>
+
+                          } @empty {
+
+                            <tr>
+
+                              <td colspan="4" class="empty">
+
+                                Нет сигналов — добавьте трендовый или контртрендовый
+
+                              </td>
+
+                            </tr>
+
+                          }
+
+                        </tbody>
+
+                      </table>
+
+                      <p class="signals-help">
+
+                        Формат: <code>&#64;RSI(period=14,series=VALUE) VALUE &gt; 50</code> — условие из
+
+                        <code>sig_trend_def</code> / <code>sig_ct_def</code> справочника индикаторов.
+
+                      </p>
+
+                    </details>
+
+                  </div>
+
+                </td>
+
+              </tr>
+
+            }
+
           } @empty {
 
             @if (!loading && !error) {
 
               <tr>
 
-                <td colspan="9" class="empty">Нет записей в logics</td>
+                <td colspan="10" class="empty">Нет записей в logics</td>
 
               </tr>
 
@@ -249,5 +545,3 @@
   />
 
 </section>
-
-

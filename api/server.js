@@ -73,6 +73,8 @@ app.get('/api/indicators', async (req, res) => {
         i.description,
         i.category,
         i.is_active,
+        i.sig_trend_def,
+        i.sig_ct_def,
         COALESCE(
           json_agg(
             json_build_object(
@@ -1264,6 +1266,157 @@ app.patch('/api/logics/:id', async (req, res) => {
     res.status(500).json({ error: err.message });
   }
 });
+
+app.get('/api/logic-indicator-signals', async (req, res) => {
+  const logicId = Number(req.query.logic_id);
+  if (!Number.isInteger(logicId) || logicId <= 0) {
+    res.status(400).json({ error: 'logic_id required' });
+    return;
+  }
+  try {
+    const { rows } = await pool.query(
+      `
+      SELECT
+        lis.id,
+        lis.logic_id,
+        lis.indicator_id,
+        lis.signal_kind,
+        lis.formula,
+        lis.display_order,
+        lis.is_active,
+        i.code AS indicator_code,
+        i.name AS indicator_name
+      FROM logic_indicator_signals lis
+      JOIN indicators i ON i.id = lis.indicator_id
+      WHERE lis.logic_id = $1
+      ORDER BY lis.display_order, lis.id
+    `,
+      [logicId]
+    );
+    res.json(rows);
+  } catch (err) {
+    console.error('GET /api/logic-indicator-signals', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/api/logic-indicator-signals', async (req, res) => {
+  const logicId = Number(req.body?.logic_id);
+  const indicatorId = Number(req.body?.indicator_id);
+  const signalKind = req.body?.signal_kind;
+  const formula = btrimStr(req.body?.formula);
+  if (!Number.isInteger(logicId) || logicId <= 0) {
+    res.status(400).json({ error: 'logic_id required' });
+    return;
+  }
+  if (!Number.isInteger(indicatorId) || indicatorId <= 0) {
+    res.status(400).json({ error: 'indicator_id required' });
+    return;
+  }
+  if (signalKind !== 'trend' && signalKind !== 'counter') {
+    res.status(400).json({ error: 'signal_kind must be trend or counter' });
+    return;
+  }
+  if (!formula) {
+    res.status(400).json({ error: 'formula required' });
+    return;
+  }
+  try {
+    const { rows: orderRows } = await pool.query(
+      `SELECT COALESCE(MAX(display_order), 0) + 1 AS next_order
+       FROM logic_indicator_signals WHERE logic_id = $1`,
+      [logicId]
+    );
+    const displayOrder = orderRows[0]?.next_order ?? 1;
+    const { rows } = await pool.query(
+      `
+      INSERT INTO logic_indicator_signals
+        (logic_id, indicator_id, signal_kind, formula, display_order)
+      VALUES ($1, $2, $3, $4, $5)
+      ON CONFLICT (logic_id, indicator_id, signal_kind) DO UPDATE SET
+        formula = EXCLUDED.formula,
+        is_active = TRUE
+      RETURNING id, logic_id, indicator_id, signal_kind, formula, display_order, is_active
+    `,
+      [logicId, indicatorId, signalKind, formula, displayOrder]
+    );
+    const row = rows[0];
+    const { rows: meta } = await pool.query(
+      `SELECT code AS indicator_code, name AS indicator_name FROM indicators WHERE id = $1`,
+      [indicatorId]
+    );
+    res.status(201).json({ ...row, ...meta[0] });
+  } catch (err) {
+    console.error('POST /api/logic-indicator-signals', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.put('/api/logic-indicator-signals/:id', async (req, res) => {
+  const id = Number(req.params.id);
+  const formula = btrimStr(req.body?.formula);
+  const isActive = req.body?.is_active;
+  if (!Number.isInteger(id) || id <= 0) {
+    res.status(400).json({ error: 'Invalid id' });
+    return;
+  }
+  if (!formula) {
+    res.status(400).json({ error: 'formula required' });
+    return;
+  }
+  try {
+    const { rows } = await pool.query(
+      `
+      UPDATE logic_indicator_signals
+      SET formula = $2,
+          is_active = COALESCE($3::boolean, is_active)
+      WHERE id = $1
+      RETURNING id, logic_id, indicator_id, signal_kind, formula, display_order, is_active
+    `,
+      [id, formula, isActive === undefined ? null : isActive]
+    );
+    if (rows.length === 0) {
+      res.status(404).json({ error: 'Signal not found' });
+      return;
+    }
+    const row = rows[0];
+    const { rows: meta } = await pool.query(
+      `SELECT code AS indicator_code, name AS indicator_name FROM indicators WHERE id = $1`,
+      [row.indicator_id]
+    );
+    res.json({ ...row, ...meta[0] });
+  } catch (err) {
+    console.error('PUT /api/logic-indicator-signals/:id', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.delete('/api/logic-indicator-signals/:id', async (req, res) => {
+  const id = Number(req.params.id);
+  if (!Number.isInteger(id) || id <= 0) {
+    res.status(400).json({ error: 'Invalid id' });
+    return;
+  }
+  try {
+    const { rowCount } = await pool.query(
+      'DELETE FROM logic_indicator_signals WHERE id = $1',
+      [id]
+    );
+    if (rowCount === 0) {
+      res.status(404).json({ error: 'Signal not found' });
+      return;
+    }
+    res.json({ ok: true, id });
+  } catch (err) {
+    console.error('DELETE /api/logic-indicator-signals/:id', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+function btrimStr(v) {
+  if (v == null) return '';
+  return String(v).trim();
+}
 
 /** Живая структура БД multilogictrade (public) */
 app.get('/api/schema', async (_req, res) => {

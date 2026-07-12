@@ -1910,7 +1910,13 @@ BEGIN
 END;
 $$;
 
-CREATE OR REPLACE FUNCTION poly_convolve(p_a NUMERIC[], p_b NUMERIC[])
+DROP FUNCTION IF EXISTS poly_convolve(NUMERIC[], NUMERIC[]);
+
+CREATE OR REPLACE FUNCTION poly_convolve(
+    p_a NUMERIC[],
+    p_b NUMERIC[],
+    p_max_lag INTEGER DEFAULT NULL
+)
 RETURNS NUMERIC[]
 LANGUAGE plpgsql IMMUTABLE AS $$
 DECLARE
@@ -1918,20 +1924,26 @@ DECLARE
     v_nb INTEGER := poly_len(p_b);
     v_out NUMERIC[];
     v_normalize BOOLEAN;
+    v_lag_cap INTEGER;
     i INTEGER;
     j INTEGER;
     v_sum NUMERIC;
     v_weight NUMERIC;
 BEGIN
     IF v_na = 0 OR v_nb = 0 THEN RETURN ARRAY[]::NUMERIC[]; END IF;
-    -- Два ряда одинаковой длины (sma(pp)*sma(pp)…): взвешенная свёртка, шкала ~ цена.
+    -- Два ряда одинаковой длины (sma*sma…): взвешенная свёртка, шкала ~ цена.
+    -- p_max_lag ограничивает глубину (period): значение не зависит от длины всего массива.
     -- Короткое ядро (ww, PACC): без деления — как раньше.
     v_normalize := (v_na = v_nb AND v_na > 8);
+    v_lag_cap := CASE
+        WHEN v_normalize AND p_max_lag IS NOT NULL AND p_max_lag > 0 THEN p_max_lag
+        ELSE v_nb
+    END;
     v_out := array_fill(0::NUMERIC, ARRAY[v_na]);
     FOR i IN 1 .. v_na LOOP
         v_sum := 0;
         v_weight := 0;
-        FOR j IN 1 .. v_nb LOOP
+        FOR j IN 1 .. LEAST(v_nb, v_lag_cap) LOOP
             IF i - j + 1 >= 1 AND i - j + 1 <= v_na THEN
                 v_sum := v_sum + p_a[i - j + 1] * p_b[j];
                 IF v_normalize THEN
@@ -1949,8 +1961,8 @@ BEGIN
 END;
 $$;
 
-COMMENT ON FUNCTION poly_convolve IS
-'Свёртка рядов; при равной длине >8 — нормализация по сумме весов правого ряда (sma* sma)';
+COMMENT ON FUNCTION poly_convolve(NUMERIC[], NUMERIC[], INTEGER) IS
+'Свёртка рядов; при равной длине >8 — нормализация; p_max_lag=period для локальной sma*sma';
 
 CREATE OR REPLACE FUNCTION poly_delta_kernel(p_k INTEGER)
 RETURNS NUMERIC[]
@@ -1972,6 +1984,31 @@ CREATE OR REPLACE FUNCTION poly_ctx_period(p_ctx JSONB)
 RETURNS INTEGER
 LANGUAGE sql IMMUTABLE AS $$
     SELECT GREATEST(COALESCE(NULLIF(p_ctx ->> 'param_period', '')::INTEGER, 20), 2);
+$$;
+
+CREATE OR REPLACE FUNCTION poly_formula_conv_depth(p_formula TEXT)
+RETURNS INTEGER
+LANGUAGE sql IMMUTABLE AS $$
+    SELECT GREATEST(
+        (length(btrim(COALESCE(p_formula, ''))) - length(replace(btrim(COALESCE(p_formula, '')), '*', ''))),
+        0
+    );
+$$;
+
+CREATE OR REPLACE FUNCTION poly_formula_warmup_bars(
+    p_formula TEXT,
+    p_period INTEGER,
+    p_point_count INTEGER
+)
+RETURNS INTEGER
+LANGUAGE sql IMMUTABLE AS $$
+    SELECT GREATEST(
+        COALESCE(p_point_count, 100)
+            + GREATEST(COALESCE(p_period, 14), 2)
+              * (poly_formula_conv_depth(p_formula) + 1)
+              * 4,
+        ind_warmup_bars(p_period, p_point_count)
+    );
 $$;
 
 CREATE OR REPLACE FUNCTION poly_pp_from_ctx(p_ctx JSONB)
@@ -2786,7 +2823,7 @@ BEGIN
         CASE v_op
             WHEN 'add' THEN RETURN poly_add(v_left, v_right);
             WHEN 'sub' THEN RETURN poly_sub(v_left, v_right);
-            WHEN 'conv' THEN RETURN poly_convolve(v_left, v_right);
+            WHEN 'conv' THEN RETURN poly_convolve(v_left, v_right, poly_ctx_period(p_ctx));
             WHEN 'cmul' THEN RETURN poly_comp_mul(v_left, v_right);
             WHEN 'cdiv' THEN RETURN poly_comp_div(v_left, v_right);
             ELSE RAISE EXCEPTION 'poly_eval: unknown op %', v_op;
@@ -2833,7 +2870,7 @@ BEGIN
     v_end := ind_resolve_end_dt(p_security_id, p_timeframe_id, p_end_dt);
     IF v_end IS NULL THEN RETURN; END IF;
 
-    v_bars := GREATEST(COALESCE(p_point_count, 100) + 30, ind_warmup_bars(COALESCE(p_period, 14), p_point_count));
+    v_bars := poly_formula_warmup_bars(p_formula, COALESCE(p_period, 14), p_point_count);
 
     v_dts := poly_load_market_dts(p_security_id, p_timeframe_id, v_end, v_bars);
     v_n := COALESCE(array_length(v_dts, 1), 0);

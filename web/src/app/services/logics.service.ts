@@ -2,7 +2,7 @@ import { Injectable } from '@angular/core';
 import { HttpClient } from '@angular/common/http';
 import { Observable } from 'rxjs';
 import { AppConfigService } from './app-config.service';
-import { LogicRow } from '../models/logic.model';
+import { LogicIndicatorSignalRow, LogicRow } from '../models/logic.model';
 import { LogicPayload } from '../models/lookup.model';
 
 @Injectable({ providedIn: 'root' })
@@ -40,6 +40,45 @@ export class LogicsService {
   deleteLogic(id: number): Observable<{ ok: boolean; id: number }> {
     return this.http.delete<{ ok: boolean; id: number }>(
       `${this.appConfig.apiUrl}/logics/${id}`
+    );
+  }
+
+  getLogicIndicatorSignals(
+    logicId: number
+  ): Observable<LogicIndicatorSignalRow[]> {
+    return this.http.get<LogicIndicatorSignalRow[]>(
+      `${this.appConfig.apiUrl}/logic-indicator-signals`,
+      { params: { logic_id: String(logicId) } }
+    );
+  }
+
+  createLogicIndicatorSignal(body: {
+    logic_id: number;
+    indicator_id: number;
+    signal_kind: 'trend' | 'counter';
+    formula: string;
+  }): Observable<LogicIndicatorSignalRow> {
+    return this.http.post<LogicIndicatorSignalRow>(
+      `${this.appConfig.apiUrl}/logic-indicator-signals`,
+      body
+    );
+  }
+
+  updateLogicIndicatorSignal(
+    id: number,
+    body: { formula: string; is_active?: boolean }
+  ): Observable<LogicIndicatorSignalRow> {
+    return this.http.put<LogicIndicatorSignalRow>(
+      `${this.appConfig.apiUrl}/logic-indicator-signals/${id}`,
+      body
+    );
+  }
+
+  deleteLogicIndicatorSignal(
+    id: number
+  ): Observable<{ ok: boolean; id: number }> {
+    return this.http.delete<{ ok: boolean; id: number }>(
+      `${this.appConfig.apiUrl}/logic-indicator-signals/${id}`
     );
   }
 }

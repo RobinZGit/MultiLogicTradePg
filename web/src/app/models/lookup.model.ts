@@ -97,6 +97,8 @@ export interface IndicatorRow {
   description: string | null;
   category: string | null;
   is_active: boolean;
+  sig_trend_def: string | null;
+  sig_ct_def: string | null;
   value_types: IndicatorValueTypeRow[];
 }
 

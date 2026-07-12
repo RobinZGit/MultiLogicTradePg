@@ -184,6 +184,12 @@
 
                     }
 
+                    @if (indicatorSyncDebugText(row.id); as dbg) {
+
+                      <p class="ind-status ind-debug" title="Диагностика sync">{{ dbg }}</p>
+
+                    }
+
                     <ul class="ind-list">
 
                       @for (ind of assignedIndicatorSeries(row.id); track ind.id) {
@@ -224,7 +230,7 @@
 
                       [candles]="chartState(row.id).candles"
 
-                      [indicatorSeries]="chartIndicatorSeries(row.id)"
+                      [indicatorSeries]="chartIndicatorsForDisplay(row.id)"
 
                       [loading]="chartState(row.id).loading || chartState(row.id).loadingOlder"
 
@@ -366,6 +372,12 @@
 
                     }
 
+                    @if (indicatorSyncDebugText(row.id); as dbg) {
+
+                      <p class="ind-status ind-debug" title="Диагностика sync">{{ dbg }}</p>
+
+                    }
+
                     <ul class="ind-list">
 
                       @for (ind of assignedIndicatorSeries(row.id); track ind.id) {
@@ -406,7 +418,7 @@
 
                       [candles]="chartState(row.id).candles"
 
-                      [indicatorSeries]="chartIndicatorSeries(row.id)"
+                      [indicatorSeries]="chartIndicatorsForDisplay(row.id)"
 
                       [loading]="chartState(row.id).loading || chartState(row.id).loadingOlder"
 

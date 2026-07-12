@@ -214,6 +214,8 @@ describe('SecuritiesPanelComponent', () => {
       description: null,
       category: null,
       is_active: true,
+      sig_trend_def: 'VALUE > 0',
+      sig_ct_def: 'VALUE < 0',
       value_types: [
         {
           id: 1,
@@ -356,6 +358,309 @@ describe('SecuritiesPanelComponent', () => {
     expect(component.isIndicatorsLoading(29)).toBeFalse();
     expect(component.isIndicatorRecalcActive(29)).toBeTrue();
 
+    tick(500);
+    discardPeriodicTasks();
+  }));
+
+  it('onChartVisibleRange hides indicators until sync completes', fakeAsync(() => {
+    securities.syncIndicatorSeries.and.returnValue(of({ ok: true }));
+    securities.getIndicatorValues.and.returnValue(
+      of([
+        {
+          indicator_id: 7,
+          line_code: 'K',
+          line_name: 'K',
+          indicator_code: 'STOCH',
+          display_order: 1,
+          dt: '2026-01-02T10:00:00',
+          value: 50,
+          is_threshold: false,
+        },
+        {
+          indicator_id: 7,
+          line_code: 'K',
+          line_name: 'K',
+          indicator_code: 'STOCH',
+          display_order: 1,
+          dt: '2026-01-02T10:15:00',
+          value: 55,
+          is_threshold: false,
+        },
+      ])
+    );
+
+    component.securityIndicatorSeries.set(29, stochSeries);
+    component.indicatorSeries.set(29, [
+      {
+        indicator_code: 'STOCH',
+        line_code: 'K',
+        line_name: 'K',
+        color: '#2563eb',
+        on_price_scale: false,
+        is_threshold: false,
+        points: [
+          { dt: '2026-01-02T10:00:00', value: 99 },
+          { dt: '2026-01-02T10:15:00', value: 99 },
+        ],
+      },
+    ]);
+    component.charts.set(29, {
+      candles: [
+        {
+          dt: '2026-01-02T10:00:00',
+          open_price: 1,
+          high_price: 1,
+          low_price: 1,
+          close_price: 1,
+          volume: 1,
+        },
+        {
+          dt: '2026-01-02T10:15:00',
+          open_price: 2,
+          high_price: 2,
+          low_price: 2,
+          close_price: 2,
+          volume: 2,
+        },
+      ],
+      loading: false,
+      loadingOlder: false,
+      hasMore: false,
+      error: null,
+    });
+
+    const range = {
+      startDt: '2026-01-02T10:00:00',
+      endDt: '2026-01-02T10:15:00',
+      count: 2,
+      viewStart: 0,
+      userInitiated: true,
+    };
+    component.onChartVisibleRange(29, range);
+    expect(component.chartIndicatorsForDisplay(29).length).toBe(0);
+
+    tick(650);
+    expect(securities.syncIndicatorSeries).toHaveBeenCalled();
+    tick(500);
+    expect(component.chartIndicatorsForDisplay(29).length).toBeGreaterThan(0);
+    discardPeriodicTasks();
+  }));
+
+  it('onChartVisibleRange debounces rapid scroll to one sync', fakeAsync(() => {
+    securities.syncIndicatorSeries.and.returnValue(of({ ok: true }));
+    securities.getIndicatorValues.and.returnValue(
+      of([
+        {
+          indicator_id: 7,
+          line_code: 'K',
+          line_name: 'K',
+          indicator_code: 'STOCH',
+          display_order: 1,
+          dt: '2026-01-02T10:00:00',
+          value: 75,
+          is_threshold: false,
+        },
+        {
+          indicator_id: 7,
+          line_code: 'K',
+          line_name: 'K',
+          indicator_code: 'STOCH',
+          display_order: 1,
+          dt: '2026-01-02T10:15:00',
+          value: 80,
+          is_threshold: false,
+        },
+      ])
+    );
+
+    component.securityIndicatorSeries.set(29, stochSeries);
+    component.charts.set(29, {
+      candles: [
+        {
+          dt: '2026-01-02T10:00:00',
+          open_price: 1,
+          high_price: 1,
+          low_price: 1,
+          close_price: 1,
+          volume: 1,
+        },
+        {
+          dt: '2026-01-02T10:15:00',
+          open_price: 2,
+          high_price: 2,
+          low_price: 2,
+          close_price: 2,
+          volume: 2,
+        },
+      ],
+      loading: false,
+      loadingOlder: false,
+      hasMore: false,
+      error: null,
+    });
+
+    component.onChartVisibleRange(29, {
+      startDt: '2026-01-01T10:00:00',
+      endDt: '2026-01-01T10:00:00',
+      count: 1,
+      viewStart: 0,
+      userInitiated: true,
+    });
+    tick(100);
+    component.onChartVisibleRange(29, {
+      startDt: '2026-01-02T10:00:00',
+      endDt: '2026-01-02T10:15:00',
+      count: 2,
+      viewStart: 0,
+      userInitiated: true,
+    });
+    tick(650);
+    expect(securities.syncIndicatorSeries).toHaveBeenCalledTimes(1);
+    tick(500);
+    expect(
+      component
+        .chartIndicatorSeries(29)[0]
+        ?.points.some((p) => p.value === 80)
+    ).toBeTrue();
+    discardPeriodicTasks();
+  }));
+
+  it('toggleSecurity syncs indicators after candles and series both load', fakeAsync(() => {
+    const smatSeries: SecurityIndicatorSeriesRow[] = [
+      {
+        id: 10,
+        security_id: 29,
+        indicator_id: 33,
+        series_code: 'VALUE',
+        invoke_formula: 'sma*3',
+        indicator_code: 'SMAT3',
+        indicator_name: 'SMAT3',
+        point_count: 100,
+        display_order: 1,
+        is_active: true,
+      },
+    ];
+    securities.getPrices.and.returnValue(
+      of([
+        {
+          dt: '2026-01-02T10:00:00',
+          open_price: 1,
+          high_price: 1,
+          low_price: 1,
+          close_price: 1,
+          volume: 1,
+        },
+        {
+          dt: '2026-01-02T10:15:00',
+          open_price: 2,
+          high_price: 2,
+          low_price: 2,
+          close_price: 2,
+          volume: 2,
+        },
+      ])
+    );
+    securities.getSecurityIndicatorSeries.and.returnValue(of(smatSeries));
+    securities.syncIndicatorSeries.and.returnValue(of({ ok: true }));
+    securities.getIndicatorValues.and.returnValue(
+      of([
+        {
+          indicator_id: 33,
+          line_code: 'VALUE',
+          line_name: 'VALUE',
+          indicator_code: 'SMAT3',
+          display_order: 1,
+          dt: '2026-01-02T10:00:00',
+          value: 50,
+          is_threshold: false,
+        },
+        {
+          indicator_id: 33,
+          line_code: 'VALUE',
+          line_name: 'VALUE',
+          indicator_code: 'SMAT3',
+          display_order: 1,
+          dt: '2026-01-02T10:15:00',
+          value: 55,
+          is_threshold: false,
+        },
+      ])
+    );
+
+    component.toggleSecurity(sberRow);
+    expect(securities.syncIndicatorSeries).toHaveBeenCalled();
+    tick(500);
+    expect(component.chartIndicatorsForDisplay(29).length).toBeGreaterThan(0);
+    discardPeriodicTasks();
+  }));
+
+  it('onChartVisibleRange auto emit does not suppress indicators', () => {
+    component.indicatorSeries.set(29, [
+      {
+        indicator_code: 'SMA',
+        line_code: 'VALUE',
+        line_name: 'VALUE',
+        color: '#2563eb',
+        on_price_scale: true,
+        is_threshold: false,
+        points: [{ dt: '2026-01-02T10:00:00', value: 100 }],
+      },
+    ]);
+    component.onChartVisibleRange(29, {
+      startDt: '2026-01-02T10:00:00',
+      endDt: '2026-01-02T10:00:00',
+      count: 1,
+      viewStart: 0,
+      userInitiated: false,
+    });
+    expect(component.chartIndicatorsForDisplay(29).length).toBe(1);
+  });
+
+  it('onChartVisibleRange auto schedules soft sync without suppress', fakeAsync(() => {
+    securities.syncIndicatorSeries.calls.reset();
+    securities.syncIndicatorSeries.and.returnValue(of({ ok: true }));
+    securities.getIndicatorValues.and.returnValue(
+      of([
+        {
+          indicator_id: 7,
+          line_code: 'K',
+          line_name: 'K',
+          indicator_code: 'STOCH',
+          display_order: 1,
+          dt: '2026-01-02T10:00:00',
+          value: 50,
+          is_threshold: false,
+        },
+      ])
+    );
+    component.securityIndicatorSeries.set(29, stochSeries);
+    component.charts.set(29, {
+      candles: [
+        {
+          dt: '2026-01-02T10:00:00',
+          open_price: 1,
+          high_price: 1,
+          low_price: 1,
+          close_price: 1,
+          volume: 1,
+        },
+      ],
+      loading: false,
+      loadingOlder: false,
+      hasMore: false,
+      error: null,
+    });
+    component.onChartVisibleRange(29, {
+      startDt: '2026-01-02T10:00:00',
+      endDt: '2026-01-02T10:00:00',
+      count: 1,
+      viewStart: 0,
+      userInitiated: false,
+    });
+    expect(securities.syncIndicatorSeries).not.toHaveBeenCalled();
+    expect(component.isIndicatorRecalcActive(29)).toBeFalse();
+    tick(400);
+    expect(securities.syncIndicatorSeries).toHaveBeenCalledTimes(1);
     tick(500);
     discardPeriodicTasks();
   }));

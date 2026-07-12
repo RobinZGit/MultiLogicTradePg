@@ -120,18 +120,29 @@ export class PriceChartComponent implements AfterViewInit, OnChanges, OnDestroy 
   openFullscreen(): void {
     this.fullscreen = true;
     document.body.style.overflow = 'hidden';
-    queueMicrotask(() => this.redraw());
+    queueMicrotask(() => {
+      this.clampViewStart();
+      this.redraw();
+      requestAnimationFrame(() => this.scheduleEmitVisibleRange(false));
+    });
   }
 
   closeFullscreen(): void {
     this.fullscreen = false;
     document.body.style.overflow = '';
-    queueMicrotask(() => this.redraw());
+    queueMicrotask(() => {
+      this.clampViewStart();
+      this.redraw();
+      requestAnimationFrame(() => this.scheduleEmitVisibleRange(false));
+    });
   }
 
   onRecalcClick(event: Event): void {
     event.stopPropagation();
-    this.recalcIndicators.emit(this.currentVisibleRange());
+    this.recalcIndicators.emit({
+      ...this.currentVisibleRange(),
+      userInitiated: true,
+    });
   }
 
   panLeft(event: Event): void {
@@ -188,13 +199,21 @@ export class PriceChartComponent implements AfterViewInit, OnChanges, OnDestroy 
   }
 
   onPointerUp(event: PointerEvent): void {
+    const moved = this.dragging && this.viewStart !== this.dragStartView;
     this.dragging = false;
     try {
       (event.target as HTMLElement).releasePointerCapture(event.pointerId);
     } catch {
       /* ignore */
     }
-    this.scheduleEmitVisibleRange();
+    if (moved) {
+      this.scheduleEmitVisibleRange(true);
+    }
+  }
+
+  onPointerLeave(event: PointerEvent): void {
+    if (!this.dragging) return;
+    this.onPointerUp(event);
   }
 
   onTouchStart(event: TouchEvent): void {
@@ -219,7 +238,7 @@ export class PriceChartComponent implements AfterViewInit, OnChanges, OnDestroy 
   onTouchEnd(event: TouchEvent): void {
     if (event.touches.length < 2) {
       this.pinchActive = false;
-      this.scheduleEmitVisibleRange();
+      this.scheduleEmitVisibleRange(true);
     }
   }
 
@@ -235,7 +254,7 @@ export class PriceChartComponent implements AfterViewInit, OnChanges, OnDestroy 
     if (Math.abs(this.zoom - prev) < 0.001) return;
     this.clampViewStart();
     this.redraw();
-    if (emit) this.scheduleEmitVisibleRange();
+    if (emit) this.scheduleEmitVisibleRange(true);
   }
 
   private shiftView(delta: number): void {
@@ -246,7 +265,7 @@ export class PriceChartComponent implements AfterViewInit, OnChanges, OnDestroy 
       this.loadOlder.emit();
     }
     this.redraw();
-    this.scheduleEmitVisibleRange();
+    this.scheduleEmitVisibleRange(true);
   }
 
   private clampViewStart(): void {
@@ -281,12 +300,12 @@ export class PriceChartComponent implements AfterViewInit, OnChanges, OnDestroy 
     };
   }
 
-  private scheduleEmitVisibleRange(): void {
+  private scheduleEmitVisibleRange(userInitiated = false): void {
     if (this.emitRangeTimer) clearTimeout(this.emitRangeTimer);
     this.emitRangeTimer = setTimeout(() => {
       const range = this.currentVisibleRange();
       if (range.count > 0) {
-        this.visibleRangeChange.emit(range);
+        this.visibleRangeChange.emit({ ...range, userInitiated });
       }
     }, 300);
   }

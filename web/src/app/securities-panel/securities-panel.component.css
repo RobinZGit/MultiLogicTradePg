@@ -195,6 +195,13 @@
   color: #b45309;
 }
 
+.ind-debug {
+  color: #64748b;
+  font-size: 0.72rem;
+  font-family: ui-monospace, monospace;
+  word-break: break-word;
+}
+
 .icon-delete {
   width: 1.75rem;
   height: 1.75rem;

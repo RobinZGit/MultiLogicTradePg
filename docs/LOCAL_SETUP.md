@@ -150,7 +150,7 @@ SELECT code, name FROM indicators ORDER BY id LIMIT 5;
 
 ```powershell
 npm run test:unit          # Angular (разворот бумаги без цен, график)
-npm run verify:sql         # SQL 01/02 + smoke индикаторов (verify-indicators)
+npm run verify:sql         # SQL 01/02 + verify-indicators + verify-async-sync + verify-chart-sync
 npm run build              # prebuild: verify:sql → test:unit → generate:schema
 ```
 

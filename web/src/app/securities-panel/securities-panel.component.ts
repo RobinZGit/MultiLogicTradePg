@@ -68,6 +68,26 @@ export class SecuritiesPanelComponent implements OnInit {
   private emptyChunks = new Map<number, number>();
   private visibleRangeTimers = new Map<number, ReturnType<typeof setTimeout>>();
   private indicatorPollTimers = new Map<number, ReturnType<typeof setTimeout>>();
+  /** Последнее видимое окно графика (для sync после loadOlder). */
+  private lastVisibleRange = new Map<number, ChartVisibleRange>();
+  /** Поколение sync: устаревшие poll-ответы отбрасываются. */
+  private indicatorSyncGen = new Map<number, number>();
+  /** Не рисовать индикаторы на графике, пока не готов расчёт для текущего окна. */
+  private suppressIndicatorDraw = new Map<number, boolean>();
+  /** Ожидание свечей и списка серий при развороте бумаги. */
+  private expandIndicatorGate = new Map<
+    number,
+    { candlesReady: boolean; seriesReady: boolean }
+  >();
+  /** Диагностика sync для отладки зависаний. */
+  private indicatorSyncDebug = new Map<number, string>();
+  private readonly indicatorRangeDebounceMs = 650;
+  private readonly indicatorRangeRetryMs = 250;
+  private readonly indicatorRangeMaxRetries = 48;
+  private readonly indicatorAutoRangeDebounceMs = 400;
+  private readonly indicatorCoverageMaxAttempts = 12;
+  private autoRangeTimers = new Map<number, ReturnType<typeof setTimeout>>();
+  private pendingSyncPointCount = new Map<number, number>();
   /** Каталог индикаторов для оптимистичного drop (сразу в таблицу). */
   private indicatorsById = new Map<number, IndicatorRow>();
 
@@ -138,6 +158,14 @@ export class SecuritiesPanelComponent implements OnInit {
     return this.indicatorSeries.get(id) ?? [];
   }
 
+  /** Индикаторы для отрисовки: скрыты во время перемотки до завершения sync. */
+  chartIndicatorsForDisplay(id: number): ChartIndicatorSeries[] {
+    if (this.suppressIndicatorDraw.get(id)) {
+      return [];
+    }
+    return this.chartIndicatorSeries(id);
+  }
+
   isIndicatorsLoading(id: number): boolean {
     return this.indicatorsLoading.has(id);
   }
@@ -169,6 +197,18 @@ export class SecuritiesPanelComponent implements OnInit {
 
   indicatorError(id: number): string | null {
     return this.indicatorCalcError.get(id) ?? null;
+  }
+
+  /** Техническая расшифровка последнего sync (для отладки). */
+  indicatorSyncDebugText(id: number): string | null {
+    return this.indicatorSyncDebug.get(id) ?? null;
+  }
+
+  private setIndicatorSyncDebug(securityId: number, detail: string): void {
+    const stamp = new Date().toLocaleTimeString('ru-RU');
+    const line = `[${stamp}] ${detail}`;
+    this.indicatorSyncDebug.set(securityId, line);
+    console.debug(`indicator-sync #${securityId}: ${detail}`);
   }
 
   isDropTarget(id: number): boolean {
@@ -368,6 +408,7 @@ export class SecuritiesPanelComponent implements OnInit {
       range: ChartVisibleRange | null;
       incremental?: boolean;
       mergeOnly?: boolean;
+      syncGen?: number;
     }
   ): void {
     if (!this.timeframeId) return;
@@ -399,6 +440,7 @@ export class SecuritiesPanelComponent implements OnInit {
           opts.seriesRows,
           opts.range,
           opts.mergeOnly === true,
+          opts.syncGen ?? null,
           0
         );
       },
@@ -420,10 +462,178 @@ export class SecuritiesPanelComponent implements OnInit {
     });
     if (error) {
       this.indicatorCalcError.set(securityId, error);
+      this.suppressIndicatorDraw.set(securityId, false);
     } else {
       this.indicatorCalcError.set(securityId, null);
     }
     this.indicatorPollTimers.delete(securityId);
+  }
+
+  private isSyncGenerationCurrent(
+    securityId: number,
+    syncGen: number | null
+  ): boolean {
+    if (syncGen === null) {
+      return true;
+    }
+    return this.indicatorSyncGen.get(securityId) === syncGen;
+  }
+
+  private candlesCoverRange(
+    candles: PriceCandle[],
+    range: ChartVisibleRange
+  ): boolean {
+    if (candles.length === 0) {
+      return false;
+    }
+    const first = candles[0].dt;
+    const last = candles[candles.length - 1].dt;
+    return first <= range.startDt && last >= range.endDt;
+  }
+
+  private indicatorValuesCoverRange(
+    values: IndicatorValueRow[],
+    range: ChartVisibleRange,
+    pointCount?: number
+  ): boolean {
+    if (values.length === 0) {
+      return false;
+    }
+    const target = Math.min(
+      range.count,
+      pointCount ?? range.count,
+      this.maxIndicatorCandles
+    );
+    const inRange = values.filter(
+      (v) => v.dt >= range.startDt && v.dt <= range.endDt
+    );
+    const need = Math.max(1, Math.floor(target * 0.85));
+    return inRange.length >= need;
+  }
+
+  private scheduleAutoIndicatorRangeSync(
+    securityId: number,
+    range: ChartVisibleRange
+  ): void {
+    if (this.suppressIndicatorDraw.get(securityId)) {
+      return;
+    }
+    const assigned = this.securityIndicatorSeries.get(securityId) ?? [];
+    if (assigned.length === 0) {
+      return;
+    }
+    const prev = this.autoRangeTimers.get(securityId);
+    if (prev) clearTimeout(prev);
+    this.autoRangeTimers.set(
+      securityId,
+      setTimeout(() => {
+        this.autoRangeTimers.delete(securityId);
+        if (
+          this.suppressIndicatorDraw.get(securityId) ||
+          this.isIndicatorRecalcActive(securityId)
+        ) {
+          return;
+        }
+        this.setIndicatorSyncDebug(
+          securityId,
+          `range auto sync: ${range.count} bars (без suppress)`
+        );
+        this.syncIndicatorsForRange(securityId, range, { incremental: true });
+      }, this.indicatorAutoRangeDebounceMs)
+    );
+  }
+
+  private scheduleIndicatorRangeSync(
+    securityId: number,
+    range: ChartVisibleRange,
+    syncGen: number,
+    retry = 0
+  ): void {
+    if (!this.isSyncGenerationCurrent(securityId, syncGen)) {
+      this.setIndicatorSyncDebug(
+        securityId,
+        `sync skip: устаревшее поколение gen=${syncGen}`
+      );
+      return;
+    }
+
+    const state = this.chartState(securityId);
+    if (state.loading || state.loadingOlder) {
+      this.indicatorRecalc.set(securityId, {
+        active: true,
+        message: 'Ожидание свечей…',
+        error: null,
+      });
+      this.setIndicatorSyncDebug(
+        securityId,
+        `wait candles: loading=${state.loading}, older=${state.loadingOlder}, retry=${retry}`
+      );
+      if (retry < this.indicatorRangeMaxRetries) {
+        setTimeout(
+          () =>
+            this.scheduleIndicatorRangeSync(securityId, range, syncGen, retry + 1),
+          this.indicatorRangeRetryMs
+        );
+      } else {
+        this.finishIndicatorRecalc(securityId, 'Таймаут ожидания свечей');
+      }
+      return;
+    }
+
+    if (!this.candlesCoverRange(state.candles, range)) {
+      this.indicatorRecalc.set(securityId, {
+        active: true,
+        message: 'Загрузка истории…',
+        error: null,
+      });
+      this.setIndicatorSyncDebug(
+        securityId,
+        `wait history: need ${range.startDt}…${range.endDt}, have ${state.candles[0]?.dt ?? '—'}…${state.candles[state.candles.length - 1]?.dt ?? '—'}, retry=${retry}`
+      );
+      if (retry < this.indicatorRangeMaxRetries) {
+        setTimeout(
+          () =>
+            this.scheduleIndicatorRangeSync(securityId, range, syncGen, retry + 1),
+          this.indicatorRangeRetryMs
+        );
+      } else {
+        this.finishIndicatorRecalc(
+          securityId,
+          'Недостаточно свечей для расчёта индикаторов'
+        );
+      }
+      return;
+    }
+
+    this.setIndicatorSyncDebug(
+      securityId,
+      `sync start: gen=${syncGen}, bars=${range.count}, ${range.startDt}…${range.endDt}`
+    );
+    this.syncIndicatorsForRange(securityId, range, {
+      incremental: true,
+      syncGen,
+    });
+  }
+
+  private tryExpandIndicatorSync(securityId: number): void {
+    const gate = this.expandIndicatorGate.get(securityId);
+    if (!gate?.candlesReady || !gate?.seriesReady) {
+      return;
+    }
+    this.expandIndicatorGate.delete(securityId);
+
+    const assigned = this.securityIndicatorSeries.get(securityId) ?? [];
+    const candles = this.chartState(securityId).candles;
+    this.setIndicatorSyncDebug(
+      securityId,
+      `expand ready: series=${assigned.length}, candles=${candles.length}`
+    );
+    if (assigned.length === 0 || candles.length === 0) {
+      return;
+    }
+
+    this.suppressIndicatorDraw.set(securityId, false);
+    this.refreshIndicatorChart(securityId);
   }
 
   private pollIndicatorValuesAfterSync(
@@ -432,8 +642,12 @@ export class SecuritiesPanelComponent implements OnInit {
     seriesRows: SecurityIndicatorSeriesRow[],
     range: ChartVisibleRange | null,
     mergeOnly: boolean,
+    syncGen: number | null,
     attempt: number
   ): void {
+    if (!this.isSyncGenerationCurrent(securityId, syncGen)) {
+      return;
+    }
     const maxAttempts = 90;
     const label =
       indicatorIds?.length === 1
@@ -454,7 +668,9 @@ export class SecuritiesPanelComponent implements OnInit {
 
     const waitMs = attempt === 0 ? 500 : 2000;
     const timer = setTimeout(() => {
-      if (!this.timeframeId) return;
+      if (!this.timeframeId || !this.isSyncGenerationCurrent(securityId, syncGen)) {
+        return;
+      }
       this.securities
         .getIndicatorValues(
           securityId,
@@ -465,6 +681,9 @@ export class SecuritiesPanelComponent implements OnInit {
         )
         .subscribe({
           next: (values) => {
+            if (!this.isSyncGenerationCurrent(securityId, syncGen)) {
+              return;
+            }
             if (values.length === 0) {
               this.pollIndicatorValuesAfterSync(
                 securityId,
@@ -472,9 +691,46 @@ export class SecuritiesPanelComponent implements OnInit {
                 seriesRows,
                 range,
                 mergeOnly,
+                syncGen,
                 attempt + 1
               );
               return;
+            }
+            if (
+              syncGen !== null &&
+              range &&
+              !this.indicatorValuesCoverRange(
+                values,
+                range,
+                this.pendingSyncPointCount.get(securityId)
+              ) &&
+              attempt < this.indicatorCoverageMaxAttempts
+            ) {
+              this.setIndicatorSyncDebug(
+                securityId,
+                `poll wait coverage: got=${values.length}, attempt=${attempt + 1}`
+              );
+              this.pollIndicatorValuesAfterSync(
+                securityId,
+                indicatorIds,
+                seriesRows,
+                range,
+                mergeOnly,
+                syncGen,
+                attempt + 1
+              );
+              return;
+            }
+            if (
+              syncGen !== null &&
+              range &&
+              values.length > 0 &&
+              attempt >= this.indicatorCoverageMaxAttempts
+            ) {
+              this.setIndicatorSyncDebug(
+                securityId,
+                `poll partial: ${values.length} points after ${attempt + 1} attempts`
+              );
             }
             if (mergeOnly && indicatorIds?.length === 1) {
               this.mergeIndicatorChartSeries(securityId, values, seriesRows);
@@ -484,15 +740,29 @@ export class SecuritiesPanelComponent implements OnInit {
                 this.buildChartSeries(values, seriesRows)
               );
             }
+            if (
+              syncGen === null ||
+              this.isSyncGenerationCurrent(securityId, syncGen)
+            ) {
+              this.suppressIndicatorDraw.set(securityId, false);
+            }
+            this.setIndicatorSyncDebug(
+              securityId,
+              `poll ok: points=${values.length}, gen=${syncGen ?? '—'}, merge=${mergeOnly}`
+            );
             this.finishIndicatorRecalc(securityId, null);
           },
           error: () => {
+            if (!this.isSyncGenerationCurrent(securityId, syncGen)) {
+              return;
+            }
             this.pollIndicatorValuesAfterSync(
               securityId,
               indicatorIds,
               seriesRows,
               range,
               mergeOnly,
+              syncGen,
               attempt + 1
             );
           },
@@ -585,6 +855,7 @@ export class SecuritiesPanelComponent implements OnInit {
   toggleSecurity(row: SecurityRow): void {
     if (this.expandedSecurities.has(row.id)) {
       this.expandedSecurities.delete(row.id);
+      this.expandIndicatorGate.delete(row.id);
       return;
     }
     this.expandedSecurities.add(row.id);
@@ -598,17 +869,32 @@ export class SecuritiesPanelComponent implements OnInit {
     this.indicatorSeries.set(row.id, []);
     this.indicatorCalcError.set(row.id, null);
     this.indicatorsLoading.delete(row.id);
+    this.suppressIndicatorDraw.set(row.id, false);
+    this.expandIndicatorGate.set(row.id, {
+      candlesReady: false,
+      seriesReady: false,
+    });
+    this.setIndicatorSyncDebug(row.id, 'expand: загрузка свечей и списка индикаторов');
 
     this.loadChart(row.id, false, { skipIndicatorSync: true });
     this.securities.getSecurityIndicatorSeries(row.id).subscribe({
       next: (rows) => {
         this.securityIndicatorSeries.set(row.id, rows);
-        if (rows.length > 0) {
-          this.refreshIndicatorChart(row.id);
+        const gate = this.expandIndicatorGate.get(row.id);
+        if (gate) {
+          gate.seriesReady = true;
+          this.expandIndicatorGate.set(row.id, gate);
         }
+        this.tryExpandIndicatorSync(row.id);
       },
       error: () => {
         this.securityIndicatorSeries.set(row.id, []);
+        const gate = this.expandIndicatorGate.get(row.id);
+        if (gate) {
+          gate.seriesReady = true;
+          this.expandIndicatorGate.set(row.id, gate);
+        }
+        this.tryExpandIndicatorSync(row.id);
       },
     });
   }
@@ -653,19 +939,55 @@ export class SecuritiesPanelComponent implements OnInit {
 
   onChartVisibleRange(securityId: number, range: ChartVisibleRange): void {
     if (!range.startDt || !range.endDt || range.count <= 0) return;
+
+    this.lastVisibleRange.set(securityId, range);
+    if (!range.userInitiated) {
+      this.setIndicatorSyncDebug(
+        securityId,
+        `range auto: ${range.count} bars (без suppress)`
+      );
+      this.scheduleAutoIndicatorRangeSync(securityId, range);
+      return;
+    }
+
+    const syncGen = (this.indicatorSyncGen.get(securityId) ?? 0) + 1;
+    this.indicatorSyncGen.set(securityId, syncGen);
+
+    this.clearIndicatorPoll(securityId);
     const prev = this.visibleRangeTimers.get(securityId);
     if (prev) clearTimeout(prev);
+    const autoPrev = this.autoRangeTimers.get(securityId);
+    if (autoPrev) clearTimeout(autoPrev);
+
+    this.suppressIndicatorDraw.set(securityId, true);
+    this.indicatorRecalc.set(securityId, {
+      active: true,
+      message: 'Подготовка индикаторов…',
+      error: null,
+    });
+    this.indicatorCalcError.set(securityId, null);
+    this.setIndicatorSyncDebug(
+      securityId,
+      `range user: gen=${syncGen}, debounce ${this.indicatorRangeDebounceMs}ms`
+    );
+
     this.visibleRangeTimers.set(
       securityId,
       setTimeout(() => {
-        this.syncIndicatorsForRange(securityId, range, { incremental: true });
-      }, 300)
+        this.scheduleIndicatorRangeSync(securityId, range, syncGen);
+      }, this.indicatorRangeDebounceMs)
     );
   }
 
   onRecalcIndicators(securityId: number, range: ChartVisibleRange): void {
     if (!range.startDt || !range.endDt || range.count <= 0) return;
-    this.syncIndicatorsForRange(securityId, range, { incremental: false });
+
+    this.lastVisibleRange.set(securityId, range);
+    const syncGen = (this.indicatorSyncGen.get(securityId) ?? 0) + 1;
+    this.indicatorSyncGen.set(securityId, syncGen);
+    this.clearIndicatorPoll(securityId);
+    this.suppressIndicatorDraw.set(securityId, true);
+    this.scheduleIndicatorRangeSync(securityId, range, syncGen);
   }
 
   priceLoadState(id: number): PriceLoadUiState {
@@ -928,14 +1250,27 @@ export class SecuritiesPanelComponent implements OnInit {
                 ? 'Нет свечей — нажмите «Загрузить цены»'
                 : null,
           });
-          if (dedup.length > 0 && !opts?.skipIndicatorSync) {
-            const range = this.candleRange(dedup);
+          const expandGate = this.expandIndicatorGate.get(securityId);
+          if (expandGate) {
+            expandGate.candlesReady = true;
+            this.expandIndicatorGate.set(securityId, expandGate);
+            this.tryExpandIndicatorSync(securityId);
+          } else if (dedup.length > 0 && !opts?.skipIndicatorSync) {
+            const range =
+              this.lastVisibleRange.get(securityId) ??
+              this.candleRange(dedup);
             if (range) {
-              this.syncIndicatorsForRange(
-                securityId,
-                range,
-                { incremental: !opts?.fullIndicatorRefresh }
-              );
+              const pendingGen = this.indicatorSyncGen.get(securityId);
+              if (
+                pendingGen !== undefined &&
+                this.suppressIndicatorDraw.get(securityId)
+              ) {
+                this.scheduleIndicatorRangeSync(securityId, range, pendingGen);
+              } else {
+                this.syncIndicatorsForRange(securityId, range, {
+                  incremental: !opts?.fullIndicatorRefresh,
+                });
+              }
             }
           } else if (dedup.length === 0) {
             this.indicatorSeries.set(securityId, []);
@@ -987,7 +1322,7 @@ export class SecuritiesPanelComponent implements OnInit {
   private syncIndicatorsForRange(
     securityId: number,
     range: ChartVisibleRange,
-    opts?: { incremental?: boolean }
+    opts?: { incremental?: boolean; syncGen?: number }
   ): void {
     const candles = this.chartState(securityId).candles;
     if (!this.timeframeId || candles.length === 0) {
@@ -1010,6 +1345,7 @@ export class SecuritiesPanelComponent implements OnInit {
     );
     const incremental = opts?.incremental !== false;
 
+    this.pendingSyncPointCount.set(securityId, pointCount);
     this.indicatorsLoading.delete(securityId);
     this.runAsyncIndicatorSync(securityId, {
       message: 'Расчёт индикаторов…',
@@ -1020,7 +1356,12 @@ export class SecuritiesPanelComponent implements OnInit {
       },
       incremental,
       mergeOnly: false,
+      syncGen: opts?.syncGen,
     });
+    this.setIndicatorSyncDebug(
+      securityId,
+      `POST async sync: indicators=${assigned.length}, point_count=${pointCount}, gen=${opts?.syncGen ?? '—'}`
+    );
   }
 
   private buildChartSeries(

@@ -70,6 +70,16 @@ describe('PriceChartComponent', () => {
     expect(component.fullscreen).toBeFalse();
   });
 
+  it('pointerleave without drag does not emit visibleRangeChange', () => {
+    const spy = jasmine.createSpy('visibleRangeChange');
+    component.visibleRangeChange.subscribe(spy);
+    component.candles = [
+      { dt: '2026-01-01T10:00:00', open_price: 1, high_price: 1, low_price: 1, close_price: 1, volume: 1 },
+    ];
+    component.onPointerLeave(new PointerEvent('pointerleave'));
+    expect(spy).not.toHaveBeenCalled();
+  });
+
   it('anchors zero on price scale for PACC', () => {
     component.indicatorSeries = [
       {

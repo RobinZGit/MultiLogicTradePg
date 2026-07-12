@@ -528,12 +528,44 @@ UPDATE indicators SET script = 'SELECT calc_ind_stoch(:k_period, :d_period, :smo
 
 ALTER TABLE indicators ADD COLUMN IF NOT EXISTS formula TEXT;
 ALTER TABLE indicators ADD COLUMN IF NOT EXISTS is_custom BOOLEAN NOT NULL DEFAULT FALSE;
+ALTER TABLE indicators ADD COLUMN IF NOT EXISTS sig_trend_def TEXT;
+ALTER TABLE indicators ADD COLUMN IF NOT EXISTS sig_ct_def TEXT;
+
+COMMENT ON COLUMN indicators.sig_trend_def IS
+'Условие трендового сигнала по умолчанию (на сериях индикатора: VALUE, K, MIDDLE …)';
+
+COMMENT ON COLUMN indicators.sig_ct_def IS
+'Условие контртрендового сигнала по умолчанию';
 
 -- Многочленные формулы (массивный расчёт — единый парсер, без SELECT)
 UPDATE indicators SET formula = 'sma', is_custom = FALSE WHERE code = 'SMA';
 UPDATE indicators SET formula = 'ema', is_custom = FALSE WHERE code = 'EMA';
 UPDATE indicators SET formula = 'pp * (1; -2; 1)', is_custom = TRUE WHERE code = 'PACC';
 UPDATE indicators SET formula = 'sma(period=20, series=VALUE) * sma(period=20, series=VALUE) * sma(period=20, series=VALUE)', is_custom = TRUE WHERE code = 'SMAT3';
+
+-- Формулы сигналов по умолчанию (условие на серии; в логике: @CODE(params) + условие)
+UPDATE indicators SET sig_trend_def = 'pp > VALUE', sig_ct_def = 'pp < VALUE'
+WHERE category = 'trend'
+  AND code NOT IN ('ADX', 'DMI', 'AROON', 'PSAR', 'SAR', 'ICHIMOKU');
+
+UPDATE indicators SET sig_trend_def = 'VALUE > 50', sig_ct_def = 'VALUE < 30'
+WHERE category = 'momentum'
+  AND code NOT IN ('MACD', 'STOCH', 'PACC');
+
+UPDATE indicators SET sig_trend_def = 'VALUE > 0', sig_ct_def = 'VALUE < 0' WHERE code IN ('MACD', 'PACC', 'ATR');
+UPDATE indicators SET sig_trend_def = 'K > D', sig_ct_def = 'K < 20' WHERE code = 'STOCH';
+UPDATE indicators SET sig_trend_def = 'pp > MIDDLE', sig_ct_def = 'pp < LOWER'
+WHERE code IN ('BB', 'KELTNER', 'DONCHIAN');
+UPDATE indicators SET sig_trend_def = 'VALUE > 0', sig_ct_def = 'VALUE < 0' WHERE category = 'volume';
+UPDATE indicators SET sig_trend_def = 'VALUE > 25', sig_ct_def = 'VALUE < 20' WHERE code IN ('ADX', 'DMI');
+UPDATE indicators SET sig_trend_def = 'UP > DOWN', sig_ct_def = 'DOWN > UP' WHERE code = 'AROON';
+UPDATE indicators SET sig_trend_def = 'pp > VALUE', sig_ct_def = 'pp < VALUE'
+WHERE code IN ('PSAR', 'SAR', 'ICHIMOKU', 'SMAT3');
+
+UPDATE indicators SET
+    sig_trend_def = COALESCE(sig_trend_def, 'VALUE > 50'),
+    sig_ct_def = COALESCE(sig_ct_def, 'VALUE < 50')
+WHERE sig_trend_def IS NULL OR sig_ct_def IS NULL;
 
 -- Подробные описания индикаторов с функциями расчёта в PostgreSQL
 UPDATE indicators SET description = $desc$
@@ -812,6 +844,30 @@ CREATE TABLE IF NOT EXISTS logics_detail (
     side_id INTEGER NOT NULL REFERENCES sides(id),
     action_id INTEGER NOT NULL REFERENCES actions(id)
 );
+
+-- Сигналы индикаторов, привязанные к торговой логике
+CREATE TABLE IF NOT EXISTS logic_indicator_signals (
+    id SERIAL PRIMARY KEY,
+    logic_id INTEGER NOT NULL REFERENCES logics(id) ON DELETE CASCADE,
+    indicator_id INTEGER NOT NULL REFERENCES indicators(id) ON DELETE RESTRICT,
+    signal_kind VARCHAR(10) NOT NULL CHECK (signal_kind IN ('trend', 'counter')),
+    formula TEXT NOT NULL,
+    display_order INTEGER NOT NULL DEFAULT 0,
+    is_active BOOLEAN NOT NULL DEFAULT TRUE,
+    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE (logic_id, indicator_id, signal_kind)
+);
+
+CREATE INDEX IF NOT EXISTS idx_logic_indicator_signals_logic_id
+    ON logic_indicator_signals(logic_id);
+CREATE INDEX IF NOT EXISTS idx_logic_indicator_signals_indicator_id
+    ON logic_indicator_signals(indicator_id);
+
+COMMENT ON TABLE logic_indicator_signals IS
+'Сигналы индикаторов для logics: формула @CODE(params) + условие из indicators.sig_*_def';
+COMMENT ON COLUMN logic_indicator_signals.signal_kind IS 'trend | counter';
+COMMENT ON COLUMN logic_indicator_signals.formula IS
+'Редактируемая формула: @RSI(period=14,series=VALUE) VALUE > 50';
 
 -- ============================================
 -- Таблица: futures_expirations (контракты фьючерсов)

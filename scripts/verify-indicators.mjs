@@ -301,6 +301,45 @@ try {
   }
   console.log(`verify-indicators: OK SMAT3 (${smat3Last}) on price scale; sma(20)=${smaPosLast}; sma=${smaLast}`);
 
+  const smat3Stable = runPsql(
+    psql,
+    `WITH a AS (
+       SELECT dt, value::numeric v FROM calc_poly_formula_array(
+         '${smat3Formula}', 'VALUE', ${sberId}, ${m15Id}, 15, NULL, 20, NULL, NULL, NULL, NULL, NULL, NULL, NULL
+       )
+     ), b AS (
+       SELECT dt, value::numeric v FROM calc_poly_formula_array(
+         '${smat3Formula}', 'VALUE', ${sberId}, ${m15Id}, 120, NULL, 20, NULL, NULL, NULL, NULL, NULL, NULL, NULL
+       )
+     )
+     SELECT COALESCE(MAX(ABS(a.v - b.v)), 0)::text FROM a JOIN b USING (dt)`
+  );
+  if (Number(smat3Stable) > 0.01) {
+    console.error(
+      `verify-indicators: FAIL SMAT3 unstable across point_count (max diff ${smat3Stable})`
+    );
+    process.exit(1);
+  }
+  console.log(`verify-indicators: OK SMAT3 stable 15 vs 120 bars (max diff ${smat3Stable})`);
+
+  const smat3Jump = runPsql(
+    psql,
+    `WITH s AS (
+       SELECT value::numeric v, LAG(value::numeric) OVER (ORDER BY dt) pv
+       FROM calc_poly_formula_array(
+         '${smat3Formula}', 'VALUE', ${sberId}, ${m15Id}, 120, NULL, 20, NULL, NULL, NULL, NULL, NULL, NULL, NULL
+       )
+     )
+     SELECT COALESCE(MAX(ABS(v - pv) / NULLIF(ABS(pv), 0)), 0)::text FROM s WHERE pv IS NOT NULL`
+  );
+  if (Number(smat3Jump) > 0.15) {
+    console.error(
+      `verify-indicators: FAIL SMAT3 sawtooth (max relative step ${smat3Jump})`
+    );
+    process.exit(1);
+  }
+  console.log(`verify-indicators: OK SMAT3 smooth steps (max rel jump ${smat3Jump})`);
+
   // Линейный ряд close → вторая разность ≈ 0
   const paccLast = runPsql(
     psql,
@@ -313,6 +352,17 @@ try {
     process.exit(1);
   }
   console.log('verify-indicators: OK PACC linear close accel ~0');
+
+  const sigNulls = runPsql(
+    psql,
+    `SELECT COUNT(*)::text FROM indicators
+     WHERE sig_trend_def IS NULL OR sig_ct_def IS NULL OR btrim(sig_trend_def) = '' OR btrim(sig_ct_def) = ''`
+  );
+  if (Number(sigNulls) > 0) {
+    console.error(`verify-indicators: FAIL ${sigNulls} indicators missing sig_trend_def/sig_ct_def`);
+    process.exit(1);
+  }
+  console.log('verify-indicators: OK all indicators have default signal formulas');
 
   console.log('\nverify-indicators: OK — индикаторы и серии работают');
 } catch (err) {
