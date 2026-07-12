@@ -97,7 +97,7 @@ export class SecuritiesService {
         `${this.appConfig.apiUrl}/security-indicator-series`,
         body
       )
-      .pipe(timeout(30_000));
+      .pipe(timeout(15_000));
   }
 
   removeIndicatorSeries(id: number): Observable<{ ok: boolean }> {
@@ -113,15 +113,16 @@ export class SecuritiesService {
     end_dt?: string;
     point_count?: number;
     incremental?: boolean;
+    /** Всегда true в UI — расчёт только в фоне на сервере. */
     async?: boolean;
   }): Observable<{ ok: boolean; status?: string }> {
-    const timeoutMs = body.async ? 10_000 : 120_000;
+    const payload = { ...body, async: true };
     return this.http
       .post<{ ok: boolean; status?: string }>(
         `${this.appConfig.apiUrl}/security-indicator-series/sync`,
-        body
+        payload
       )
-      .pipe(timeout(timeoutMs));
+      .pipe(timeout(10_000));
   }
 
   getIndicatorValues(

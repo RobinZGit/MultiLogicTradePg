@@ -4,7 +4,7 @@ import { FormsModule } from '@angular/forms';
 import { forkJoin } from 'rxjs';
 import { ReferencesService } from '../services/references.service';
 import { SecuritiesService } from '../services/securities.service';
-import { ExchangeRow } from '../models/lookup.model';
+import { ExchangeRow, IndicatorRow } from '../models/lookup.model';
 import {
   ChartIndicatorSeries,
   ChartVisibleRange,
@@ -59,7 +59,7 @@ export class SecuritiesPanelComponent implements OnInit {
   securityIndicatorSeries = new Map<number, SecurityIndicatorSeriesRow[]>();
   indicatorSeries = new Map<number, ChartIndicatorSeries[]>();
   indicatorsLoading = new Set<number>();
-  /** Drag-and-drop: быстрый POST ensure_security_indicator_series. */
+  /** @deprecated не блокирует UI — оставлено для совместимости шаблона */
   indicatorAssigning = new Set<number>();
   indicatorRecalc = new Map<number, IndicatorRecalcUiState>();
   indicatorCalcError = new Map<number, string | null>();
@@ -68,6 +68,8 @@ export class SecuritiesPanelComponent implements OnInit {
   private emptyChunks = new Map<number, number>();
   private visibleRangeTimers = new Map<number, ReturnType<typeof setTimeout>>();
   private indicatorPollTimers = new Map<number, ReturnType<typeof setTimeout>>();
+  /** Каталог индикаторов для оптимистичного drop (сразу в таблицу). */
+  private indicatorsById = new Map<number, IndicatorRow>();
 
   private readonly chunkDays = 7;
   private readonly maxDaysBack = 365 * 3;
@@ -155,9 +157,6 @@ export class SecuritiesPanelComponent implements OnInit {
   }
 
   indicatorStatus(id: number): string | null {
-    if (this.indicatorAssigning.has(id)) {
-      return 'Добавление индикатора…';
-    }
     const recalc = this.indicatorRecalcState(id);
     if (recalc.active && recalc.message) {
       return recalc.message;
@@ -205,6 +204,13 @@ export class SecuritiesPanelComponent implements OnInit {
 
   removeIndicatorSeries(assignment: SecurityIndicatorSeriesRow, event: Event): void {
     event.stopPropagation();
+    if (assignment.id < 0) {
+      const list = (
+        this.securityIndicatorSeries.get(assignment.security_id) ?? []
+      ).filter((x) => x.id !== assignment.id);
+      this.securityIndicatorSeries.set(assignment.security_id, list);
+      return;
+    }
     this.securities.removeIndicatorSeries(assignment.id).subscribe({
       next: () => {
         const list = (
@@ -228,34 +234,58 @@ export class SecuritiesPanelComponent implements OnInit {
 
   private assignIndicator(row: SecurityRow, indicatorId: number): void {
     if (!this.timeframeId) return;
-    this.indicatorAssigning.add(row.id);
+
+    const ind = this.indicatorsById.get(indicatorId);
+    if (!ind) {
+      this.indicatorCalcError.set(
+        row.id,
+        `Индикатор #${indicatorId} не найден в справочнике — обновите страницу`
+      );
+      return;
+    }
+
+    const existing = this.securityIndicatorSeries.get(row.id) ?? [];
+    if (existing.some((x) => x.indicator_id === indicatorId && x.is_active)) {
+      return;
+    }
+
+    const pending = this.buildPendingSeriesRows(row.id, ind);
+    this.securityIndicatorSeries.set(row.id, [...existing, ...pending]);
+
+    if (!this.expandedSecurities.has(row.id)) {
+      this.expandedSecurities.add(row.id);
+      this.charts.set(row.id, {
+        candles: [],
+        loading: true,
+        loadingOlder: false,
+        hasMore: true,
+        error: null,
+      });
+      this.loadChart(row.id, false, { skipIndicatorSync: true });
+    }
+
+    const indicatorCode = ind.code;
+    this.indicatorRecalc.set(row.id, {
+      active: true,
+      message: `Добавление ${indicatorCode}…`,
+      error: null,
+    });
     this.indicatorCalcError.set(row.id, null);
+
     this.securities
       .assignIndicatorSeries(row.id, indicatorId, this.timeframeId)
       .subscribe({
         next: (created) => {
-          this.indicatorAssigning.delete(row.id);
-          const list = [...(this.securityIndicatorSeries.get(row.id) ?? [])];
+          const pendingIds = new Set(pending.map((p) => p.id));
+          const merged = (this.securityIndicatorSeries.get(row.id) ?? []).filter(
+            (x) => !pendingIds.has(x.id)
+          );
           for (const s of created) {
-            if (!list.some((x) => x.id === s.id)) {
-              list.push(s);
+            if (!merged.some((x) => x.id === s.id)) {
+              merged.push(s);
             }
           }
-          this.securityIndicatorSeries.set(row.id, list);
-
-          const indicatorCode = created[0]?.indicator_code ?? 'индикатора';
-          if (!this.expandedSecurities.has(row.id)) {
-            this.expandedSecurities.add(row.id);
-            this.charts.set(row.id, {
-              candles: [],
-              loading: true,
-              loadingOlder: false,
-              hasMore: true,
-              error: null,
-            });
-            this.loadChart(row.id, false, { skipIndicatorSync: true });
-          }
-
+          this.securityIndicatorSeries.set(row.id, merged);
           this.startBackgroundIndicatorSync(
             row.id,
             indicatorId,
@@ -264,15 +294,48 @@ export class SecuritiesPanelComponent implements OnInit {
           );
         },
         error: (err) => {
-          this.indicatorAssigning.delete(row.id);
+          const pendingIds = new Set(pending.map((p) => p.id));
+          const kept = (this.securityIndicatorSeries.get(row.id) ?? []).filter(
+            (x) => !pendingIds.has(x.id)
+          );
+          this.securityIndicatorSeries.set(row.id, kept);
           const msg =
             err?.name === 'TimeoutError'
-              ? 'Таймаут при добавлении индикатора'
+              ? 'Таймаут при регистрации серии индикатора'
               : err?.error?.error || err?.message || 'Ошибка добавления индикатора';
+          this.indicatorRecalc.set(row.id, {
+            active: false,
+            message: null,
+            error: msg,
+          });
           this.indicatorCalcError.set(row.id, msg);
           console.error(err);
         },
       });
+  }
+
+  /** Временные строки (отрицательный id) — сразу в UI до ответа POST. */
+  private buildPendingSeriesRows(
+    securityId: number,
+    ind: IndicatorRow
+  ): SecurityIndicatorSeriesRow[] {
+    const types = (ind.value_types ?? []).filter((t) => !t.is_threshold);
+    const series =
+      types.length > 0
+        ? types
+        : [{ code: 'VALUE', display_order: 1, name: 'VALUE', is_threshold: false }];
+    return series.map((vt, idx) => ({
+      id: -(ind.id * 100 + idx + 1),
+      security_id: securityId,
+      indicator_id: ind.id,
+      series_code: vt.code,
+      invoke_formula: ind.formula?.trim() || ind.script?.trim() || '',
+      indicator_code: ind.code,
+      indicator_name: ind.name,
+      point_count: 100,
+      display_order: vt.display_order ?? idx + 1,
+      is_active: true,
+    }));
   }
 
   private startBackgroundIndicatorSync(
@@ -536,11 +599,13 @@ export class SecuritiesPanelComponent implements OnInit {
     this.indicatorCalcError.set(row.id, null);
     this.indicatorsLoading.delete(row.id);
 
-    this.loadChart(row.id, false);
+    this.loadChart(row.id, false, { skipIndicatorSync: true });
     this.securities.getSecurityIndicatorSeries(row.id).subscribe({
       next: (rows) => {
         this.securityIndicatorSeries.set(row.id, rows);
-        this.refreshIndicatorChart(row.id);
+        if (rows.length > 0) {
+          this.refreshIndicatorChart(row.id);
+        }
       },
       error: () => {
         this.securityIndicatorSeries.set(row.id, []);
@@ -788,6 +853,7 @@ export class SecuritiesPanelComponent implements OnInit {
       next: ({ exchanges, timeframes, indicators }) => {
         this.exchanges = exchanges;
         this.timeframes = timeframes;
+        this.indicatorsById = new Map(indicators.map((i) => [i.id, i]));
         for (const ind of indicators) {
           if (ind.is_custom && ind.formula) {
             this.priceScaleOverlayCodes.add(ind.code);

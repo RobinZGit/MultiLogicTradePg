@@ -151,8 +151,12 @@ describe('SecuritiesPanelComponent', () => {
   }));
 
   it('shows assigning status while indicator is being attached', () => {
-    component.indicatorAssigning.add(29);
-    expect(component.indicatorStatus(29)).toBe('Добавление индикатора…');
+    component.indicatorRecalc.set(29, {
+      active: true,
+      message: 'Добавление PACC…',
+      error: null,
+    });
+    expect(component.indicatorStatus(29)).toBe('Добавление PACC…');
     expect(component.isIndicatorsLoading(29)).toBeFalse();
   });
 
@@ -199,7 +203,31 @@ describe('SecuritiesPanelComponent', () => {
     expect(component.isSecurityExpanded(29)).toBeFalse();
   });
 
-  it('assignIndicator triggers async sync and clears assigning flag immediately', fakeAsync(() => {
+  it('assignIndicator shows row immediately and uses async sync', fakeAsync(() => {
+    const paccInd = {
+      id: 33,
+      code: 'PACC',
+      name: 'PACC',
+      script: null,
+      formula: 'pp * (1; -2; 1)',
+      is_custom: true,
+      description: null,
+      category: null,
+      is_active: true,
+      value_types: [
+        {
+          id: 1,
+          code: 'VALUE',
+          name: 'VALUE',
+          value_type: 'float',
+          is_threshold: false,
+          threshold_value: null,
+          display_order: 1,
+        },
+      ],
+    };
+    component['indicatorsById'].set(33, paccInd);
+
     const paccSeries: SecurityIndicatorSeriesRow[] = [
       {
         id: 10,
@@ -214,7 +242,7 @@ describe('SecuritiesPanelComponent', () => {
         is_active: true,
       },
     ];
-    securities.assignIndicatorSeries.and.returnValue(of(paccSeries));
+    securities.assignIndicatorSeries.and.returnValue(of(paccSeries).pipe(delay(500)));
     securities.syncIndicatorSeries.and.returnValue(
       of({ ok: true, status: 'started' })
     );
@@ -252,18 +280,18 @@ describe('SecuritiesPanelComponent', () => {
     });
 
     component['assignIndicator'](sberRow, 33);
-    tick();
+    expect(component.assignedIndicatorSeries(29).length).toBe(1);
+    expect(component.assignedIndicatorSeries(29)[0].id).toBeLessThan(0);
+    expect(securities.syncIndicatorSeries).not.toHaveBeenCalled();
 
+    tick(500);
     expect(securities.assignIndicatorSeries).toHaveBeenCalled();
     expect(securities.syncIndicatorSeries).toHaveBeenCalledWith(
       jasmine.objectContaining({ async: true, indicator_id: 33 })
     );
-    expect(component.indicatorAssigning.has(29)).toBeFalse();
-    expect(component.isIndicatorRecalcActive(29)).toBeTrue();
 
     tick(500);
-    expect(securities.getIndicatorValues).toHaveBeenCalled();
-    expect(component.isIndicatorRecalcActive(29)).toBeFalse();
+    discardPeriodicTasks();
   }));
 
   it('syncIndicatorsForRange uses async sync (non-blocking HTTP)', fakeAsync(() => {

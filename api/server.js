@@ -274,7 +274,7 @@ app.post('/api/security-indicator-series', async (req, res) => {
   }
   const client = await pool.connect();
   try {
-    await client.query(`SET statement_timeout = '120000'`);
+    await client.query(`SET statement_timeout = '15000'`);
     await client.query('CALL ensure_security_indicator_series($1, $2)', [
       securityId,
       indicatorId,
