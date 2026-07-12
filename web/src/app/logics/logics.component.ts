@@ -216,18 +216,6 @@ export class LogicsComponent implements OnInit, OnDestroy {
     }
   }
 
-  toggleStopsBlock(logicId: number, event: Event): void {
-    event.preventDefault();
-    event.stopPropagation();
-    if (this.expandedStopsBlocks.has(logicId)) {
-      this.expandedStopsBlocks.delete(logicId);
-      this.closeStopForm();
-    } else {
-      this.expandedStopsBlocks.add(logicId);
-      this.loadStopsForLogic(logicId);
-    }
-  }
-
   toggleSecuritiesBlock(logicId: number, event: Event): void {
     event.preventDefault();
     event.stopPropagation();
@@ -769,8 +757,7 @@ export class LogicsComponent implements OnInit, OnDestroy {
     this.refs.getExchanges().subscribe({
       next: (rows) => {
         const moex =
-          rows.find((e) => e.name === 'MOEX' && e.is_active) ??
-          rows.find((e) => e.is_active);
+          rows.find((e) => e.name === 'MOEX') ?? rows[0];
         this.moexExchangeId = moex?.id ?? null;
       },
     });
@@ -784,8 +771,7 @@ export class LogicsComponent implements OnInit, OnDestroy {
       this.refs.getExchanges().subscribe({
         next: (rows) => {
           const moex =
-            rows.find((e) => e.name === 'MOEX' && e.is_active) ??
-            rows.find((e) => e.is_active);
+            rows.find((e) => e.name === 'MOEX') ?? rows[0];
           this.moexExchangeId = moex?.id ?? null;
           if (this.moexExchangeId) {
             this.fetchSecuritiesCatalog(this.moexExchangeId);
