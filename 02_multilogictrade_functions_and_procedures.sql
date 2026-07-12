@@ -2595,7 +2595,7 @@ DECLARE
     v_start INTEGER;
     i INTEGER;
 BEGIN
-    IF p_series IS NOT NULL AND p_series NOT IN ('VALUE', 'PACC', 'SMA', 'EMA', 'SMAT3') THEN
+    IF p_series IS NOT NULL AND btrim(p_series) = '' THEN
         RETURN;
     END IF;
 
@@ -2746,7 +2746,7 @@ LANGUAGE plpgsql STABLE AS $$
 BEGIN
     param_period := CASE upper(p_indicator_code)
         WHEN 'RSI' THEN 14 WHEN 'SMA' THEN 20 WHEN 'EMA' THEN 20 WHEN 'BB' THEN 20
-        WHEN 'ATR' THEN 14 WHEN 'STOCH' THEN 14 WHEN 'SMAT3' THEN 20 ELSE 14 END;
+        WHEN 'ATR' THEN 14 WHEN 'STOCH' THEN 14 WHEN 'SMAT3' THEN 20 WHEN 'SMAT3COMP' THEN 20 ELSE 14 END;
     BEGIN
         SELECT pv.value::INTEGER INTO param_period
         FROM parameter_values pv

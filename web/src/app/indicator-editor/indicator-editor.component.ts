@@ -16,7 +16,7 @@ import {
   IndicatorRow,
 } from '../models/lookup.model';
 import {
-  INDICATOR_FORMULA_HELP_DETAIL,
+  buildFullFormulaHelp,
   INDICATOR_FORMULA_HINT,
 } from '../shared/indicator-formula-help';
 
@@ -37,7 +37,7 @@ export class IndicatorEditorComponent implements OnChanges {
   @Output() saved = new EventEmitter<void>();
 
   readonly formulaHint = INDICATOR_FORMULA_HINT;
-  readonly formulaHelpDetail = INDICATOR_FORMULA_HELP_DETAIL;
+  formulaHelpDetail = '';
 
   code = '';
   name = '';
@@ -59,7 +59,7 @@ export class IndicatorEditorComponent implements OnChanges {
   ngOnChanges(changes: SimpleChanges): void {
     if (changes['open']?.currentValue === true) {
       this.initForm();
-      return;
+      this.loadFormulaHelp();
     }
     if (
       this.open &&
@@ -97,6 +97,17 @@ export class IndicatorEditorComponent implements OnChanges {
       return;
     }
     this.saveEdit();
+  }
+
+  private loadFormulaHelp(): void {
+    this.refs.getIndicators(false).subscribe({
+      next: (rows) => {
+        this.formulaHelpDetail = buildFullFormulaHelp(rows);
+      },
+      error: () => {
+        this.formulaHelpDetail = buildFullFormulaHelp([]);
+      },
+    });
   }
 
   private saveCreate(): void {

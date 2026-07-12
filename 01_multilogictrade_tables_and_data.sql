@@ -466,7 +466,7 @@ COMMENT ON COLUMN indicators.script IS
 'Устаревший per-bar шаблон SELECT calc_ind_*(…). Для новых индикаторов — поле formula.';
 
 COMMENT ON COLUMN indicators.formula IS
-'Многочленная формула массивного расчёта: pp, sma(pp), @SMA, pp * (1;-2;1), sma() * sma() * sma().';
+'Многочленная формула массивного расчёта: pp, sma(pp), @SMA, pp * (1;-2;1). Код индикатора (SMA, RSI) = ссылка @CODE в других формулах.';
 
 COMMENT ON COLUMN indicators.is_custom IS
 'TRUE — пользовательская/составная формула (подсветка в списке индикаторов).';
@@ -506,7 +506,8 @@ INSERT INTO indicators (code, name, description, category) VALUES
     ('SAR', 'Stop And Reverse', 'Стоп и реверс', 'trend'),
     ('HMA', 'Hull Moving Average', 'Скользящее среднее Халла', 'trend'),
     ('ZLEMA', 'Zero Lag EMA', 'EMA с нулевым запаздыванием', 'trend'),
-    ('SMAT3', 'SMA Triple', 'Тройное SMA (средняя³)', 'trend')
+    ('SMAT3', 'SMA Triple', 'Тройное SMA (тройная свёртка)', 'trend'),
+    ('SMAT3COMP', 'SMA Triple Comp', 'Тройное SMA (композиция sma∘sma∘sma)', 'trend')
 ON CONFLICT (code) DO NOTHING;
 
 -- Шаблоны расчёта (функция + параметры; :series подставляется для каждой линии индикатора)
@@ -525,7 +526,8 @@ ALTER TABLE indicators ADD COLUMN IF NOT EXISTS is_custom BOOLEAN NOT NULL DEFAU
 UPDATE indicators SET formula = 'sma(pp)', is_custom = FALSE WHERE code = 'SMA';
 UPDATE indicators SET formula = 'ema(pp)', is_custom = FALSE WHERE code = 'EMA';
 UPDATE indicators SET formula = 'pp * (1; -2; 1)', is_custom = TRUE WHERE code = 'PACC';
-UPDATE indicators SET formula = 'sma(sma(sma(pp)))', is_custom = TRUE WHERE code = 'SMAT3';
+UPDATE indicators SET formula = 'sma(pp) * ww() * ww()', is_custom = TRUE WHERE code = 'SMAT3';
+UPDATE indicators SET formula = 'sma(sma(sma(pp)))', is_custom = TRUE WHERE code = 'SMAT3COMP';
 
 -- Подробные описания индикаторов с функциями расчёта в PostgreSQL
 UPDATE indicators SET description = $desc$
@@ -611,15 +613,26 @@ Price Acceleration (PACC) — ускорение цены
 $desc$ WHERE code = 'PACC';
 
 UPDATE indicators SET description = $desc$
-SMA Triple (SMAT3) — тройное простое скользящее среднее
+SMA Triple (SMAT3) — тройное SMA через свёртку
 
-Расчёт: три последовательных свёртки с ядром SMA(N): sma(sma(sma(pp))) = pp * ww * ww * ww,
-где ww = (1/N; …; 1/N), N = param_period (по умолчанию 20). Эквивалент: sma() * sma() * sma() после pp.
+Расчёт: один раз sma(pp), затем дважды свёртка с ядром SMA(N): sma(pp) * ww() * ww(),
+где ww() — ядро (1/N; …; 1/N), N = param_period (по умолчанию 20). Оператор * — свёртка (не покомponentное умножение).
 
-Сигналы: более гладкая линия, чем SMA; пересечение цены и SMAT3 — смена тренда с задержкой; наклон линии — направление.
+Сигналы: гладкая линия на шкале цены; пересечение цены и SMAT3 — смена тренда с задержкой.
 
-Применение: фильтр шума, подтверждение тренда, сравнение с одинарной SMA на графике.
+Применение: фильтр шума, подтверждение тренда. Отличается от SMAT3COMP (композиция sma(sma(sma(pp)))).
 $desc$ WHERE code = 'SMAT3';
+
+UPDATE indicators SET description = $desc$
+SMA Triple Comp (SMAT3COMP) — тройное SMA через композицию функций
+
+Расчёт: вложенные вызовы sma: sma(sma(sma(pp))) — каждый sma() снова усредняет результат предыдущего.
+Математически близко к тройной свёртке, но формула записывается как композиция, не как sma(pp)*ww()*ww().
+
+Сигналы: ещё более сглаженная линия, чем SMAT3-свёртка; сравнение двух вариантов на одном графике.
+
+Применение: эксперименты с двумя способами записи «SMA³» в многочленном парсере.
+$desc$ WHERE code = 'SMAT3COMP';
 
 -- ============================================
 -- Таблица: indicator_value_types (линии индикаторов)
@@ -663,7 +676,8 @@ JOIN (VALUES
     ('ATR', 'ATR', 'Значение ATR', 'float', FALSE, NULL, 'ATR', 1),
     ('ATR', 'ATR_PCT', 'ATR в процентах', 'float', FALSE, NULL, 'ATR %', 2),
     ('PACC', 'VALUE', 'Ускорение цены', 'float', FALSE, NULL, 'pp * (1;-2;1)', 1),
-    ('SMAT3', 'VALUE', 'SMA³', 'float', FALSE, NULL, 'sma(sma(sma(pp)))', 1),
+    ('SMAT3', 'VALUE', 'SMA³ свёртка', 'float', FALSE, NULL, 'sma(pp)*ww()*ww()', 1),
+    ('SMAT3COMP', 'VALUE', 'SMA³ композ.', 'float', FALSE, NULL, 'sma(sma(sma(pp)))', 1),
     ('SMA', 'VALUE', 'Значение MA', 'float', FALSE, NULL, 'SMA value', 1),
     ('EMA', 'VALUE', 'Значение EMA', 'float', FALSE, NULL, 'EMA value', 1),
     ('WMA', 'VALUE', 'Значение WMA', 'float', FALSE, NULL, 'WMA value', 1)

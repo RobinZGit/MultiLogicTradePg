@@ -87,6 +87,7 @@ export class SecuritiesPanelComponent implements OnInit {
     'WMA',
     'PACC',
     'SMAT3',
+    'SMAT3COMP',
   ]);
 
   loading = true;

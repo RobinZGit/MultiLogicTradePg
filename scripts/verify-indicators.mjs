@@ -240,23 +240,29 @@ try {
     1
   );
 
-  // SMAT3: sma(sma(sma(pp))) через единый парсер
-  const smat3Id = runPsql(psql, `SELECT id::text FROM indicators WHERE code = 'SMAT3' LIMIT 1`);
+  // SMAT3 — тройная свёртка; SMAT3COMP — композиция sma∘sma∘sma
   assertEq(
-    'SMAT3 formula set',
+    'SMAT3 formula (convolution)',
     runPsql(psql, `SELECT btrim(formula) FROM indicators WHERE code = 'SMAT3'`),
+    'sma(pp) * ww() * ww()'
+  );
+  assertEq(
+    'SMAT3COMP formula (composition)',
+    runPsql(psql, `SELECT btrim(formula) FROM indicators WHERE code = 'SMAT3COMP'`),
     'sma(sma(sma(pp)))'
   );
-  assertEq(
-    'SMAT3 is_custom',
+  assertGte(
+    'calc_poly SMAT3 convolution',
     runPsql(
       psql,
-      `SELECT CASE WHEN is_custom THEN 1 ELSE 0 END::text FROM indicators WHERE code = 'SMAT3'`
+      `SELECT COUNT(*)::text FROM calc_poly_formula_array(
+         'sma(pp) * ww() * ww()', 'VALUE', ${sberId}, ${m15Id}, 15, NULL, 20, NULL, NULL, NULL, NULL, NULL, NULL, NULL
+       )`
     ),
-    '1'
+    1
   );
   assertGte(
-    'calc_poly SMAT3 on synthetic prices',
+    'calc_poly SMAT3COMP composition',
     runPsql(
       psql,
       `SELECT COUNT(*)::text FROM calc_poly_formula_array(
