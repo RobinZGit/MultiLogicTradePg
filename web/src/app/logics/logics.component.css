@@ -5,6 +5,11 @@
   font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
 }
 
+.page-scroll .table-wrap {
+  flex: 1;
+  min-height: 0;
+}
+
 .page-header {
   display: flex;
   flex-wrap: wrap;

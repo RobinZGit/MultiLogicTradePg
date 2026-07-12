@@ -1,7 +1,7 @@
 # MultiLogicTradePg — контекст проекта
 
-> Живой файл контекста для продолжения работы с разных устройств и в Cursor.
-> **Обновлять в конце каждой значимой сессии** (см. `.cursor/rules/project-context.mdc`).  
+> Живой файл контекста для продолжения работы с разных устройств и в Cursor.  
+> **Обновлять при каждой выкладке и в конце значимой сессии** (см. `.cursor/rules/project-context.mdc`).  
 > Включать **запросы пользователя текстом** (секция «Запросы пользователя»).
 
 **Репозиторий:** https://github.com/RobinZGit/MultiLogicTradePg  
@@ -14,7 +14,7 @@
 Перенос торговой системы **MultiLogic Trade** с Angular (логика в приложении) на **PostgreSQL-first**:
 
 - расчёт индикаторов, загрузка цен, торговые правила — в БД;
-- **Angular** — только визуальные формы и вызовы API/SQL.
+- **Angular** — визуальные формы и вызовы API/SQL.
 
 Биржа: **MOEX** (акции + фьючерсы), источники цен: **T-Bank API** и **MOEX ISS** (через расширение `pgsql-http`).
 
@@ -31,72 +31,113 @@
 
 Устаревший монолит: `multilogictrade_full_database.sql` (v11) — только для истории.
 
-**Полный цикл «с нуля»:** выполнить 00 → 01 → 02 (блок HTTP в 02 — опционально).
+**Полный цикл «с нуля»:** `00` → `01` → `02`. Для проверки скриптов без сброса данных — `npm run verify:sql`.
 
 ---
 
-## Ключевые решения схемы (v12)
+## Ключевые решения схемы (v12+)
 
 ### Префиксы акций и фьючерсов
 
-Один тикер MOEX (`VTBR`, `LKOH`) может быть у **акции** и **фьючерса**:
-
 - уникальность: `(security_id, exchange_id)`, не глобально по `prefix`;
-- поле `instrument_market`: `stock` | `futures` | `bonds` | `index`;
-- `tbank_figi` — FIGI для T-Bank API (акции);
-- активный контракт фьючерса — таблица `futures_expirations` (prefix вида `Si-3.26`).
+- `instrument_market`: `stock` | `futures` | `bonds` | `index`;
+- **Групповые фьючерсы** (Si, CR→CNY): префикс группы в `security_prefixes` (`CR`, `Si`);
+- **Вечные фьючерсы** (`CNYRUBF`, `USDRUBF`, …): префикс = тикер группы, **без** rollover по контрактам;
+- **`futures_expirations`** — **runtime-кэш** контрактов (пустая после `00`/TRUNCATE; заполняется `sync_futures_expirations_from_moex` при загрузке);
+- поля контракта: `prefix` (SHORTNAME, напр. `CNY-9.26`), **`moex_secid`** (SECID, напр. `CRU6`), `expiration_date`, `tbank_figi`;
+- **`prices.contract_prefix`** — какой контракт дал свечу при rollover.
 
-### Индикаторы
+### Загрузка цен (фьючерсы)
 
-- справочник `indicators` (30 шт.), реализован расчёт **7**: RSI, SMA, EMA, MACD, BB, ATR, STOCH;
-- `calculate_indicator`, `calculate_all_indicators`, `calculate_indicators_batch`;
-- параметры: `parameter_types` / `parameter_sets` / `parameter_values`.
+- `load_prices_futures_http` — обход контрактов от `date_to` назад (rollover);
+- `sync_futures_expirations_from_moex` — список FORTS с MOEX ISS → UPSERT в `futures_expirations`;
+- T-Bank **FutureBy** — сначала `moex_secid` (`CRU6`), затем `prefix` (`CNY-9.26`);
+- MOEX candles URL — по **SECID**, не SHORTNAME;
+- `load_prices_http` — вечные → T-Bank/MOEX по `CNYRUBF` из `security_prefixes` (не из `futures_expirations`);
+- таймауты: `lock_timeout` / `statement_timeout` в API и SQL (защита от зависаний).
 
-### Торговая логика (заготовка)
+### Проверка SQL перед сборкой
 
-- `logics` — **главная таблица**: одна строка = одна торговля (трейд); поля `account_id` → `accounts`, `is_enabled` (вкл/выкл);
-- `logics_detail` (формула + Open/Close + Long/Short) — **движок формул ещё не реализован**;
-- UI: Angular `web/` + Express `api/` — страница logics, автообновление 2 с, галочка `is_enabled`.
+- `scripts/verify-sql.mjs`, `npm run verify:sql` в `web/` (`prebuild`);
+- CI: `--core-only` (без HTTP-блока); маркер `-- @optional-http-block` в `02`.
 
-### Правило схемы БД (2026-07-12)
+### UI
 
-- Изменения схемы — **только в скрипты `00`–`02`**, поля добавлять в **`CREATE TABLE`**, не через `ALTER ADD COLUMN`.
-- После правок — **прогон локально** `00`→`01`→`02`; локальная PostgreSQL всегда актуальна.
-- Правило Cursor: `.cursor/rules/database-scripts.mdc`.
+- Angular `web/` + Express `api/`;
+- прокручиваемые списки — правило `.cursor/rules/scrollable-lists.mdc`;
+- панель цен: `contract_prefix`, `group_prefix`, остановка после пустых периодов по `records_loaded`.
+
+### Индикаторы и logics
+
+- справочник `indicators` (30 шт.), реализовано **7** (RSI, SMA, EMA, MACD, BB, ATR, STOCH);
+- `logics` + `logics_detail` — движок формул **ещё не реализован**;
+- UI: logics, logic-editor, securities-panel (загрузка цен).
+
+### Правило схемы БД
+
+- изменения — в `00`–`02`; для существующих БД — `ALTER … ADD COLUMN IF NOT EXISTS` после `CREATE TABLE`;
+- после правок — `npm run verify:sql`; правило: `.cursor/rules/database-scripts.mdc`.
 
 ---
 
-## Что сделано в сессии 2026-07-12
+## Что сделано (актуально на 2026-07-12)
 
-1. Разобран монолит v11, найдены ошибки (UNIQUE prefix, `v_price`, `is_active`, FIGI T-Bank и др.).
-2. Созданы идемпотентные скрипты `00`–`03`, исправления в v12.
-3. `00_create_database.sql`: добавлены **DROP DATABASE IF EXISTS** и завершение сессий перед созданием.
-4. Добавлены `README.md`, этот файл контекста, правило Cursor для обновления контекста.
-5. **Локальный ПК (PostgreSQL 15):** выполнены `00` → `01` → `02`; база `multilogictrade` создана (20 таблиц, 54 бумаги, 16 процедур + 25 функций).
-6. Установлено расширение **pgsql-http** (`http` v1.6) — бинарники из `pg15http_w64.zip`, скрипт `scripts/install_pgsql_http.ps1`.
-7. Исправлен синтаксис `FOREACH` в `calculate_indicator` (RSI value types).
-8. **`logics.account_id`** → `accounts`; демо-строка `Demo RSI SBER M5` на фейковом счёте.
-9. **UI v1:** `api/` (Express) + `web/` (Angular 17) — страница `logics`; GitHub Pages + offline-схема из SQL.
-10. **`logics.is_enabled`**, автообновление таблицы 2 с, PATCH API; правило БД в `.cursor/rules/database-scripts.mdc`.
-11. **Редактор логик** (`logic-editor`): добавить / редактировать / удалить; справочники brokers + accounts.
+### Бумаги ↔ индикаторы
+
+12. Вкладки: **2 — Бумаги и индикаторы**, **3 — Справочники**.
+13. Таблица **`security_indicator_series`** — одна строка = серия индикатора на бумаге (`series_code`, `invoke_formula`, параметры, `point_count`).
+14. Функции **`calc_ind_*_array`** — один проход по ценам, возвращают `TABLE(dt, value)`; процедуры `ensure_security_indicator_series`, `sync_security_indicator_series(_all)`.
+15. API: `GET/POST/DELETE /api/security-indicator-series`, `POST /api/security-indicator-series/sync`, `GET /api/indicator-values`.
+16. UI: drag → создание всех серий индикатора + sync; список серий с удалением; график через sync (инкрементально при прокрутке).
+17. **График цен:** панель (↻ пересчёт, ± zoom, ◀▶, ⛶ полный экран); колёсико/pinch; инкрементальный sync индикаторов по видимому окну; в fullscreen подписи осей/легенды/даты **×1.55**.
+
+### Автотесты
+
+- `scripts/verify-indicators.mjs` — smoke SQL (sync без цен, calc_ind_*_array, seed STOCH).
+- `npm run test:unit` — Karma/ChromeHeadless (разворот бумаги, fullscreen, recalc).
+- `prebuild`: verify:sql → test:unit → generate:schema; CI: unit-тесты + verify-indicators.
+
+### База и инфраструктура
+
+1. Идемпотентные скрипты `00`–`03`, split монолита v11 → v12.
+2. Локально: PostgreSQL 15, pgsql-http, база `multilogictrade`.
+3. `verify:sql` + `verify:indicators` + `test:unit`, CI в `.github/workflows/pages.yml`.
+4. `docs/LOCAL_SETUP.md`, `scripts/run_multilogictrade.ps1`, `web/MultiLogic_Trade_Progress_Start.bat`.
+
+### Фьючерсы и загрузка цен
+
+5. Rollover по контрактам, `prices.contract_prefix`, `load_prices_futures_http`.
+6. Авто-sync контрактов MOEX → `futures_expirations` (без ручного INSERT в `01`).
+7. `moex_secid` для T-Bank/MOEX (CNY, Si).
+8. TRUNCATE + тест загрузки с пустой `futures_expirations` — OK (CNY id=52, Si id=54).
+9. **Вечный CNYRUBF (id=51):** `get_active_future_prefix` и `load_prices_from_tbank_http` — префикс из `security_prefixes`, не из кэша контрактов; загрузка 305 свечей проверена.
+
+### UI и API
+
+10. Scrollable lists (securities, indicators, references, logics).
+11. API: таймауты клиента, `GET /api/prices` с `contract_prefix` / `group_prefix`.
+12. `price-chart`: canvas, overlay индикаторов, полноэкранный режим с крупными подписями.
+13. `securities-panel`: drag-drop серий, загрузка цен, fix зависания при развороте без цен.
 
 ---
 
 ## Открытые задачи / следующие шаги
 
-- [ ] Заполнить/актуализировать `futures_expirations` и `tbank_figi` под реальные контракты.
-- [ ] Протестировать `load_prices_http` (нужен токен T-Bank в `accounts.token_encrypted`).
-- [ ] Влить реструктуризацию параметров индикаторов (черновик в `Indicators_parameters_todo`, v12+).
+- [ ] Заполнить `tbank_figi` где возможно (частично через `resolve_tbank_instrument_id`).
+- [ ] Влить реструктуризацию параметров индикаторов (черновик `Indicators_parameters_todo`).
 - [ ] Реализовать движок `logics_detail.formula`.
-- [ ] Angular UI поверх БД — **старт:** страница logics (`web/`, `api/`).
+- [ ] Прогнать полный UI-тест загрузки для вечных (`USDRUBF` и др.).
+- [ ] Параметры индикаторов per-security (редактирование колонок `param_*` в UI).
 
 ---
 
 ## Заметки для агента
 
-- Коммиты — **только по запросу** пользователя; контекст и код — **пушить** после изменений, если пользователь просит «выложить в репозиторий».
-- Пользователь (Sergey) продолжает тему с **2–3 устройств** — читать этот файл и `git log` в начале сессии.
-- Язык общения: русский (без English note, если пользователь пишет по-русски).
+- Коммиты — **только по запросу** пользователя.
+- При **выкладке** — обязательно обновить этот файл (правило `.cursor/rules/project-context.mdc`).
+- Sergey — **2–3 устройства**; в начале сессии читать этот файл + `git log`.
+- Язык: русский (English note — только если пользователь пишет по-английски).
+- Пароль локального postgres часто: `111`.
 
 ---
 
@@ -104,40 +145,40 @@
 
 | Дата | Суть |
 |------|------|
-| 2026-07-12 | Обзор репо, split SQL v12, fix ошибок, контекст + DROP в 00, LOCAL_SETUP |
-| 2026-07-12 | Локальный запуск 00–02, установка pgsql-http, база multilogictrade на PG 15 |
+| 2026-07-12 | Split SQL v12, контекст, LOCAL_SETUP, logics UI |
+| 2026-07-12 | pgsql-http, локальная БД 00–02 |
+| 2026-07-12 | Фьючерсы: sync MOEX, moex_secid, rollover, verify:sql, scroll lists |
+| 2026-07-12 | TRUNCATE + load test; fix вечный CNYRUBF; правило контекста при выкладке |
+| 2026-07-12 | security_indicator_series, calc_ind_*_array, sync инкрементальный |
+| 2026-07-12 | verify-indicators, test:unit, fullscreen график, fix expand hang |
 
 ---
 
 ## Запросы пользователя (текст)
 
-Формулировки Sergey — чтобы на другом устройстве было понятно, **что именно просили**, а не только что сделано.
+### 2026-07-12 (ранние)
 
-### 2026-07-12
+1. Обзор репо, исправления, split SQL, DROP в `00`, контекст в проект.
+2. Локальный запуск, pgsql-http, logics + Angular + Express.
+3. Правило БД: изменения в CREATE TABLE, прогон локально.
 
-1. **Обзор репозитория**  
-   «Посмотри данную папку… PostgreSQL для торговли… процедуры рассчитывают индикаторы и загружают цены. Если найдёшь ошибки — сообщи.»
+### 2026-07-12 (фьючерсы и загрузка)
 
-2. **Исправления и split SQL**  
-   «Исправь эти ошибки… для дублирующегося префикса — решение, чтобы акция и фьючерс различались. Скрипт многократного запуска. Раздели на части: таблицы, процедуры, примеры — с порядком в имени. Проверь, что не упадёт при запуске. Выложи в репозиторий.»
+4. «Загрузка фьючерсов по группам (CR/Si), обход контрактов назад, contract_prefix».
+5. «Проверка SQL перед build, CI».
+6. «Пустая futures_expirations — только sync при load; TRUNCATE и прогнать тест».
+7. Ошибка id=51 (CNYRUBF): «Активный фьючерс не найден…» — исправить вечные фьючерсы.
 
-3. **DROP перед CREATE**  
-   «В самый первый файл добавить удаление базы… логично удалить и создать заново… будут большие изменения… часто пересоздавать. Файл контекста беседы в папку проекта и в репозиторий; всегда так делать в этом проекте.»
+### 2026-07-12 (контекст)
 
-4. **Запросы в контексте**  
-   «Можно ли в файл контекста включать и мои запросы текстовым видом?» → **да**, в эту секцию.
+8. «Правила проекта: файлы контекста с каждой новой выкладкой…»
 
-5. **Локальный запуск SQL**  
-   «Настроить локальный ПК для запуска скриптов… DBeaver и pgAdmin… посмотри, что есть.» → см. `docs/LOCAL_SETUP.md`, `scripts/run_multilogictrade.ps1`.
+9. «Бумаги и индикаторы: 2-я вкладка; 3-я — Справочники; drag индикатора на бумагу → security_indicators; список и графики по calculate_indicator с параметрами по умолчанию; полный прогон 00–02.»
 
-6. **Создать БД на локальном PostgreSQL**  
-   «Пароль postgres — 111. Запусти скрипты, создай базу, таблицы, функции/процедуры. Если нужно расширение http — установи.»
+### 2026-07-12 (индикаторы, график, тесты)
 
-7. **logics + Angular + Express**  
-   «В logics добавить поле счёта… Продумать связь Angular ↔ PostgreSQL через Express…»
-
-8. **Первый экран Angular**  
-   «Сделай Angular для локального доступа к БД: одна страница logics, одна демо-строка, bat для запуска в web/.»
-
-9. **Правило БД и скрипты**  
-   «Все скрипты изменений — в исходные скрипты создания; не ALTER, а поле в CREATE TABLE. Прогонять локально. Локальная БД и скрипты всегда актуальны — правило проекта.»
+10. «security_indicator_series, calc_ind_*_array, sync инкрементальный; пересоздать БД 00–02».
+11. «Зависание при развороте акции без цен — исправить».
+12. «Автотесты на expand без цен + prebuild».
+13. «Загрузка цен без T-Bank — MOEX D1/H1; M15 нужен токен».
+14. «На графике пересчёт индикаторов; полный экран с zoom/pan; крупнее подписи в fullscreen; выложить в репо».

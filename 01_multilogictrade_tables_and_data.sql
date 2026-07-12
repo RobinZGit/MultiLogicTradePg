@@ -241,7 +241,7 @@ CROSS JOIN (VALUES
     ('Аэрофлот', 'AFLT', 'stock', 'BBG004S683W7', NULL),
     ('Совкомфлот', 'FLOT', 'stock', NULL, NULL),
     ('ФосАгро', 'PHOR', 'stock', 'BBG004S689R0', NULL),
-    ('АФК Система', 'AFKS', 'stock', 'BBG004S686B0', NULL),
+    ('АФК Система', 'AFKS', 'stock', 'BBG004S68614', NULL),
     ('USD/RUB (доллар/рубль)', 'Si', 'futures', NULL, 'Базовый код MOEX FORTS'),
     ('EUR/RUB (евро/рубль)', 'Eu', 'futures', NULL, NULL),
     ('CNY/RUB (юань/рубль)', 'CR', 'futures', NULL, NULL),
@@ -355,8 +355,12 @@ CREATE TABLE IF NOT EXISTS prices (
     volume NUMERIC(20, 2),
     value NUMERIC(20, 2),
     trades INTEGER,
+    contract_prefix VARCHAR(50),
     created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
+
+-- Существующие БД: CREATE TABLE IF NOT EXISTS не добавляет новые колонки
+ALTER TABLE prices ADD COLUMN IF NOT EXISTS contract_prefix VARCHAR(50);
 
 CREATE INDEX IF NOT EXISTS idx_prices_security_id ON prices(security_id);
 CREATE INDEX IF NOT EXISTS idx_prices_timeframe_id ON prices(timeframe_id);
@@ -364,8 +368,11 @@ CREATE INDEX IF NOT EXISTS idx_prices_dt ON prices(dt);
 CREATE INDEX IF NOT EXISTS idx_prices_security_timeframe ON prices(security_id, timeframe_id);
 CREATE INDEX IF NOT EXISTS idx_prices_security_timeframe_dt ON prices(security_id, timeframe_id, dt);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_prices_unique_candle ON prices(security_id, timeframe_id, dt);
+CREATE INDEX IF NOT EXISTS idx_prices_contract_prefix ON prices(contract_prefix)
+    WHERE contract_prefix IS NOT NULL;
 
 COMMENT ON TABLE prices IS 'Таблица цен (OHLCV)';
+COMMENT ON COLUMN prices.contract_prefix IS 'Тикер конкретного контракта (Si-6.26); NULL для акций. Групповой префикс — в security_prefixes.prefix';
 
 -- ============================================
 -- Таблица: parameter_types (типы параметров)
@@ -619,6 +626,56 @@ JOIN (VALUES
 ON CONFLICT (indicator_id, code) DO NOTHING;
 
 -- ============================================
+-- Таблица: security_indicator_series (серии индикаторов на бумаге)
+-- Одна строка = одна линия на графике (серия) с формулой вызова calc_ind_*_array
+-- ============================================
+CREATE TABLE IF NOT EXISTS security_indicator_series (
+    id SERIAL PRIMARY KEY,
+    security_id INTEGER NOT NULL REFERENCES securities(id) ON DELETE CASCADE,
+    indicator_id INTEGER NOT NULL REFERENCES indicators(id) ON DELETE CASCADE,
+    series_code VARCHAR(20) NOT NULL,
+    invoke_formula TEXT NOT NULL,
+    param_period INTEGER,
+    param_fast_period INTEGER,
+    param_slow_period INTEGER,
+    param_signal_period INTEGER,
+    param_std_dev NUMERIC(10, 4) DEFAULT 2.0,
+    param_k_period INTEGER,
+    param_d_period INTEGER,
+    param_smooth INTEGER,
+    point_count INTEGER NOT NULL DEFAULT 100,
+    display_order INTEGER NOT NULL DEFAULT 0,
+    is_active BOOLEAN NOT NULL DEFAULT TRUE,
+    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_security_indicator_series_unique
+    ON security_indicator_series(security_id, indicator_id, series_code);
+CREATE INDEX IF NOT EXISTS idx_security_indicator_series_security_id
+    ON security_indicator_series(security_id);
+CREATE INDEX IF NOT EXISTS idx_security_indicator_series_indicator_id
+    ON security_indicator_series(indicator_id);
+
+COMMENT ON TABLE security_indicator_series IS
+'Привязка серий индикатора к бумаге: invoke_formula → calc_ind_*_array(…, series, security_id, timeframe_id, point_count, end_dt)';
+
+-- Пример: SBER + STOCH, серии %K и %D с параметрами по умолчанию
+INSERT INTO security_indicator_series (
+    security_id, indicator_id, series_code, invoke_formula,
+    param_k_period, param_d_period, param_smooth, point_count, display_order
+)
+SELECT s.id, i.id, v.series_code, v.formula, 14, 3, 3, 100, v.ord
+FROM securities s
+JOIN security_prefixes sp ON sp.security_id = s.id AND sp.prefix = 'SBER'
+JOIN indicators i ON i.code = 'STOCH'
+CROSS JOIN (
+    VALUES
+        ('K', 'calc_ind_stoch_array(:param_k_period, :param_d_period, :param_smooth, :series, :security_id, :timeframe_id, :point_count, :end_dt)', 1),
+        ('D', 'calc_ind_stoch_array(:param_k_period, :param_d_period, :param_smooth, :series, :security_id, :timeframe_id, :point_count, :end_dt)', 2)
+) AS v(series_code, formula, ord)
+ON CONFLICT (security_id, indicator_id, series_code) DO NOTHING;
+
+-- ============================================
 -- Таблица: indicator_values (рассчитанные значения)
 -- ============================================
 CREATE TABLE IF NOT EXISTS indicator_values (
@@ -696,6 +753,7 @@ CREATE TABLE IF NOT EXISTS futures_expirations (
     id SERIAL PRIMARY KEY,
     security_id INTEGER NOT NULL REFERENCES securities(id) ON DELETE CASCADE,
     prefix VARCHAR(50) NOT NULL,
+    moex_secid VARCHAR(20),
     expiration_date DATE NOT NULL,
     tbank_figi VARCHAR(50),
     is_active BOOLEAN NOT NULL DEFAULT TRUE,
@@ -707,30 +765,11 @@ CREATE INDEX IF NOT EXISTS idx_futures_exp_prefix ON futures_expirations(prefix)
 CREATE INDEX IF NOT EXISTS idx_futures_exp_date ON futures_expirations(expiration_date);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_futures_exp_security_prefix ON futures_expirations(security_id, prefix);
 
-COMMENT ON TABLE futures_expirations IS 'Контракты фьючерсов; prefix — полный тикер MOEX (Si-3.26)';
+ALTER TABLE futures_expirations ADD COLUMN IF NOT EXISTS moex_secid VARCHAR(20);
 
--- Примеры контрактов (обновляйте даты экспирации по мере необходимости)
-INSERT INTO futures_expirations (security_id, prefix, expiration_date, is_active)
-SELECT s.id, v.prefix, v.expiration_date, TRUE
-FROM (VALUES
-    ('USD/RUB (доллар/рубль)', 'Si-3.26', DATE '2026-03-19'),
-    ('USD/RUB (доллар/рубль)', 'Si-6.26', DATE '2026-06-18'),
-    ('USD/RUB (доллар/рубль)', 'Si-9.26', DATE '2026-09-18'),
-    ('EUR/RUB (евро/рубль)', 'Eu-3.26', DATE '2026-03-19'),
-    ('Сбербанк (фьючерс на акции)', 'SBRF-3.26', DATE '2026-03-19'),
-    ('ВТБ (фьючерс на акции)', 'VTBR-3.26', DATE '2026-03-19'),
-    ('Газпром (фьючерс на акции)', 'GAZR-3.26', DATE '2026-03-19'),
-    ('ЛУКОЙЛ (фьючерс на акции)', 'LKOH-3.26', DATE '2026-03-19'),
-    ('Индекс Мосбиржи (IMOEX)', 'MX-3.26', DATE '2026-03-19'),
-    ('Индекс РТС', 'RI-3.26', DATE '2026-03-19'),
-    ('Нефть Brent', 'BR-4.26', DATE '2026-04-30'),
-    ('Золото (USD)', 'GD-4.26', DATE '2026-04-30')
-) AS v(security_name, prefix, expiration_date)
-JOIN securities s ON s.name = v.security_name
-ON CONFLICT (security_id, prefix) DO UPDATE SET
-    expiration_date = EXCLUDED.expiration_date,
-    is_active = EXCLUDED.is_active;
+COMMENT ON TABLE futures_expirations IS 'Контракты фьючерсов; prefix — SHORTNAME MOEX (CNY-9.26), moex_secid — SECID (CRU6) для T-Bank/MOEX. Sync из MOEX ISS.';
 
+-- Ручной INSERT контрактов не нужен — sync_futures_expirations_from_moex подтягивает список с MOEX.
 -- ============================================
 -- Таблица: price_load_log (лог загрузки цен)
 -- ============================================
@@ -742,9 +781,12 @@ CREATE TABLE IF NOT EXISTS price_load_log (
     date_to DATE NOT NULL,
     source VARCHAR(20) NOT NULL,
     records_loaded INTEGER DEFAULT 0,
+    contract_prefix VARCHAR(50),
     error_message TEXT,
     loaded_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
+
+ALTER TABLE price_load_log ADD COLUMN IF NOT EXISTS contract_prefix VARCHAR(50);
 
 CREATE INDEX IF NOT EXISTS idx_price_load_log_security ON price_load_log(security_id, timeframe_id);
 CREATE INDEX IF NOT EXISTS idx_price_load_log_loaded_at ON price_load_log(loaded_at);

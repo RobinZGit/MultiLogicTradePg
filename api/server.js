@@ -4,9 +4,6 @@ const cors = require('cors');
 const { Pool } = require('pg');
 const {
   hashToken,
-  fetchTbankPortfolioBalance,
-  fetchTbankAccounts,
-  resolveTbankAccountByToken,
 } = require('./tbank');
 
 const app = express();
@@ -141,6 +138,512 @@ app.put('/api/indicators/:id', async (req, res) => {
     res.json(full[0]);
   } catch (err) {
     handleDbError(res, err, 'PUT /api/indicators/:id');
+  }
+});
+
+app.get('/api/security-indicator-series', async (req, res) => {
+  const securityId = parseId(req.query.security_id);
+  if (!securityId) {
+    res.status(400).json({ error: 'Укажите security_id' });
+    return;
+  }
+  try {
+    const { rows } = await pool.query(
+      `
+      SELECT
+        sis.id,
+        sis.security_id,
+        sis.indicator_id,
+        sis.series_code,
+        sis.invoke_formula,
+        sis.param_period,
+        sis.param_fast_period,
+        sis.param_slow_period,
+        sis.param_signal_period,
+        sis.param_std_dev,
+        sis.param_k_period,
+        sis.param_d_period,
+        sis.param_smooth,
+        sis.point_count,
+        sis.display_order,
+        sis.is_active,
+        i.code AS indicator_code,
+        i.name AS indicator_name
+      FROM security_indicator_series sis
+      JOIN indicators i ON i.id = sis.indicator_id
+      WHERE sis.security_id = $1 AND sis.is_active = TRUE
+      ORDER BY sis.display_order, sis.id
+    `,
+      [securityId]
+    );
+    res.json(rows);
+  } catch (err) {
+    console.error('GET /api/security-indicator-series', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/api/security-indicator-series', async (req, res) => {
+  const securityId = parseId(req.body?.security_id);
+  const indicatorId = parseId(req.body?.indicator_id);
+  const timeframeId = parseId(req.body?.timeframe_id);
+  if (!securityId || !indicatorId) {
+    res.status(400).json({ error: 'Укажите security_id и indicator_id' });
+    return;
+  }
+  const client = await pool.connect();
+  try {
+    await client.query(`SET statement_timeout = '120000'`);
+    await client.query('CALL ensure_security_indicator_series($1, $2)', [
+      securityId,
+      indicatorId,
+    ]);
+    if (timeframeId) {
+      await client.query(
+        'CALL sync_security_indicator_series_all($1, $2, NULL, NULL, FALSE)',
+        [securityId, timeframeId]
+      );
+    }
+    const { rows } = await client.query(
+      `
+      SELECT
+        sis.id,
+        sis.security_id,
+        sis.indicator_id,
+        sis.series_code,
+        sis.invoke_formula,
+        sis.point_count,
+        sis.display_order,
+        sis.is_active,
+        i.code AS indicator_code,
+        i.name AS indicator_name
+      FROM security_indicator_series sis
+      JOIN indicators i ON i.id = sis.indicator_id
+      WHERE sis.security_id = $1 AND sis.indicator_id = $2 AND sis.is_active = TRUE
+      ORDER BY sis.display_order, sis.id
+    `,
+      [securityId, indicatorId]
+    );
+    res.status(201).json(rows);
+  } catch (err) {
+    console.error('POST /api/security-indicator-series', err);
+    res.status(500).json({ error: err.message });
+  } finally {
+    client.release();
+  }
+});
+
+app.delete('/api/security-indicator-series/:id', async (req, res) => {
+  const id = parseId(req.params.id);
+  if (!id) {
+    res.status(400).json({ error: 'Invalid id' });
+    return;
+  }
+  try {
+    const { rowCount } = await pool.query(
+      'DELETE FROM security_indicator_series WHERE id = $1',
+      [id]
+    );
+    if (rowCount === 0) {
+      res.status(404).json({ error: 'Not found' });
+      return;
+    }
+    res.json({ ok: true });
+  } catch (err) {
+    handleDbError(res, err, 'DELETE /api/security-indicator-series/:id');
+  }
+});
+
+app.post('/api/security-indicator-series/sync', async (req, res) => {
+  const securityId = parseId(req.body?.security_id);
+  const timeframeId = parseId(req.body?.timeframe_id);
+  const endDt = req.body?.end_dt ? String(req.body.end_dt) : null;
+  const pointCount = parseId(req.body?.point_count);
+  const incremental = req.body?.incremental !== false;
+  if (!securityId || !timeframeId) {
+    res.status(400).json({ error: 'Укажите security_id и timeframe_id' });
+    return;
+  }
+  const client = await pool.connect();
+  try {
+    await client.query(`SET statement_timeout = '120000'`);
+    await client.query(
+      'CALL sync_security_indicator_series_all($1, $2, $3::timestamp, $4, $5)',
+      [securityId, timeframeId, endDt, pointCount, incremental]
+    );
+    res.json({ ok: true });
+  } catch (err) {
+    console.error('POST /api/security-indicator-series/sync', err);
+    res.status(500).json({ error: err.message });
+  } finally {
+    client.release();
+  }
+});
+
+app.post('/api/indicators/calculate', async (req, res) => {
+  const securityId = parseId(req.body?.security_id);
+  const timeframeId = parseId(req.body?.timeframe_id);
+  const indicatorId = parseId(req.body?.indicator_id);
+  const dateFrom = req.body?.date_from ? String(req.body.date_from) : null;
+  const dateTo = req.body?.date_to ? String(req.body.date_to) : null;
+  const overwrite = req.body?.overwrite === true;
+  if (!securityId || !timeframeId || !indicatorId || !dateFrom || !dateTo) {
+    res.status(400).json({
+      error: 'Укажите security_id, timeframe_id, indicator_id, date_from, date_to',
+    });
+    return;
+  }
+  const client = await pool.connect();
+  try {
+    await client.query(`SET statement_timeout = '120000'`);
+    await client.query(`SET lock_timeout = '15000'`);
+    await client.query(
+      `CALL calculate_indicator($1, $2, $3, $4::date, $5::date, $6)`,
+      [securityId, timeframeId, indicatorId, dateFrom, dateTo, overwrite]
+    );
+    res.json({ ok: true });
+  } catch (err) {
+    console.error('POST /api/indicators/calculate', err);
+    res.status(500).json({ error: err.message });
+  } finally {
+    client.release();
+  }
+});
+
+app.get('/api/indicator-values', async (req, res) => {
+  const securityId = parseId(req.query.security_id);
+  const timeframeId = parseId(req.query.timeframe_id);
+  const indicatorIdsRaw = req.query.indicator_ids
+    ? String(req.query.indicator_ids)
+    : '';
+  const indicatorIds = indicatorIdsRaw
+    .split(',')
+    .map((s) => parseInt(s.trim(), 10))
+    .filter((n) => Number.isInteger(n) && n > 0);
+  const before = req.query.before ? String(req.query.before) : null;
+  const after = req.query.after ? String(req.query.after) : null;
+  if (!securityId || !timeframeId || indicatorIds.length === 0) {
+    res.status(400).json({
+      error: 'Укажите security_id, timeframe_id и indicator_ids (через запятую)',
+    });
+    return;
+  }
+  try {
+    const params = [securityId, timeframeId, indicatorIds];
+    let rangeClause = '';
+    if (before) {
+      params.push(before);
+      rangeClause += ` AND iv.dt <= $${params.length}::timestamp`;
+    }
+    if (after) {
+      params.push(after);
+      rangeClause += ` AND iv.dt >= $${params.length}::timestamp`;
+    }
+    const { rows } = await pool.query(
+      `
+      SELECT
+        iv.indicator_id,
+        i.code AS indicator_code,
+        ivt.code AS line_code,
+        ivt.name AS line_name,
+        ivt.is_threshold,
+        ivt.display_order,
+        iv.dt,
+        iv.value
+      FROM indicator_values iv
+      JOIN indicators i ON i.id = iv.indicator_id
+      JOIN indicator_value_types ivt ON ivt.id = iv.indicator_value_type_id
+      WHERE iv.security_id = $1
+        AND iv.timeframe_id = $2
+        AND iv.indicator_id = ANY($3::int[])
+        ${rangeClause}
+      ORDER BY iv.dt, iv.indicator_id, ivt.display_order, ivt.id
+    `,
+      params
+    );
+    res.json(rows);
+  } catch (err) {
+    console.error('GET /api/indicator-values', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.get('/api/timeframes', async (_req, res) => {
+  try {
+    const { rows } = await pool.query(`
+      SELECT id, tf, full_name, sec, is_active
+      FROM timeframes
+      WHERE is_active = TRUE
+      ORDER BY sec
+    `);
+    res.json(rows);
+  } catch (err) {
+    console.error('GET /api/timeframes', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.get('/api/securities', async (req, res) => {
+  const exchangeId = parseId(req.query.exchange_id);
+  const kind = req.query.kind === 'futures' ? 'futures' : req.query.kind === 'stock' ? 'stock' : null;
+  if (!exchangeId) {
+    res.status(400).json({ error: 'Укажите exchange_id' });
+    return;
+  }
+  try {
+    let typeFilter = '';
+    if (kind === 'stock') {
+      typeFilter = `AND st.name IN ('Stock', 'PreferredStock') AND sp.instrument_market = 'stock'`;
+    } else if (kind === 'futures') {
+      typeFilter = `AND st.name = 'Futures' AND sp.instrument_market = 'futures'`;
+    }
+    const { rows } = await pool.query(
+      `
+      SELECT
+        s.id,
+        s.name,
+        st.name AS security_type,
+        sp.prefix,
+        sp.instrument_market,
+        sp.exchange_id,
+        e.name AS exchange_name
+      FROM securities s
+      JOIN security_types st ON st.id = s.security_type_id
+      JOIN security_prefixes sp ON sp.security_id = s.id AND sp.exchange_id = $1
+      JOIN exchanges e ON e.id = sp.exchange_id
+      WHERE 1=1 ${typeFilter}
+      ORDER BY s.name
+    `,
+      [exchangeId]
+    );
+    res.json(rows);
+  } catch (err) {
+    console.error('GET /api/securities', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/api/securities', async (req, res) => {
+  const parsed = parseSecurityBody(req.body);
+  if (parsed.error) {
+    res.status(400).json({ error: parsed.error });
+    return;
+  }
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const typeName = parsed.kind === 'futures' ? 'Futures' : 'Stock';
+    const { rows: typeRows } = await client.query(
+      'SELECT id FROM security_types WHERE name = $1',
+      [typeName]
+    );
+    if (typeRows.length === 0) {
+      await client.query('ROLLBACK');
+      res.status(500).json({ error: `Тип ${typeName} не найден` });
+      return;
+    }
+    const instrumentMarket = parsed.kind === 'futures' ? 'futures' : 'stock';
+    const { rows: secRows } = await client.query(
+      `INSERT INTO securities (name, security_type_id)
+       VALUES ($1, $2)
+       ON CONFLICT (name) DO UPDATE SET security_type_id = EXCLUDED.security_type_id
+       RETURNING id, name, security_type_id`,
+      [parsed.name, typeRows[0].id]
+    );
+    const securityId = secRows[0].id;
+    await client.query(
+      `INSERT INTO security_prefixes (security_id, exchange_id, prefix, instrument_market, tbank_figi, note)
+       VALUES ($1, $2, $3, $4, NULL, $5)
+       ON CONFLICT (security_id, exchange_id) DO UPDATE SET
+         prefix = EXCLUDED.prefix,
+         instrument_market = EXCLUDED.instrument_market,
+         note = EXCLUDED.note`,
+      [securityId, parsed.exchange_id, parsed.prefix, instrumentMarket, parsed.note || null]
+    );
+    await client.query('COMMIT');
+    const { rows } = await pool.query(
+      `
+      SELECT s.id, s.name, st.name AS security_type, sp.prefix, sp.instrument_market,
+             sp.exchange_id, e.name AS exchange_name
+      FROM securities s
+      JOIN security_types st ON st.id = s.security_type_id
+      JOIN security_prefixes sp ON sp.security_id = s.id
+      JOIN exchanges e ON e.id = sp.exchange_id
+      WHERE s.id = $1 AND sp.exchange_id = $2
+    `,
+      [securityId, parsed.exchange_id]
+    );
+    res.status(201).json(rows[0]);
+  } catch (err) {
+    await client.query('ROLLBACK');
+    handleDbError(res, err, 'POST /api/securities');
+  } finally {
+    client.release();
+  }
+});
+
+app.get('/api/prices', async (req, res) => {
+  const securityId = parseId(req.query.security_id);
+  const timeframeId = parseId(req.query.timeframe_id);
+  const limitRaw = Number(req.query.limit);
+  const limit = Number.isInteger(limitRaw) && limitRaw > 0 ? Math.min(limitRaw, 500) : 120;
+  const before = req.query.before ? String(req.query.before) : null;
+  if (!securityId || !timeframeId) {
+    res.status(400).json({ error: 'Укажите security_id и timeframe_id' });
+    return;
+  }
+  try {
+    const params = [securityId, timeframeId, limit];
+    let beforeClause = '';
+    if (before) {
+      beforeClause = 'AND dt < $4::timestamp';
+      params.push(before);
+    }
+    const { rows } = await pool.query(
+      `
+      SELECT p.dt, p.open_price, p.high_price, p.low_price, p.close_price, p.volume,
+             p.contract_prefix,
+             sp.prefix AS group_prefix
+      FROM prices p
+      LEFT JOIN security_prefixes sp ON sp.security_id = p.security_id
+      WHERE p.security_id = $1 AND p.timeframe_id = $2
+      ${beforeClause}
+      ORDER BY p.dt DESC
+      LIMIT $3
+    `,
+      params
+    );
+    rows.reverse();
+    res.json(rows);
+  } catch (err) {
+    console.error('GET /api/prices', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/api/prices/load', async (req, res) => {
+  const securityId = parseId(req.body?.security_id);
+  const timeframeId = parseId(req.body?.timeframe_id);
+  const dateFrom = parseDateString(req.body?.date_from);
+  const dateTo = parseDateString(req.body?.date_to);
+  if (!securityId || !timeframeId) {
+    res.status(400).json({ error: 'Укажите security_id и timeframe_id' });
+    return;
+  }
+  if (!dateFrom || !dateTo) {
+    res.status(400).json({ error: 'Укажите date_from и date_to (YYYY-MM-DD)' });
+    return;
+  }
+  if (dateFrom > dateTo) {
+    res.status(400).json({ error: 'date_from не может быть позже date_to' });
+    return;
+  }
+  try {
+    const { rows: beforeRows } = await pool.query(
+      `
+      SELECT COUNT(*)::int AS cnt
+      FROM prices
+      WHERE security_id = $1
+        AND timeframe_id = $2
+        AND dt >= $3::date
+        AND dt < ($4::date + INTERVAL '1 day')
+    `,
+      [securityId, timeframeId, dateFrom, dateTo]
+    );
+    const beforeCount = beforeRows[0]?.cnt ?? 0;
+
+    const client = await pool.connect();
+    try {
+      await client.query(`SET lock_timeout = '15s'`);
+      await client.query(`SET statement_timeout = '180s'`);
+      await client.query(`CALL load_prices_http($1, $2, $3::date, $4::date)`, [
+        securityId,
+        timeframeId,
+        dateFrom,
+        dateTo,
+      ]);
+    } finally {
+      client.release();
+    }
+
+    const { rows: logRows } = await pool.query(
+      `
+      SELECT source, records_loaded, error_message, contract_prefix,
+             date_from, date_to
+      FROM price_load_log
+      WHERE security_id = $1
+        AND timeframe_id = $2
+        AND date_from >= $3::date
+        AND date_to <= $4::date
+        AND loaded_at >= (CURRENT_TIMESTAMP - INTERVAL '10 minutes')
+      ORDER BY id DESC
+      LIMIT 20
+    `,
+      [securityId, timeframeId, dateFrom, dateTo]
+    );
+
+    const tbankLogs = logRows.filter((r) => r.source === 'T-BANK');
+    const moexLogs = logRows.filter((r) => r.source === 'MOEX');
+    const tbankLog = tbankLogs[0];
+    const moexLog = moexLogs[0];
+    const contracts = [];
+    const seenContracts = new Set();
+    for (const row of logRows) {
+      if (!row.contract_prefix || seenContracts.has(row.contract_prefix)) continue;
+      seenContracts.add(row.contract_prefix);
+      contracts.push({
+        prefix: row.contract_prefix,
+        source: row.source,
+        records_loaded: row.records_loaded,
+      });
+    }
+    const tbankTotal = tbankLogs.reduce((s, r) => s + (r.records_loaded ?? 0), 0);
+    const moexTotal = moexLogs.reduce((s, r) => s + (r.records_loaded ?? 0), 0);
+    const primarySource =
+      tbankTotal > 0
+        ? 'T-BANK'
+        : moexTotal > 0
+          ? 'MOEX'
+          : tbankLog
+            ? 'T-BANK → MOEX'
+            : 'T-Bank → MOEX';
+
+    const { rows: afterRows } = await pool.query(
+      `
+      SELECT COUNT(*)::int AS cnt
+      FROM prices
+      WHERE security_id = $1
+        AND timeframe_id = $2
+        AND dt >= $3::date
+        AND dt < ($4::date + INTERVAL '1 day')
+    `,
+      [securityId, timeframeId, dateFrom, dateTo]
+    );
+    const afterCount = afterRows[0]?.cnt ?? 0;
+
+    res.json({
+      ok: true,
+      procedure: 'load_prices_http',
+      source: primarySource,
+      date_from: dateFrom,
+      date_to: dateTo,
+      candles: Math.max(0, afterCount - beforeCount),
+      candles_total: afterCount,
+      records_loaded: tbankLogs.reduce((s, r) => s + (r.records_loaded ?? 0), 0)
+        + moexLogs.reduce((s, r) => s + (r.records_loaded ?? 0), 0),
+      contracts,
+      tbank: {
+        records: tbankLogs.reduce((s, r) => s + (r.records_loaded ?? 0), 0) || null,
+        error: tbankLog?.error_message ?? null,
+      },
+      moex: {
+        records: moexLogs.reduce((s, r) => s + (r.records_loaded ?? 0), 0) || null,
+        error: moexLog?.error_message ?? null,
+      },
+    });
+  } catch (err) {
+    console.error('POST /api/prices/load', err);
+    res.status(500).json({ error: err.message });
   }
 });
 
@@ -375,7 +878,7 @@ app.post('/api/accounts/preview-connection', async (req, res) => {
       res.status(400).json({ error: preview.error });
       return;
     }
-    const resolved = await resolveTbankAccountByToken(
+    const resolved = await pgResolveTbankAccount(
       preview.broker_api_url,
       preview.token,
       preview.account_code || null
@@ -383,10 +886,10 @@ app.post('/api/accounts/preview-connection', async (req, res) => {
     let balance = null;
     let balance_error = null;
     try {
-      balance = await fetchTbankPortfolioBalance(
+      balance = await pgFetchTbankPortfolioBalance(
         preview.broker_api_url,
         preview.token,
-        resolved.accountId
+        resolved.account_id
       );
     } catch (balErr) {
       balance_error = balErr.message;
@@ -394,8 +897,8 @@ app.post('/api/accounts/preview-connection', async (req, res) => {
     res.json({
       ok: true,
       accounts: resolved.accounts,
-      selected_account_id: resolved.accountId,
-      selected_account_name: resolved.accountName,
+      selected_account_id: resolved.account_id,
+      selected_account_name: resolved.account_name,
       accounts_found: resolved.accounts.length,
       balance: balance?.amount ?? null,
       balance_currency: balance?.currency ?? null,
@@ -863,6 +1366,15 @@ function parseId(value) {
   return Number.isInteger(id) && id > 0 ? id : null;
 }
 
+function parseDateString(value) {
+  if (typeof value !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(value)) {
+    return null;
+  }
+  const d = new Date(`${value}T12:00:00`);
+  if (Number.isNaN(d.getTime())) return null;
+  return value;
+}
+
 function parseBrokerBody(body) {
   const code = typeof body?.code === 'string' ? body.code.trim() : '';
   const name = typeof body?.name === 'string' ? body.name.trim() : '';
@@ -907,6 +1419,24 @@ function parseIndicatorBody(body) {
   if (name.length > 100) return { error: 'Название индикатора не длиннее 100 символов' };
   if (category && category.length > 50) return { error: 'Категория не длиннее 50 символов' };
   return { name, description, category, script, is_active };
+}
+
+function parseSecurityBody(body) {
+  const name = typeof body?.name === 'string' ? body.name.trim() : '';
+  const prefix = typeof body?.prefix === 'string' ? body.prefix.trim().toUpperCase() : '';
+  const exchange_id = Number(body?.exchange_id);
+  const kind = body?.kind === 'futures' ? 'futures' : 'stock';
+  const note =
+    body?.note == null || body.note === '' ? null : String(body.note).trim();
+
+  if (!name) return { error: 'Укажите название бумаги' };
+  if (name.length > 200) return { error: 'Название не длиннее 200 символов' };
+  if (!prefix) return { error: 'Укажите тикер (prefix)' };
+  if (prefix.length > 50) return { error: 'Тикер не длиннее 50 символов' };
+  if (!Number.isInteger(exchange_id) || exchange_id <= 0) {
+    return { error: 'Выберите торговую площадку' };
+  }
+  return { name, prefix, exchange_id, kind, note };
 }
 
 function parseAccountBody(body) {
@@ -976,14 +1506,15 @@ async function fillRealTbankAccountFromToken(parsed, existingAccountId) {
   }
 
   try {
-    const resolved = await resolveTbankAccountByToken(
+    const resolved = await pgResolveTbankAccount(
       brokers[0].api_url,
       token,
       parsed.account_code || null
     );
-    parsed.account_code = resolved.accountId;
+    parsed.account_code = resolved.account_id;
     if (!parsed.name) {
-      parsed.name = resolved.accountName || `T-Bank ${resolved.accountId.slice(0, 8)}`;
+      parsed.name =
+        resolved.account_name || `T-Bank ${String(resolved.account_id).slice(0, 8)}`;
     }
     return parsed;
   } catch (err) {
@@ -1028,11 +1559,11 @@ async function enrichAccountBalance(row) {
     balance_display: '—',
     balance_error: null,
   };
-  if (!row.has_token) {
-    return base;
-  }
   if (row.account_type === 'fake') {
     base.balance_display = 'демо';
+    return base;
+  }
+  if (!row.has_token) {
     return base;
   }
   if (row.broker_code !== 'T-BANK') {
@@ -1040,35 +1571,47 @@ async function enrichAccountBalance(row) {
     return base;
   }
   try {
-    const { rows: tokenRows } = await pool.query(
-      `SELECT a.token_encrypted, b.api_url AS broker_api_url
-       FROM accounts a JOIN brokers b ON b.id = a.broker_id
-       WHERE a.id = $1`,
+    const { rows } = await pool.query(
+      `SELECT fetch_tbank_account_balance($1) AS bal`,
       [row.id]
     );
-    const token = tokenRows[0]?.token_encrypted;
-    if (!token) {
-      return base;
-    }
-    const bal = await fetchTbankPortfolioBalance(
-      tokenRows[0].broker_api_url,
-      token,
-      (
-        await resolveTbankAccountByToken(
-          tokenRows[0].broker_api_url,
-          token,
-          row.account_code || null
-        )
-      ).accountId
-    );
-    base.balance = bal.amount;
-    base.balance_currency = bal.currency;
-    base.balance_display = bal.display;
+    const bal = rows[0]?.bal ?? {};
+    base.balance = bal.amount ?? null;
+    base.balance_currency = bal.currency ?? null;
+    base.balance_display = bal.display ?? '—';
+    base.balance_error = bal.error ?? null;
   } catch (err) {
     base.balance_error = err.message;
     base.balance_display = 'ошибка';
   }
   return base;
+}
+
+async function pgResolveTbankAccount(apiUrl, token, preferredAccountId) {
+  const { rows } = await pool.query(
+    `SELECT resolve_tbank_account($1, $2, $3) AS r`,
+    [apiUrl, token, preferredAccountId || null]
+  );
+  const r = rows[0]?.r ?? {};
+  const accounts = Array.isArray(r.accounts) ? r.accounts : [];
+  return {
+    accounts,
+    account_id: r.account_id ?? '',
+    account_name: r.account_name ?? '',
+  };
+}
+
+async function pgFetchTbankPortfolioBalance(apiUrl, token, accountId) {
+  const { rows } = await pool.query(
+    `SELECT fetch_tbank_portfolio_balance($1, $2, $3) AS bal`,
+    [apiUrl, token, accountId]
+  );
+  const bal = rows[0]?.bal ?? {};
+  return {
+    amount: bal.amount != null ? Number(bal.amount) : null,
+    currency: bal.currency ?? null,
+    display: bal.display ?? null,
+  };
 }
 
 async function resolveAccountConnection(body) {

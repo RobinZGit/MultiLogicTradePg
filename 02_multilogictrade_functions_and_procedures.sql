@@ -1,4 +1,4 @@
--- ============================================
+﻿-- ============================================
 -- MultiLogicTrade — шаг 2: функции и процедуры
 -- Версия: v12 (идемпотентный запуск)
 -- ============================================
@@ -159,6 +159,28 @@ $$ LANGUAGE plpgsql IMMUTABLE;
 COMMENT ON FUNCTION get_tbank_candle_interval(VARCHAR) IS
 'Возвращает CANDLE_INTERVAL_* для T-Bank GetCandles API';
 
+-- ISO-8601 UTC для T-Bank GetCandles (обязателен символ T, иначе HTTP 400)
+CREATE OR REPLACE FUNCTION tbank_iso_utc(p_date DATE, p_time TIME DEFAULT TIME '00:00:00')
+RETURNS TEXT
+LANGUAGE sql
+IMMUTABLE AS $$
+    SELECT to_char(p_date::timestamp + p_time, 'YYYY-MM-DD"T"HH24:MI:SS"Z"');
+$$;
+
+COMMENT ON FUNCTION tbank_iso_utc(DATE, TIME) IS
+'Дата/время в формате 2026-07-05T00:00:00Z для T-Bank Invest API';
+
+-- Вечные фьючерсы MOEX (CNYRUBF, USDRUBF …) — без rollover по контрактам
+CREATE OR REPLACE FUNCTION is_perpetual_future_group(
+    p_group_prefix VARCHAR,
+    p_note TEXT DEFAULT NULL
+)
+RETURNS BOOLEAN
+LANGUAGE sql IMMUTABLE AS $$
+    SELECT btrim(p_group_prefix) IN ('CNYRUBF', 'USDRUBF', 'GLDRUBF', 'IMOEXF')
+        OR coalesce(p_note, '') ILIKE '%вечн%';
+$$;
+
 -- Функция: get_active_future_prefix
 -- Определяет активный фьючерс на заданную дату
 -- ============================================
@@ -168,8 +190,18 @@ CREATE OR REPLACE FUNCTION get_active_future_prefix(
 )
 RETURNS VARCHAR(50) AS $$
 DECLARE
+    v_group_prefix VARCHAR(50);
+    v_note TEXT;
     v_prefix VARCHAR(50);
 BEGIN
+    SELECT sp.prefix, sp.note INTO v_group_prefix, v_note
+    FROM security_prefixes sp
+    WHERE sp.security_id = p_security_id AND sp.exchange_id = 1;
+
+    IF is_perpetual_future_group(v_group_prefix, v_note) THEN
+        RETURN v_group_prefix;
+    END IF;
+
     SELECT fe.prefix INTO v_prefix
     FROM futures_expirations fe
     WHERE fe.security_id = p_security_id
@@ -183,32 +215,93 @@ END;
 $$ LANGUAGE plpgsql;
 
 COMMENT ON FUNCTION get_active_future_prefix(INTEGER, DATE) IS 
-'Возвращает тикер активного фьючерса (с окончанием) на заданную дату';
+'Тикер активного фьючерса на дату; для вечных (CNYRUBF …) — групповой префикс из security_prefixes';
+
+-- Контракт фьючерса на дату + дата начала торгов (день после экспирации предыдущего)
+CREATE OR REPLACE FUNCTION get_future_contract_for_date(
+    p_security_id INTEGER,
+    p_date DATE
+)
+RETURNS TABLE (
+    prefix VARCHAR(50),
+    moex_secid VARCHAR(20),
+    expiration_date DATE,
+    tbank_figi VARCHAR(50),
+    start_date DATE
+)
+LANGUAGE plpgsql AS $$
+BEGIN
+    RETURN QUERY
+    SELECT
+        fe.prefix,
+        fe.moex_secid,
+        fe.expiration_date,
+        fe.tbank_figi,
+        COALESCE(
+            (
+                SELECT fe2.expiration_date + 1
+                FROM futures_expirations fe2
+                WHERE fe2.security_id = fe.security_id
+                  AND fe2.expiration_date < fe.expiration_date
+                  AND fe2.is_active = TRUE
+                ORDER BY fe2.expiration_date DESC
+                LIMIT 1
+            ),
+            DATE '2000-01-01'
+        ) AS start_date
+    FROM futures_expirations fe
+    WHERE fe.security_id = p_security_id
+      AND fe.expiration_date > p_date
+      AND fe.is_active = TRUE
+    ORDER BY fe.expiration_date ASC
+    LIMIT 1;
+END;
+$$;
+
+COMMENT ON FUNCTION get_future_contract_for_date(INTEGER, DATE) IS
+'Контракт фьючерса на дату (ближайшая экспирация после даты) и start_date для загрузки истории';
 
 -- ============================================
 -- Функция: get_tbank_token
 -- Получает зашифрованный токен T-Bank из счета
 -- ============================================
 CREATE OR REPLACE FUNCTION get_tbank_token(
-    p_account_code VARCHAR(100) DEFAULT 'FAKE-EFF-001'
+    p_account_code VARCHAR(100) DEFAULT NULL
 )
 RETURNS TEXT AS $$
 DECLARE
     v_token TEXT;
 BEGIN
-    SELECT token_encrypted INTO v_token
+    IF p_account_code IS NOT NULL AND btrim(p_account_code) <> '' THEN
+        SELECT btrim(a.token_encrypted) INTO v_token
+        FROM accounts a
+        JOIN brokers b ON a.broker_id = b.id
+        WHERE b.code = 'T-BANK'
+          AND a.account_code = p_account_code
+          AND a.is_active = TRUE
+          AND a.token_encrypted IS NOT NULL
+          AND btrim(a.token_encrypted) <> '';
+        IF v_token IS NOT NULL THEN
+            RETURN v_token;
+        END IF;
+    END IF;
+
+    SELECT btrim(a.token_encrypted) INTO v_token
     FROM accounts a
     JOIN brokers b ON a.broker_id = b.id
     WHERE b.code = 'T-BANK'
-      AND a.account_code = p_account_code
-      AND a.is_active = TRUE;
+      AND a.is_active = TRUE
+      AND a.token_encrypted IS NOT NULL
+      AND btrim(a.token_encrypted) <> ''
+    ORDER BY a.is_efficient DESC, a.id
+    LIMIT 1;
 
-    RETURN v_token;
+    RETURN NULLIF(v_token, '');
 END;
 $$ LANGUAGE plpgsql;
 
 COMMENT ON FUNCTION get_tbank_token(VARCHAR) IS 
-'Получает зашифрованный токен T-Bank из таблицы accounts';
+'Токен T-Bank: по account_code или первый активный счёт с токеном (is_efficient DESC)';
 
 -- ============================================
 -- Процедура: insert_candle
@@ -224,13 +317,22 @@ CREATE OR REPLACE PROCEDURE insert_candle(
     p_close NUMERIC(18,6),
     p_volume NUMERIC(20,2) DEFAULT NULL,
     p_value NUMERIC(20,2) DEFAULT NULL,
-    p_trades INTEGER DEFAULT NULL
+    p_trades INTEGER DEFAULT NULL,
+    p_contract_prefix VARCHAR DEFAULT NULL
 )
 LANGUAGE plpgsql AS $$
 BEGIN
-    INSERT INTO prices (security_id, timeframe_id, dt, open_price, high_price, low_price, close_price, volume, value, trades)
-    VALUES (p_security_id, p_timeframe_id, p_dt, p_open, p_high, p_low, p_close, p_volume, p_value, p_trades)
-    ON CONFLICT (security_id, timeframe_id, dt) 
+    INSERT INTO prices (
+        security_id, timeframe_id, dt,
+        open_price, high_price, low_price, close_price,
+        volume, value, trades, contract_prefix
+    )
+    VALUES (
+        p_security_id, p_timeframe_id, p_dt,
+        p_open, p_high, p_low, p_close,
+        p_volume, p_value, p_trades, p_contract_prefix
+    )
+    ON CONFLICT (security_id, timeframe_id, dt)
     DO UPDATE SET
         open_price = EXCLUDED.open_price,
         high_price = EXCLUDED.high_price,
@@ -238,12 +340,13 @@ BEGIN
         close_price = EXCLUDED.close_price,
         volume = EXCLUDED.volume,
         value = EXCLUDED.value,
-        trades = EXCLUDED.trades;
+        trades = EXCLUDED.trades,
+        contract_prefix = COALESCE(EXCLUDED.contract_prefix, prices.contract_prefix);
 END;
 $$;
 
-COMMENT ON PROCEDURE insert_candle(INTEGER, INTEGER, TIMESTAMP, NUMERIC, NUMERIC, NUMERIC, NUMERIC, NUMERIC, NUMERIC, INTEGER) IS 
-'Вставляет/обновляет одну свечу в таблицу prices. Используется из внешнего скрипта загрузки.';
+COMMENT ON PROCEDURE insert_candle(INTEGER, INTEGER, TIMESTAMP, NUMERIC, NUMERIC, NUMERIC, NUMERIC, NUMERIC, NUMERIC, INTEGER, VARCHAR) IS 
+'Вставляет/обновляет одну свечу. contract_prefix — тикер контракта (Si-6.26) для фьючерсов';
 
 -- ============================================
 -- Процедура: load_prices_from_tbank
@@ -981,15 +1084,20 @@ BEGIN
     END IF;
 
     SELECT
-        array_agg(high_price ORDER BY dt),
-        array_agg(low_price ORDER BY dt),
-        array_agg(close_price ORDER BY dt),
+        array_agg(sub.high_price ORDER BY sub.dt),
+        array_agg(sub.low_price ORDER BY sub.dt),
+        array_agg(sub.close_price ORDER BY sub.dt),
         COUNT(*)
     INTO v_highs, v_lows, v_closes, v_idx
-    FROM prices
-    WHERE security_id = p_security_id
-      AND timeframe_id = p_timeframe_id
-      AND dt <= p_dt;
+    FROM (
+        SELECT high_price, low_price, close_price, dt
+        FROM prices
+        WHERE security_id = p_security_id
+          AND timeframe_id = p_timeframe_id
+          AND dt <= p_dt
+        ORDER BY dt DESC
+        LIMIT LEAST(5000, GREATEST(p_period * 30, 200))
+    ) sub;
 
     IF v_idx IS NULL OR v_idx < p_period + 1 THEN
         RETURN NULL;
@@ -1099,6 +1207,742 @@ BEGIN
     END IF;
 
     RETURN NULL;
+END;
+$$;
+
+-- ============================================
+-- Массивные функции индикаторов (один проход по ценам)
+-- Сигнатура: (параметры индикатора…, series, security_id, timeframe_id, point_count, end_dt)
+-- Возвращает TABLE(dt, value) — последние point_count точек до end_dt
+-- ============================================
+
+CREATE OR REPLACE FUNCTION ind_resolve_end_dt(
+    p_security_id INTEGER,
+    p_timeframe_id INTEGER,
+    p_end_dt TIMESTAMP
+)
+RETURNS TIMESTAMP
+LANGUAGE sql STABLE AS $$
+    SELECT COALESCE(
+        p_end_dt,
+        (SELECT MAX(dt) FROM prices
+         WHERE security_id = p_security_id AND timeframe_id = p_timeframe_id)
+    );
+$$;
+
+CREATE OR REPLACE FUNCTION ind_warmup_bars(p_period INTEGER, p_point_count INTEGER)
+RETURNS INTEGER
+LANGUAGE sql IMMUTABLE AS $$
+    SELECT GREATEST(COALESCE(p_period, 14) * 4, COALESCE(p_point_count, 100) + COALESCE(p_period, 14) + 20);
+$$;
+
+-- RSI array
+CREATE OR REPLACE FUNCTION calc_ind_rsi_array(
+    p_period INTEGER,
+    p_series VARCHAR,
+    p_security_id INTEGER,
+    p_timeframe_id INTEGER,
+    p_point_count INTEGER DEFAULT 100,
+    p_end_dt TIMESTAMP DEFAULT NULL
+)
+RETURNS TABLE (dt TIMESTAMP, value NUMERIC)
+LANGUAGE plpgsql STABLE AS $$
+DECLARE
+    v_end TIMESTAMP;
+    v_bars INTEGER;
+    v_dts TIMESTAMP[];
+    v_closes NUMERIC[];
+    v_n INTEGER;
+    v_gain NUMERIC;
+    v_loss NUMERIC;
+    v_avg_gain NUMERIC;
+    v_avg_loss NUMERIC;
+    v_rs NUMERIC;
+    v_rsi NUMERIC;
+    i INTEGER;
+    j INTEGER;
+    v_start INTEGER;
+BEGIN
+    IF p_series IS NOT NULL AND p_series <> 'RSI' THEN
+        RETURN;
+    END IF;
+
+    v_end := ind_resolve_end_dt(p_security_id, p_timeframe_id, p_end_dt);
+    IF v_end IS NULL THEN RETURN; END IF;
+    v_bars := ind_warmup_bars(p_period, p_point_count);
+
+    SELECT array_agg(x.dt ORDER BY x.dt),
+           array_agg(x.close_price ORDER BY x.dt),
+           COUNT(*)::INTEGER
+    INTO v_dts, v_closes, v_n
+    FROM (
+        SELECT p.dt, p.close_price
+        FROM prices p
+        WHERE p.security_id = p_security_id
+          AND p.timeframe_id = p_timeframe_id
+          AND p.dt <= v_end
+        ORDER BY p.dt DESC
+        LIMIT v_bars
+    ) x;
+
+    IF v_n IS NULL OR v_n < p_period + 1 THEN RETURN; END IF;
+
+    v_start := GREATEST(p_period + 1, v_n - p_point_count + 1);
+    FOR i IN v_start .. v_n LOOP
+        v_gain := 0;
+        v_loss := 0;
+        FOR j IN i - p_period + 1 .. i LOOP
+            IF v_closes[j] > v_closes[j - 1] THEN
+                v_gain := v_gain + (v_closes[j] - v_closes[j - 1]);
+            ELSE
+                v_loss := v_loss + (v_closes[j - 1] - v_closes[j]);
+            END IF;
+        END LOOP;
+        v_avg_gain := v_gain / p_period;
+        v_avg_loss := v_loss / p_period;
+        IF v_avg_loss = 0 THEN
+            v_rsi := 100;
+        ELSE
+            v_rs := v_avg_gain / v_avg_loss;
+            v_rsi := 100 - (100 / (1 + v_rs));
+        END IF;
+        dt := v_dts[i];
+        value := v_rsi;
+        RETURN NEXT;
+    END LOOP;
+END;
+$$;
+
+-- SMA array
+CREATE OR REPLACE FUNCTION calc_ind_sma_array(
+    p_period INTEGER,
+    p_series VARCHAR,
+    p_security_id INTEGER,
+    p_timeframe_id INTEGER,
+    p_point_count INTEGER DEFAULT 100,
+    p_end_dt TIMESTAMP DEFAULT NULL
+)
+RETURNS TABLE (dt TIMESTAMP, value NUMERIC)
+LANGUAGE plpgsql STABLE AS $$
+DECLARE
+    v_end TIMESTAMP;
+    v_bars INTEGER;
+    v_dts TIMESTAMP[];
+    v_closes NUMERIC[];
+    v_n INTEGER;
+    v_sum NUMERIC;
+    i INTEGER;
+    v_start INTEGER;
+BEGIN
+    IF p_series IS NOT NULL AND p_series <> 'VALUE' THEN RETURN; END IF;
+
+    v_end := ind_resolve_end_dt(p_security_id, p_timeframe_id, p_end_dt);
+    IF v_end IS NULL THEN RETURN; END IF;
+    v_bars := ind_warmup_bars(p_period, p_point_count);
+
+    SELECT array_agg(x.dt ORDER BY x.dt),
+           array_agg(x.close_price ORDER BY x.dt),
+           COUNT(*)::INTEGER
+    INTO v_dts, v_closes, v_n
+    FROM (
+        SELECT p.dt, p.close_price FROM prices p
+        WHERE p.security_id = p_security_id AND p.timeframe_id = p_timeframe_id AND p.dt <= v_end
+        ORDER BY p.dt DESC LIMIT v_bars
+    ) x;
+
+    IF v_n IS NULL OR v_n < p_period THEN RETURN; END IF;
+
+    v_start := GREATEST(p_period, v_n - p_point_count + 1);
+    FOR i IN v_start .. v_n LOOP
+        v_sum := 0;
+        FOR j IN i - p_period + 1 .. i LOOP
+            v_sum := v_sum + v_closes[j];
+        END LOOP;
+        dt := v_dts[i];
+        value := v_sum / p_period;
+        RETURN NEXT;
+    END LOOP;
+END;
+$$;
+
+-- EMA array
+CREATE OR REPLACE FUNCTION calc_ind_ema_array(
+    p_period INTEGER,
+    p_series VARCHAR,
+    p_security_id INTEGER,
+    p_timeframe_id INTEGER,
+    p_point_count INTEGER DEFAULT 100,
+    p_end_dt TIMESTAMP DEFAULT NULL
+)
+RETURNS TABLE (dt TIMESTAMP, value NUMERIC)
+LANGUAGE plpgsql STABLE AS $$
+DECLARE
+    v_end TIMESTAMP;
+    v_bars INTEGER;
+    v_dts TIMESTAMP[];
+    v_closes NUMERIC[];
+    v_n INTEGER;
+    v_mult NUMERIC;
+    v_ema NUMERIC;
+    i INTEGER;
+    v_start INTEGER;
+BEGIN
+    IF p_series IS NOT NULL AND p_series <> 'VALUE' THEN RETURN; END IF;
+
+    v_end := ind_resolve_end_dt(p_security_id, p_timeframe_id, p_end_dt);
+    IF v_end IS NULL THEN RETURN; END IF;
+    v_bars := ind_warmup_bars(p_period, p_point_count);
+    v_mult := 2.0 / (p_period + 1);
+
+    SELECT array_agg(x.dt ORDER BY x.dt),
+           array_agg(x.close_price ORDER BY x.dt),
+           COUNT(*)::INTEGER
+    INTO v_dts, v_closes, v_n
+    FROM (
+        SELECT p.dt, p.close_price FROM prices p
+        WHERE p.security_id = p_security_id AND p.timeframe_id = p_timeframe_id AND p.dt <= v_end
+        ORDER BY p.dt DESC LIMIT v_bars
+    ) x;
+
+    IF v_n IS NULL OR v_n < 1 THEN RETURN; END IF;
+
+    v_ema := v_closes[1];
+    v_start := GREATEST(2, v_n - p_point_count + 1);
+    FOR i IN 2 .. v_n LOOP
+        v_ema := (v_closes[i] - v_ema) * v_mult + v_ema;
+        IF i >= GREATEST(p_period, v_start) THEN
+            dt := v_dts[i];
+            value := v_ema;
+            RETURN NEXT;
+        END IF;
+    END LOOP;
+END;
+$$;
+
+-- MACD array (один проход → MACD / SIGNAL / HISTOGRAM)
+CREATE OR REPLACE FUNCTION calc_ind_macd_array(
+    p_fast_period INTEGER,
+    p_slow_period INTEGER,
+    p_signal_period INTEGER,
+    p_series VARCHAR,
+    p_security_id INTEGER,
+    p_timeframe_id INTEGER,
+    p_point_count INTEGER DEFAULT 100,
+    p_end_dt TIMESTAMP DEFAULT NULL
+)
+RETURNS TABLE (dt TIMESTAMP, value NUMERIC)
+LANGUAGE plpgsql STABLE AS $$
+DECLARE
+    v_end TIMESTAMP;
+    v_bars INTEGER;
+    v_dts TIMESTAMP[];
+    v_closes NUMERIC[];
+    v_n INTEGER;
+    v_mult_fast NUMERIC;
+    v_mult_slow NUMERIC;
+    v_mult_signal NUMERIC;
+    v_ema_fast NUMERIC;
+    v_ema_slow NUMERIC;
+    v_macd NUMERIC;
+    v_macd_signal NUMERIC;
+    v_macd_line NUMERIC[];
+    v_signal_line NUMERIC[];
+    i INTEGER;
+    v_start INTEGER;
+BEGIN
+    IF p_series NOT IN ('MACD', 'SIGNAL', 'HISTOGRAM') THEN RETURN; END IF;
+
+    v_end := ind_resolve_end_dt(p_security_id, p_timeframe_id, p_end_dt);
+    IF v_end IS NULL THEN RETURN; END IF;
+    v_bars := ind_warmup_bars(p_slow_period + p_signal_period, p_point_count);
+
+    SELECT array_agg(x.dt ORDER BY x.dt),
+           array_agg(x.close_price ORDER BY x.dt),
+           COUNT(*)::INTEGER
+    INTO v_dts, v_closes, v_n
+    FROM (
+        SELECT p.dt, p.close_price FROM prices p
+        WHERE p.security_id = p_security_id AND p.timeframe_id = p_timeframe_id AND p.dt <= v_end
+        ORDER BY p.dt DESC LIMIT v_bars
+    ) x;
+
+    IF v_n IS NULL OR v_n < p_slow_period THEN RETURN; END IF;
+
+    v_mult_fast := 2.0 / (p_fast_period + 1);
+    v_mult_slow := 2.0 / (p_slow_period + 1);
+    v_mult_signal := 2.0 / (p_signal_period + 1);
+    v_ema_fast := v_closes[1];
+    v_ema_slow := v_closes[1];
+    v_macd_line := ARRAY[]::NUMERIC[];
+    v_signal_line := ARRAY[]::NUMERIC[];
+
+    FOR i IN 2 .. v_n LOOP
+        v_ema_fast := (v_closes[i] - v_ema_fast) * v_mult_fast + v_ema_fast;
+        v_ema_slow := (v_closes[i] - v_ema_slow) * v_mult_slow + v_ema_slow;
+        v_macd := v_ema_fast - v_ema_slow;
+        v_macd_line := array_append(v_macd_line, v_macd);
+        IF array_length(v_macd_line, 1) = 1 THEN
+            v_macd_signal := v_macd;
+        ELSE
+            v_macd_signal := (v_macd - v_macd_signal) * v_mult_signal + v_macd_signal;
+        END IF;
+        v_signal_line := array_append(v_signal_line, v_macd_signal);
+    END LOOP;
+
+    v_start := GREATEST(1, array_length(v_macd_line, 1) - p_point_count + 1);
+    FOR i IN v_start .. array_length(v_macd_line, 1) LOOP
+        dt := v_dts[i + 1];
+        v_macd := v_macd_line[i];
+        v_macd_signal := v_signal_line[i];
+        value := CASE p_series
+            WHEN 'MACD' THEN v_macd
+            WHEN 'SIGNAL' THEN v_macd_signal
+            WHEN 'HISTOGRAM' THEN v_macd - v_macd_signal
+        END;
+        RETURN NEXT;
+    END LOOP;
+END;
+$$;
+
+-- BB array
+CREATE OR REPLACE FUNCTION calc_ind_bb_array(
+    p_period INTEGER,
+    p_std_dev NUMERIC,
+    p_series VARCHAR,
+    p_security_id INTEGER,
+    p_timeframe_id INTEGER,
+    p_point_count INTEGER DEFAULT 100,
+    p_end_dt TIMESTAMP DEFAULT NULL
+)
+RETURNS TABLE (dt TIMESTAMP, value NUMERIC)
+LANGUAGE plpgsql STABLE AS $$
+DECLARE
+    v_end TIMESTAMP;
+    v_bars INTEGER;
+    v_dts TIMESTAMP[];
+    v_closes NUMERIC[];
+    v_n INTEGER;
+    v_middle NUMERIC;
+    v_std NUMERIC;
+    v_sum NUMERIC;
+    v_sum_sq NUMERIC;
+    i INTEGER;
+    j INTEGER;
+    v_start INTEGER;
+BEGIN
+    IF p_series NOT IN ('UPPER', 'MIDDLE', 'LOWER', 'BANDWIDTH') THEN RETURN; END IF;
+
+    v_end := ind_resolve_end_dt(p_security_id, p_timeframe_id, p_end_dt);
+    IF v_end IS NULL THEN RETURN; END IF;
+    v_bars := ind_warmup_bars(p_period, p_point_count);
+
+    SELECT array_agg(x.dt ORDER BY x.dt),
+           array_agg(x.close_price ORDER BY x.dt),
+           COUNT(*)::INTEGER
+    INTO v_dts, v_closes, v_n
+    FROM (
+        SELECT p.dt, p.close_price FROM prices p
+        WHERE p.security_id = p_security_id AND p.timeframe_id = p_timeframe_id AND p.dt <= v_end
+        ORDER BY p.dt DESC LIMIT v_bars
+    ) x;
+
+    IF v_n IS NULL OR v_n < p_period THEN RETURN; END IF;
+
+    v_start := GREATEST(p_period, v_n - p_point_count + 1);
+    FOR i IN v_start .. v_n LOOP
+        v_sum := 0;
+        v_sum_sq := 0;
+        FOR j IN i - p_period + 1 .. i LOOP
+            v_sum := v_sum + v_closes[j];
+            v_sum_sq := v_sum_sq + v_closes[j] * v_closes[j];
+        END LOOP;
+        v_middle := v_sum / p_period;
+        v_std := sqrt(GREATEST(v_sum_sq / p_period - v_middle * v_middle, 0));
+        dt := v_dts[i];
+        value := CASE p_series
+            WHEN 'MIDDLE' THEN v_middle
+            WHEN 'UPPER' THEN v_middle + p_std_dev * v_std
+            WHEN 'LOWER' THEN v_middle - p_std_dev * v_std
+            WHEN 'BANDWIDTH' THEN CASE WHEN v_middle = 0 THEN NULL ELSE (2 * p_std_dev * v_std) / v_middle * 100 END
+        END;
+        RETURN NEXT;
+    END LOOP;
+END;
+$$;
+
+-- ATR array
+CREATE OR REPLACE FUNCTION calc_ind_atr_array(
+    p_period INTEGER,
+    p_series VARCHAR,
+    p_security_id INTEGER,
+    p_timeframe_id INTEGER,
+    p_point_count INTEGER DEFAULT 100,
+    p_end_dt TIMESTAMP DEFAULT NULL
+)
+RETURNS TABLE (dt TIMESTAMP, value NUMERIC)
+LANGUAGE plpgsql STABLE AS $$
+DECLARE
+    v_end TIMESTAMP;
+    v_bars INTEGER;
+    v_dts TIMESTAMP[];
+    v_highs NUMERIC[];
+    v_lows NUMERIC[];
+    v_closes NUMERIC[];
+    v_n INTEGER;
+    v_atr NUMERIC;
+    v_tr NUMERIC;
+    v_tr_high NUMERIC;
+    v_tr_low NUMERIC;
+    v_tr_close NUMERIC;
+    i INTEGER;
+    v_start INTEGER;
+BEGIN
+    IF p_series NOT IN ('ATR', 'ATR_PCT') THEN RETURN; END IF;
+
+    v_end := ind_resolve_end_dt(p_security_id, p_timeframe_id, p_end_dt);
+    IF v_end IS NULL THEN RETURN; END IF;
+    v_bars := ind_warmup_bars(p_period, p_point_count);
+
+    SELECT array_agg(x.dt ORDER BY x.dt),
+           array_agg(x.high_price ORDER BY x.dt),
+           array_agg(x.low_price ORDER BY x.dt),
+           array_agg(x.close_price ORDER BY x.dt),
+           COUNT(*)::INTEGER
+    INTO v_dts, v_highs, v_lows, v_closes, v_n
+    FROM (
+        SELECT p.dt, p.high_price, p.low_price, p.close_price FROM prices p
+        WHERE p.security_id = p_security_id AND p.timeframe_id = p_timeframe_id AND p.dt <= v_end
+        ORDER BY p.dt DESC LIMIT v_bars
+    ) x;
+
+    IF v_n IS NULL OR v_n < p_period + 1 THEN RETURN; END IF;
+
+    v_atr := 0;
+    v_start := GREATEST(p_period, v_n - p_point_count + 1);
+    FOR i IN 2 .. v_n LOOP
+        v_tr_high := v_highs[i] - v_lows[i];
+        v_tr_low := ABS(v_highs[i] - v_closes[i - 1]);
+        v_tr_close := ABS(v_lows[i] - v_closes[i - 1]);
+        v_tr := GREATEST(v_tr_high, v_tr_low, v_tr_close);
+        IF i <= p_period THEN
+            v_atr := v_atr + v_tr;
+            IF i = p_period THEN v_atr := v_atr / p_period; END IF;
+        ELSE
+            v_atr := (v_atr * (p_period - 1) + v_tr) / p_period;
+        END IF;
+        IF i >= v_start AND i >= p_period THEN
+            dt := v_dts[i];
+            value := CASE p_series
+                WHEN 'ATR' THEN v_atr
+                WHEN 'ATR_PCT' THEN CASE WHEN v_closes[i] = 0 THEN NULL ELSE v_atr / v_closes[i] * 100 END
+            END;
+            RETURN NEXT;
+        END IF;
+    END LOOP;
+END;
+$$;
+
+-- Stochastic array
+CREATE OR REPLACE FUNCTION calc_ind_stoch_array(
+    p_k_period INTEGER,
+    p_d_period INTEGER,
+    p_smooth INTEGER,
+    p_series VARCHAR,
+    p_security_id INTEGER,
+    p_timeframe_id INTEGER,
+    p_point_count INTEGER DEFAULT 100,
+    p_end_dt TIMESTAMP DEFAULT NULL
+)
+RETURNS TABLE (dt TIMESTAMP, value NUMERIC)
+LANGUAGE plpgsql STABLE AS $$
+DECLARE
+    v_end TIMESTAMP;
+    v_bars INTEGER;
+    v_dts TIMESTAMP[];
+    v_highs NUMERIC[];
+    v_lows NUMERIC[];
+    v_closes NUMERIC[];
+    v_n INTEGER;
+    v_k_values NUMERIC[];
+    v_stoch_k NUMERIC;
+    v_stoch_d NUMERIC;
+    i INTEGER;
+    j INTEGER;
+    v_lowest NUMERIC;
+    v_highest NUMERIC;
+    v_sum NUMERIC;
+    v_start INTEGER;
+BEGIN
+    IF p_series NOT IN ('K', 'D') THEN RETURN; END IF;
+
+    v_end := ind_resolve_end_dt(p_security_id, p_timeframe_id, p_end_dt);
+    IF v_end IS NULL THEN RETURN; END IF;
+    v_bars := ind_warmup_bars(p_k_period + p_d_period, p_point_count);
+
+    SELECT array_agg(x.dt ORDER BY x.dt),
+           array_agg(x.high_price ORDER BY x.dt),
+           array_agg(x.low_price ORDER BY x.dt),
+           array_agg(x.close_price ORDER BY x.dt),
+           COUNT(*)::INTEGER
+    INTO v_dts, v_highs, v_lows, v_closes, v_n
+    FROM (
+        SELECT p.dt, p.high_price, p.low_price, p.close_price FROM prices p
+        WHERE p.security_id = p_security_id AND p.timeframe_id = p_timeframe_id AND p.dt <= v_end
+        ORDER BY p.dt DESC LIMIT v_bars
+    ) x;
+
+    IF v_n IS NULL OR v_n < p_k_period THEN RETURN; END IF;
+
+    v_k_values := ARRAY[]::NUMERIC[];
+    FOR i IN p_k_period .. v_n LOOP
+        v_lowest := v_lows[i];
+        v_highest := v_highs[i];
+        FOR j IN i - p_k_period + 1 .. i LOOP
+            IF v_lows[j] < v_lowest THEN v_lowest := v_lows[j]; END IF;
+            IF v_highs[j] > v_highest THEN v_highest := v_highs[j]; END IF;
+        END LOOP;
+        IF v_highest = v_lowest THEN v_stoch_k := 50;
+        ELSE v_stoch_k := (v_closes[i] - v_lowest) / (v_highest - v_lowest) * 100;
+        END IF;
+        v_k_values := array_append(v_k_values, v_stoch_k);
+    END LOOP;
+
+    v_start := GREATEST(1, array_length(v_k_values, 1) - p_point_count + 1);
+    FOR i IN v_start .. array_length(v_k_values, 1) LOOP
+        dt := v_dts[p_k_period + i - 1];
+        IF p_series = 'K' THEN
+            value := v_k_values[i];
+            RETURN NEXT;
+        ELSE
+            v_sum := 0;
+            FOR j IN GREATEST(1, i - p_d_period + 1) .. i LOOP
+                v_sum := v_sum + v_k_values[j];
+            END LOOP;
+            value := v_sum / LEAST(p_d_period, i);
+            RETURN NEXT;
+        END IF;
+    END LOOP;
+END;
+$$;
+
+-- Диспетчер массивного расчёта по коду индикатора
+CREATE OR REPLACE FUNCTION calc_indicator_series_array(
+    p_indicator_code VARCHAR,
+    p_series VARCHAR,
+    p_security_id INTEGER,
+    p_timeframe_id INTEGER,
+    p_point_count INTEGER DEFAULT 100,
+    p_end_dt TIMESTAMP DEFAULT NULL,
+    p_period INTEGER DEFAULT NULL,
+    p_fast_period INTEGER DEFAULT NULL,
+    p_slow_period INTEGER DEFAULT NULL,
+    p_signal_period INTEGER DEFAULT NULL,
+    p_std_dev NUMERIC DEFAULT NULL,
+    p_k_period INTEGER DEFAULT NULL,
+    p_d_period INTEGER DEFAULT NULL,
+    p_smooth INTEGER DEFAULT NULL
+)
+RETURNS TABLE (dt TIMESTAMP, value NUMERIC)
+LANGUAGE plpgsql STABLE AS $$
+BEGIN
+    CASE upper(btrim(p_indicator_code))
+        WHEN 'RSI' THEN
+            RETURN QUERY SELECT * FROM calc_ind_rsi_array(
+                COALESCE(p_period, 14), p_series, p_security_id, p_timeframe_id, p_point_count, p_end_dt);
+        WHEN 'SMA' THEN
+            RETURN QUERY SELECT * FROM calc_ind_sma_array(
+                COALESCE(p_period, 20), p_series, p_security_id, p_timeframe_id, p_point_count, p_end_dt);
+        WHEN 'EMA' THEN
+            RETURN QUERY SELECT * FROM calc_ind_ema_array(
+                COALESCE(p_period, 20), p_series, p_security_id, p_timeframe_id, p_point_count, p_end_dt);
+        WHEN 'MACD' THEN
+            RETURN QUERY SELECT * FROM calc_ind_macd_array(
+                COALESCE(p_fast_period, 12), COALESCE(p_slow_period, 26), COALESCE(p_signal_period, 9),
+                p_series, p_security_id, p_timeframe_id, p_point_count, p_end_dt);
+        WHEN 'BB' THEN
+            RETURN QUERY SELECT * FROM calc_ind_bb_array(
+                COALESCE(p_period, 20), COALESCE(p_std_dev, 2.0), p_series, p_security_id, p_timeframe_id, p_point_count, p_end_dt);
+        WHEN 'ATR' THEN
+            RETURN QUERY SELECT * FROM calc_ind_atr_array(
+                COALESCE(p_period, 14), p_series, p_security_id, p_timeframe_id, p_point_count, p_end_dt);
+        WHEN 'STOCH' THEN
+            RETURN QUERY SELECT * FROM calc_ind_stoch_array(
+                COALESCE(p_k_period, 14), COALESCE(p_d_period, 3), COALESCE(p_smooth, 3),
+                p_series, p_security_id, p_timeframe_id, p_point_count, p_end_dt);
+        ELSE
+            RETURN;
+    END CASE;
+END;
+$$;
+
+-- Дефолтные параметры из parameter_values / indicator code
+CREATE OR REPLACE FUNCTION resolve_indicator_params(
+    p_indicator_code VARCHAR,
+    OUT param_period INTEGER,
+    OUT param_fast_period INTEGER,
+    OUT param_slow_period INTEGER,
+    OUT param_signal_period INTEGER,
+    OUT param_std_dev NUMERIC,
+    OUT param_k_period INTEGER,
+    OUT param_d_period INTEGER,
+    OUT param_smooth INTEGER
+)
+LANGUAGE plpgsql STABLE AS $$
+BEGIN
+    param_period := CASE upper(p_indicator_code)
+        WHEN 'RSI' THEN 14 WHEN 'SMA' THEN 20 WHEN 'EMA' THEN 20 WHEN 'BB' THEN 20
+        WHEN 'ATR' THEN 14 WHEN 'STOCH' THEN 14 ELSE 14 END;
+    BEGIN
+        SELECT pv.value::INTEGER INTO param_period
+        FROM parameter_values pv
+        JOIN parameter_types pt ON pt.id = pv.parameter_type_id
+        JOIN parameter_sets ps ON ps.id = pv.parameter_set_id
+        WHERE ps.name = 'Default' AND pt.short_name = upper(p_indicator_code) || '_PERIOD'
+        LIMIT 1;
+    EXCEPTION WHEN OTHERS THEN NULL;
+    END;
+    param_fast_period := 12;
+    param_slow_period := 26;
+    param_signal_period := 9;
+    param_std_dev := 2.0;
+    param_k_period := COALESCE(param_period, 14);
+    param_d_period := 3;
+    param_smooth := 3;
+END;
+$$;
+
+CREATE OR REPLACE FUNCTION default_invoke_formula(p_indicator_code VARCHAR)
+RETURNS TEXT
+LANGUAGE sql IMMUTABLE AS $$
+    SELECT CASE upper(btrim(p_indicator_code))
+        WHEN 'RSI' THEN 'calc_ind_rsi_array(:param_period, :series, :security_id, :timeframe_id, :point_count, :end_dt)'
+        WHEN 'SMA' THEN 'calc_ind_sma_array(:param_period, :series, :security_id, :timeframe_id, :point_count, :end_dt)'
+        WHEN 'EMA' THEN 'calc_ind_ema_array(:param_period, :series, :security_id, :timeframe_id, :point_count, :end_dt)'
+        WHEN 'MACD' THEN 'calc_ind_macd_array(:param_fast_period, :param_slow_period, :param_signal_period, :series, :security_id, :timeframe_id, :point_count, :end_dt)'
+        WHEN 'BB' THEN 'calc_ind_bb_array(:param_period, :param_std_dev, :series, :security_id, :timeframe_id, :point_count, :end_dt)'
+        WHEN 'ATR' THEN 'calc_ind_atr_array(:param_period, :series, :security_id, :timeframe_id, :point_count, :end_dt)'
+        WHEN 'STOCH' THEN 'calc_ind_stoch_array(:param_k_period, :param_d_period, :param_smooth, :series, :security_id, :timeframe_id, :point_count, :end_dt)'
+        ELSE 'calc_indicator_series_array(:indicator_code, :series, :security_id, :timeframe_id, :point_count, :end_dt)'
+    END;
+$$;
+
+-- Создать все серии индикатора на бумаге (при drop)
+CREATE OR REPLACE PROCEDURE ensure_security_indicator_series(
+    p_security_id INTEGER,
+    p_indicator_id INTEGER
+)
+LANGUAGE plpgsql AS $$
+DECLARE
+    v_code VARCHAR(20);
+    v_params RECORD;
+    v_vt RECORD;
+    v_ord INTEGER := 0;
+BEGIN
+    SELECT code INTO v_code FROM indicators WHERE id = p_indicator_id;
+    IF v_code IS NULL THEN
+        RAISE EXCEPTION 'indicator_id=% not found', p_indicator_id;
+    END IF;
+
+    SELECT * INTO v_params FROM resolve_indicator_params(v_code);
+
+    FOR v_vt IN
+        SELECT id, code, display_order
+        FROM indicator_value_types
+        WHERE indicator_id = p_indicator_id AND is_threshold = FALSE
+        ORDER BY display_order, id
+    LOOP
+        v_ord := v_ord + 1;
+        INSERT INTO security_indicator_series (
+            security_id, indicator_id, series_code, invoke_formula,
+            param_period, param_fast_period, param_slow_period, param_signal_period,
+            param_std_dev, param_k_period, param_d_period, param_smooth,
+            point_count, display_order
+        )
+        VALUES (
+            p_security_id, p_indicator_id, v_vt.code, default_invoke_formula(v_code),
+            v_params.param_period, v_params.param_fast_period, v_params.param_slow_period,
+            v_params.param_signal_period, v_params.param_std_dev,
+            v_params.param_k_period, v_params.param_d_period, v_params.param_smooth,
+            100, v_ord
+        )
+        ON CONFLICT (security_id, indicator_id, series_code) DO UPDATE SET
+            is_active = TRUE,
+            invoke_formula = EXCLUDED.invoke_formula;
+    END LOOP;
+END;
+$$;
+
+-- Синхронизация одной серии → indicator_values (инкрементально)
+CREATE OR REPLACE PROCEDURE sync_security_indicator_series(
+    p_series_id INTEGER,
+    p_timeframe_id INTEGER,
+    p_end_dt TIMESTAMP DEFAULT NULL,
+    p_point_count INTEGER DEFAULT NULL,
+    p_incremental BOOLEAN DEFAULT TRUE
+)
+LANGUAGE plpgsql AS $$
+DECLARE
+    v_row security_indicator_series%ROWTYPE;
+    v_code VARCHAR(20);
+    v_vt_id INTEGER;
+    v_count INTEGER;
+    v_pt RECORD;
+BEGIN
+    SELECT * INTO v_row FROM security_indicator_series WHERE id = p_series_id AND is_active = TRUE;
+    IF NOT FOUND THEN RETURN; END IF;
+
+    SELECT code INTO v_code FROM indicators WHERE id = v_row.indicator_id;
+    SELECT id INTO v_vt_id FROM indicator_value_types
+    WHERE indicator_id = v_row.indicator_id AND code = v_row.series_code;
+
+    v_count := COALESCE(p_point_count, v_row.point_count, 100);
+
+    IF NOT EXISTS (
+        SELECT 1 FROM prices
+        WHERE security_id = v_row.security_id
+          AND timeframe_id = p_timeframe_id
+          AND (p_end_dt IS NULL OR dt <= p_end_dt)
+        LIMIT 1
+    ) THEN
+        RETURN;
+    END IF;
+
+    FOR v_pt IN
+        SELECT * FROM calc_indicator_series_array(
+            v_code, v_row.series_code,
+            v_row.security_id, p_timeframe_id, v_count, p_end_dt,
+            v_row.param_period, v_row.param_fast_period, v_row.param_slow_period,
+            v_row.param_signal_period, v_row.param_std_dev,
+            v_row.param_k_period, v_row.param_d_period, v_row.param_smooth
+        )
+    LOOP
+        PERFORM insert_indicator_value(
+            v_row.indicator_id, v_vt_id, v_row.security_id, p_timeframe_id,
+            v_pt.dt, v_pt.value, FALSE, NULL, NOT p_incremental
+        );
+    END LOOP;
+END;
+$$;
+
+-- Синхронизация всех серий бумаги
+CREATE OR REPLACE PROCEDURE sync_security_indicator_series_all(
+    p_security_id INTEGER,
+    p_timeframe_id INTEGER,
+    p_end_dt TIMESTAMP DEFAULT NULL,
+    p_point_count INTEGER DEFAULT NULL,
+    p_incremental BOOLEAN DEFAULT TRUE
+)
+LANGUAGE plpgsql AS $$
+DECLARE
+    v_id INTEGER;
+BEGIN
+    FOR v_id IN
+        SELECT id FROM security_indicator_series
+        WHERE security_id = p_security_id AND is_active = TRUE
+        ORDER BY display_order, id
+    LOOP
+        CALL sync_security_indicator_series(v_id, p_timeframe_id, p_end_dt, p_point_count, p_incremental);
+    END LOOP;
 END;
 $$;
 
@@ -1330,6 +2174,7 @@ DECLARE
     -- ============================================================
     v_existing_count INTEGER;        -- Количество существующих записей (0 или 1)
     v_price RECORD;                  -- Строка курсора цен
+    v_load_from TIMESTAMP;           -- Начало загрузки цен (прогрев до date_from)
 BEGIN
     -- ============================================================
     -- БЛОК 1: ЗАГРУЗКА ИНФОРМАЦИИ ОБ ИНДИКАТОРЕ
@@ -1392,11 +2237,32 @@ BEGIN
     END IF;
 
     -- ============================================================
-    -- БЛОК 4: ЗАГРУЗКА ЦЕНОВЫХ ДАННЫХ В МАССИВЫ
+    -- БЛОК 4: ЗАГРУЗКА ЦЕНОВЫХ ДАННЫХ В МАССИВЫ (с прогревом до date_from)
     -- ============================================================
-    -- Загружаем все свечи из таблицы prices в массивы для быстрой обработки
-    -- Это позволяет избежать многократных обращений к БД в циклах расчета
-    FOR v_price IN cur_prices(p_security_id, p_timeframe_id, p_date_from::TIMESTAMP, (p_date_to + INTERVAL '1 day')::TIMESTAMP)
+    SELECT COALESCE(
+        (
+            SELECT MIN(w.dt)
+            FROM (
+                SELECT dt
+                FROM prices
+                WHERE security_id = p_security_id
+                  AND timeframe_id = p_timeframe_id
+                  AND dt < p_date_from::TIMESTAMP
+                ORDER BY dt DESC
+                LIMIT GREATEST(v_period, v_k_period, 14) + 10
+            ) w
+        ),
+        p_date_from::TIMESTAMP
+    ) INTO v_load_from;
+
+    FOR v_price IN
+        SELECT dt, open_price, high_price, low_price, close_price, volume
+        FROM prices
+        WHERE security_id = p_security_id
+          AND timeframe_id = p_timeframe_id
+          AND dt >= v_load_from
+          AND dt < (p_date_to + INTERVAL '1 day')::TIMESTAMP
+        ORDER BY dt
     LOOP
         v_idx := v_idx + 1;
         v_closes[v_idx] := v_price.close_price;   -- Цена закрытия
@@ -1420,7 +2286,10 @@ BEGIN
     -- ============================================================
     -- БЛОК 5.1: РАСЧЁТ ПО ШАБЛОНУ indicators.script (EXECUTE)
     -- ============================================================
-    IF COALESCE(TRIM(v_script), '') <> '' THEN
+    -- Для RSI/SMA/EMA/MACD/BB/ATR/STOCH — inline O(n); via_script вызывает calc_ind_*
+    -- на каждую свечу и сканирует всю историю → зависание на длинных рядах.
+    IF COALESCE(TRIM(v_script), '') <> ''
+       AND v_indicator_code NOT IN ('RSI', 'SMA', 'EMA', 'MACD', 'BB', 'ATR', 'STOCH') THEN
         EXECUTE 'CALL calculate_indicator_via_script($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17)'
         USING p_security_id, p_timeframe_id, p_indicator_id,
               p_date_from, p_date_to, p_overwrite, v_script,
@@ -1781,8 +2650,10 @@ BEGIN
 
             v_dt := v_dts[i];
 
-            -- Записываем ATR (начиная с периода)
-            IF i >= v_period THEN
+            -- Записываем ATR (начиная с периода, только в запрошенном диапазоне)
+            IF i >= v_period
+               AND v_dts[i] >= p_date_from::TIMESTAMP
+               AND v_dts[i] < (p_date_to + INTERVAL '1 day')::TIMESTAMP THEN
                 SELECT id INTO v_value_type_id FROM indicator_value_types WHERE indicator_id = p_indicator_id AND code = 'ATR';
                 IF v_value_type_id IS NOT NULL THEN
                     PERFORM insert_indicator_value(p_indicator_id, v_value_type_id, p_security_id, p_timeframe_id, v_dt, v_atr, FALSE, NULL, p_overwrite);
@@ -2325,10 +3196,166 @@ COMMENT ON PROCEDURE calculate_indicators_batch(INTEGER[], INTEGER, DATE, DATE, 
 -- Закомментируйте блок до метки «КОНЕЦ ОПЦИОНАЛЬНОГО БЛОКА HTTP» или установите pgsql-http.
 -- ================================================================
 
--- ============================================
--- HTTP-ЗАГРУЗКА: включение расширения в базе multilogictrade
+-- @optional-http-block
+-- Ниже: CREATE EXTENSION + процедуры load_*_http (часть B скрипта 02).
 -- ============================================
 CREATE EXTENSION IF NOT EXISTS http;
+
+-- Настройка CA для libcurl (pgsql-http). Без этого на Windows часто:
+-- "SSL certificate problem: unable to get local issuer certificate"
+CREATE OR REPLACE FUNCTION configure_http_ssl()
+RETURNS VOID
+LANGUAGE plpgsql AS $$
+DECLARE
+    v_path TEXT;
+    v_candidates TEXT[] := ARRAY[
+        'C:/Program Files/PostgreSQL/15/ssl/certs/curl-ca-bundle.crt',
+        'C:/Program Files/PostgreSQL/15/ssl/certs/cacert.pem',
+        '/etc/ssl/certs/ca-certificates.crt',
+        '/etc/pki/tls/certs/ca-bundle.crt'
+    ];
+BEGIN
+    FOREACH v_path IN ARRAY v_candidates
+    LOOP
+        BEGIN
+            PERFORM http_set_curlopt('CURLOPT_CAINFO', v_path);
+            PERFORM http_set_curlopt('CURLOPT_SSL_VERIFYPEER', '1');
+            RETURN;
+        EXCEPTION
+            WHEN OTHERS THEN
+                CONTINUE;
+        END;
+    END LOOP;
+END;
+$$;
+
+COMMENT ON FUNCTION configure_http_ssl() IS
+'Указывает libcurl путь к CA-bundle для HTTPS (pgsql-http). См. scripts/fix_pgsql_http_ssl.ps1';
+
+-- instrumentId для GetCandles: ShareBy по тикеру (исправляет устаревший tbank_figi)
+CREATE OR REPLACE FUNCTION resolve_tbank_instrument_id(
+    p_security_id INTEGER,
+    p_prefix VARCHAR,
+    p_tbank_figi VARCHAR DEFAULT NULL,
+    p_is_future BOOLEAN DEFAULT FALSE,
+    p_class_code VARCHAR DEFAULT 'TQBR',
+    p_moex_secid VARCHAR DEFAULT NULL
+)
+RETURNS TEXT
+LANGUAGE plpgsql AS $$
+DECLARE
+    v_token TEXT;
+    v_headers http_header[];
+    v_response http_response;
+    v_instrument JSONB;
+    v_id TEXT;
+    v_try TEXT;
+BEGIN
+    v_token := get_tbank_token();
+
+    IF p_is_future THEN
+        IF v_token IS NULL OR btrim(v_token) = '' THEN
+            RETURN COALESCE(p_tbank_figi, p_moex_secid, p_prefix);
+        END IF;
+        PERFORM configure_http_ssl();
+        v_headers := ARRAY[
+            http_header('Authorization', 'Bearer ' || v_token),
+            http_header('Accept', 'application/json')
+        ];
+        FOREACH v_try IN ARRAY ARRAY[
+            NULLIF(btrim(p_moex_secid), ''),
+            NULLIF(btrim(p_prefix), '')
+        ]
+        LOOP
+            CONTINUE WHEN v_try IS NULL;
+            SELECT * INTO v_response FROM http((
+                'POST',
+                COALESCE(
+                    (SELECT rtrim(b.api_url, '/') FROM brokers b WHERE b.code = 'T-BANK' LIMIT 1),
+                    'https://invest-public-api.tinkoff.ru/rest'
+                )
+                    || '/tinkoff.public.invest.api.contract.v1.InstrumentsService/FutureBy',
+                v_headers,
+                'application/json',
+                jsonb_build_object(
+                    'id_type', 'INSTRUMENT_ID_TYPE_TICKER',
+                    'classCode', 'SPBFUT',
+                    'id', v_try
+                )::TEXT
+            )::http_request);
+            IF v_response.status = 200 THEN
+                v_instrument := v_response.content::JSONB->'instrument';
+                v_id := COALESCE(v_instrument->>'uid', v_instrument->>'figi');
+                IF p_security_id IS NOT NULL AND p_prefix IS NOT NULL AND v_instrument ? 'figi' THEN
+                    UPDATE futures_expirations
+                    SET tbank_figi = v_instrument->>'figi'
+                    WHERE security_id = p_security_id
+                      AND prefix = p_prefix
+                      AND tbank_figi IS DISTINCT FROM v_instrument->>'figi';
+                END IF;
+                RETURN v_id;
+            END IF;
+        END LOOP;
+        RETURN COALESCE(p_tbank_figi, p_moex_secid, p_prefix);
+    END IF;
+
+    IF v_token IS NULL OR btrim(v_token) = '' THEN
+        RETURN COALESCE(p_tbank_figi, p_prefix);
+    END IF;
+
+    PERFORM configure_http_ssl();
+
+    v_headers := ARRAY[
+        http_header('Authorization', 'Bearer ' || v_token),
+        http_header('Accept', 'application/json')
+    ];
+
+    SELECT * INTO v_response FROM http((
+        'POST',
+        COALESCE(
+            (SELECT rtrim(b.api_url, '/') FROM brokers b WHERE b.code = 'T-BANK' LIMIT 1),
+            'https://invest-public-api.tinkoff.ru/rest'
+        )
+            || '/tinkoff.public.invest.api.contract.v1.InstrumentsService/ShareBy',
+        v_headers,
+        'application/json',
+        jsonb_build_object(
+            'id_type', 'INSTRUMENT_ID_TYPE_TICKER',
+            'classCode', p_class_code,
+            'id', p_prefix
+        )::TEXT
+    )::http_request);
+
+    IF v_response.status != 200 THEN
+        RETURN COALESCE(p_tbank_figi, p_prefix);
+    END IF;
+
+    v_instrument := v_response.content::JSONB->'instrument';
+    v_id := COALESCE(v_instrument->>'uid', v_instrument->>'figi', p_tbank_figi, p_prefix);
+
+    IF p_security_id IS NOT NULL AND v_instrument ? 'figi' THEN
+        UPDATE security_prefixes
+        SET tbank_figi = v_instrument->>'figi'
+        WHERE security_id = p_security_id
+          AND exchange_id = 1
+          AND tbank_figi IS DISTINCT FROM v_instrument->>'figi';
+    END IF;
+
+    RETURN v_id;
+END;
+$$;
+
+COMMENT ON FUNCTION resolve_tbank_instrument_id(INTEGER, VARCHAR, VARCHAR, BOOLEAN, VARCHAR, VARCHAR) IS
+'FutureBy: сначала moex_secid (CRU6), затем prefix (CNY-9.26); ShareBy для акций';
+
+-- Миграция колонок (существующие БД без пересоздания)
+ALTER TABLE futures_expirations ADD COLUMN IF NOT EXISTS moex_secid VARCHAR(20);
+ALTER TABLE prices ADD COLUMN IF NOT EXISTS contract_prefix VARCHAR(50);
+ALTER TABLE price_load_log ADD COLUMN IF NOT EXISTS contract_prefix VARCHAR(50);
+
+-- Старые 4-арг. перегрузки конфликтуют с новыми (DEFAULT → «не уникальна» при CALL)
+DROP PROCEDURE IF EXISTS load_prices_from_tbank_http(INTEGER, INTEGER, DATE, DATE);
+DROP PROCEDURE IF EXISTS load_prices_from_moex_http(INTEGER, INTEGER, DATE, DATE);
 
 -- Процедура: load_prices_from_tbank_http
 -- Загрузка цен через T-Bank API с использованием pgsql-http
@@ -2337,86 +3364,93 @@ CREATE OR REPLACE PROCEDURE load_prices_from_tbank_http(
     p_security_id INTEGER,
     p_timeframe_id INTEGER,
     p_date_from DATE,
-    p_date_to DATE
+    p_date_to DATE,
+    p_contract_prefix VARCHAR DEFAULT NULL,
+    p_contract_figi VARCHAR DEFAULT NULL
 )
 LANGUAGE plpgsql AS $$
 DECLARE
-    -- ============================================================
-    -- ПАРАМЕТРЫ ЗАПРОСА
-    -- ============================================================
-    v_prefix VARCHAR(50);            -- Тикер MOEX
-    v_tbank_figi VARCHAR(50);        -- FIGI T-Bank
-    v_tf_name VARCHAR(20);           -- Код таймфрейма (M5, D1 и т.д.)
-    v_is_future BOOLEAN;             -- Флаг: это фьючерс?
-    v_token TEXT;                    -- API-токен T-Bank (из accounts)
-
-    -- ============================================================
-    -- ПАРАМЕТРЫ HTTP-ЗАПРОСА
-    -- ============================================================
-    v_api_url TEXT;                  -- URL API T-Bank
-    v_payload TEXT;                  -- JSON-тело POST-запроса
-    v_headers http_header[];       -- Заголовки HTTP-запроса
-    v_response http_response;        -- Ответ от API
-    v_status INTEGER;                -- HTTP-статус ответа
-    v_content JSONB;                 -- Распарсенный JSON-ответ
-
-    -- ============================================================
-    -- ПАРАМЕТРЫ ДЛЯ РАЗБОРА СВЕЧЕЙ
-    -- ============================================================
-    v_candles JSONB;                 -- Массив свечей из ответа
-    v_candle JSONB;                  -- Одна свеча
-    v_candle_time TIMESTAMP;         -- Время свечи
-    v_candle_open NUMERIC(18,6);   -- Цена открытия
-    v_candle_high NUMERIC(18,6);   -- Максимум
-    v_candle_low NUMERIC(18,6);    -- Минимум
-    v_candle_close NUMERIC(18,6);  -- Цена закрытия
-    v_candle_volume NUMERIC(20,2); -- Объем
-    v_records_loaded INTEGER := 0;   -- Счетчик загруженных записей
-    v_i INTEGER;                     -- Итератор по массиву
+    v_prefix VARCHAR(50);
+    v_tbank_figi VARCHAR(50);
+    v_tf_name VARCHAR(20);
+    v_is_future BOOLEAN;
+    v_token TEXT;
+    v_api_url TEXT;
+    v_payload TEXT;
+    v_headers http_header[];
+    v_response http_response;
+    v_status INTEGER;
+    v_content JSONB;
+    v_candles JSONB;
+    v_candle JSONB;
+    v_candle_time TIMESTAMP;
+    v_candle_open NUMERIC(18,6);
+    v_candle_high NUMERIC(18,6);
+    v_candle_low NUMERIC(18,6);
+    v_candle_close NUMERIC(18,6);
+    v_candle_volume NUMERIC(20,2);
+    v_records_loaded INTEGER := 0;
+    v_i INTEGER;
+    v_instrument_id VARCHAR(100);
+    v_store_contract VARCHAR(50);
+    v_moex_secid VARCHAR(20);
+    v_note TEXT;
 BEGIN
-    -- ============================================================
-    -- БЛОК 1: ПОЛУЧЕНИЕ ПРЕФИКСА БУМАГИ
-    -- ============================================================
-    SELECT sp.prefix, sp.tbank_figi INTO v_prefix, v_tbank_figi
-    FROM security_prefixes sp
-    WHERE sp.security_id = p_security_id AND sp.exchange_id = 1;
+    PERFORM configure_http_ssl();
 
-    IF v_prefix IS NULL THEN
-        RAISE EXCEPTION 'Префикс не найден для security_id=%', p_security_id;
-    END IF;
+    SELECT tf INTO v_tf_name FROM timeframes WHERE id = p_timeframe_id;
 
-    -- ============================================================
-    -- БЛОК 2: ПОЛУЧЕНИЕ ТАЙМФРЕЙМА
-    -- ============================================================
-    SELECT tf INTO v_tf_name
-    FROM timeframes WHERE id = p_timeframe_id;
-
-    -- ============================================================
-    -- БЛОК 3: ПРОВЕРКА, ЭТО ФЬЮЧЕРС?
-    -- ============================================================
-    SELECT (st.name = 'Futures') INTO v_is_future
-    FROM securities s
-    JOIN security_types st ON s.security_type_id = st.id
-    WHERE s.id = p_security_id;
-
-    -- Для фьючерса определяем активный контракт
-    IF v_is_future THEN
-        SELECT fe.prefix, fe.tbank_figi INTO v_prefix, v_tbank_figi
+    IF p_contract_prefix IS NOT NULL THEN
+        v_prefix := p_contract_prefix;
+        v_tbank_figi := p_contract_figi;
+        v_is_future := TRUE;
+        v_store_contract := p_contract_prefix;
+        SELECT fe.moex_secid INTO v_moex_secid
         FROM futures_expirations fe
         WHERE fe.security_id = p_security_id
-          AND fe.expiration_date > p_date_from
-          AND fe.is_active = TRUE
-        ORDER BY fe.expiration_date ASC
+          AND fe.prefix = p_contract_prefix
         LIMIT 1;
+    ELSE
+        SELECT sp.prefix, sp.tbank_figi, sp.note
+        INTO v_prefix, v_tbank_figi, v_note
+        FROM security_prefixes sp
+        WHERE sp.security_id = p_security_id AND sp.exchange_id = 1;
+
         IF v_prefix IS NULL THEN
-            RAISE EXCEPTION 'Активный фьючерс не найден для security_id=% на дату %',
-                p_security_id, p_date_from;
+            RAISE EXCEPTION 'Префикс не найден для security_id=%', p_security_id;
+        END IF;
+
+        SELECT (st.name = 'Futures') INTO v_is_future
+        FROM securities s
+        JOIN security_types st ON s.security_type_id = st.id
+        WHERE s.id = p_security_id;
+
+        v_store_contract := NULL;
+
+        IF v_is_future THEN
+            IF is_perpetual_future_group(v_prefix, v_note) THEN
+                v_store_contract := v_prefix;
+            ELSE
+                SELECT fe.prefix, fe.tbank_figi INTO v_prefix, v_tbank_figi
+                FROM futures_expirations fe
+                WHERE fe.security_id = p_security_id
+                  AND fe.expiration_date > p_date_to
+                  AND fe.is_active = TRUE
+                ORDER BY fe.expiration_date ASC
+                LIMIT 1;
+                IF v_prefix IS NULL THEN
+                    RAISE EXCEPTION 'Активный фьючерс не найден для security_id=% на дату %',
+                        p_security_id, p_date_to;
+                END IF;
+                v_store_contract := v_prefix;
+                SELECT fe.moex_secid INTO v_moex_secid
+                FROM futures_expirations fe
+                WHERE fe.security_id = p_security_id
+                  AND fe.prefix = v_prefix
+                LIMIT 1;
+            END IF;
         END IF;
     END IF;
-
-    -- ============================================================
-    -- БЛОК 4: ПОЛУЧЕНИЕ API-ТОКЕНА T-BANK
-    -- ============================================================
     v_token := get_tbank_token();
     IF v_token IS NULL THEN
         RAISE EXCEPTION 'T-Bank токен не найден. Заполните token_encrypted в accounts.';
@@ -2425,21 +3459,22 @@ BEGIN
     -- ============================================================
     -- БЛОК 5: ФОРМИРОВАНИЕ HTTP-ЗАПРОСА
     -- ============================================================
-    -- URL API T-Bank для получения свечей
+    v_instrument_id := resolve_tbank_instrument_id(
+        p_security_id, v_prefix, v_tbank_figi, v_is_future, 'TQBR', v_moex_secid
+    );
+
     v_api_url := 'https://invest-public-api.tinkoff.ru/rest/tinkoff.public.invest.api.contract.v1.MarketDataService/GetCandles';
 
-    -- Формируем JSON-тело запроса
     v_payload := jsonb_build_object(
-        'figi', COALESCE(v_tbank_figi, v_prefix),
-        'from', p_date_from::TIMESTAMP::TEXT || 'Z',
-        'to', (p_date_to + INTERVAL '1 day')::TIMESTAMP::TEXT || 'Z',
+        'instrumentId', v_instrument_id,
+        'from', tbank_iso_utc(p_date_from),
+        'to', tbank_iso_utc(p_date_to + 1),
         'interval', get_tbank_candle_interval(v_tf_name)
     )::TEXT;
 
-    -- Формируем заголовки с авторизацией
+    -- Заголовки (Content-Type задаётся в http_request, не в массиве headers)
     v_headers := ARRAY[
         http_header('Authorization', 'Bearer ' || v_token),
-        http_header('Content-Type', 'application/json'),
         http_header('Accept', 'application/json')
     ];
 
@@ -2473,6 +3508,14 @@ BEGIN
     v_candles := v_content->'candles';
 
     IF v_candles IS NULL OR jsonb_array_length(v_candles) = 0 THEN
+        INSERT INTO price_load_log (
+            security_id, timeframe_id, date_from, date_to,
+            source, records_loaded, contract_prefix, error_message
+        )
+        VALUES (
+            p_security_id, p_timeframe_id, p_date_from, p_date_to,
+            'T-BANK', 0, v_store_contract, 'T-Bank вернул пустой массив свечей'
+        );
         RAISE NOTICE 'T-Bank вернул пустой массив свечей';
         RETURN;
     END IF;
@@ -2502,8 +3545,9 @@ BEGIN
             v_candle_low,
             v_candle_close,
             v_candle_volume,
-            NULL,  -- value (оборот)
-            NULL   -- trades (количество сделок)
+            NULL,
+            NULL,
+            v_store_contract
         );
 
         v_records_loaded := v_records_loaded + 1;
@@ -2512,23 +3556,33 @@ BEGIN
     -- ============================================================
     -- БЛОК 9: ЛОГИРОВАНИЕ РЕЗУЛЬТАТА
     -- ============================================================
-    INSERT INTO price_load_log (security_id, timeframe_id, date_from, date_to, source, records_loaded)
-    VALUES (p_security_id, p_timeframe_id, p_date_from, p_date_to, 'T-BANK', v_records_loaded);
+    INSERT INTO price_load_log (
+        security_id, timeframe_id, date_from, date_to,
+        source, records_loaded, contract_prefix
+    )
+    VALUES (
+        p_security_id, p_timeframe_id, p_date_from, p_date_to,
+        'T-BANK', v_records_loaded, v_store_contract
+    );
 
-    RAISE NOTICE 'Загружено % свечей из T-Bank', v_records_loaded;
+    RAISE NOTICE 'Загружено % свечей из T-Bank (контракт %)', v_records_loaded, v_store_contract;
 
 EXCEPTION
     WHEN OTHERS THEN
-        INSERT INTO price_load_log (security_id, timeframe_id, date_from, date_to, source, records_loaded, error_message)
-        VALUES (p_security_id, p_timeframe_id, p_date_from, p_date_to, 'T-BANK', 0, SQLERRM);
+        INSERT INTO price_load_log (
+            security_id, timeframe_id, date_from, date_to,
+            source, records_loaded, contract_prefix, error_message
+        )
+        VALUES (
+            p_security_id, p_timeframe_id, p_date_from, p_date_to,
+            'T-BANK', 0, v_store_contract, SQLERRM
+        );
         RAISE;
 END;
 $$;
 
-COMMENT ON PROCEDURE load_prices_from_tbank_http(INTEGER, INTEGER, DATE, DATE) IS 
-'Загружает цены через T-Bank API используя расширение pgsql-http (libcurl).
-Требует предварительной установки: CREATE EXTENSION http;
-Для фьючерсов автоматически выбирает активный контракт.';
+COMMENT ON PROCEDURE load_prices_from_tbank_http(INTEGER, INTEGER, DATE, DATE, VARCHAR, VARCHAR) IS 
+'Загрузка свечей T-Bank. p_contract_prefix — тикер контракта (Si-6.26) для фьючерсов.';
 
 -- ============================================
 -- Процедура: load_prices_from_moex_http
@@ -2538,101 +3592,101 @@ CREATE OR REPLACE PROCEDURE load_prices_from_moex_http(
     p_security_id INTEGER,
     p_timeframe_id INTEGER,
     p_date_from DATE,
-    p_date_to DATE
+    p_date_to DATE,
+    p_contract_prefix VARCHAR DEFAULT NULL
 )
 LANGUAGE plpgsql AS $$
 DECLARE
-    -- ============================================================
-    -- ПАРАМЕТРЫ ЗАПРОСА
-    -- ============================================================
-    v_prefix VARCHAR(50);            -- Тикер бумаги
-    v_tf_name VARCHAR(20);           -- Код таймфрейма
-    v_sec_type VARCHAR(50);          -- Тип ценной бумаги
-    v_engine VARCHAR(20);            -- Рынок MOEX (stock, futures, bonds)
-    v_market VARCHAR(20);            -- Подрынок (shares, forts, bonds)
-    v_board VARCHAR(20);             -- Режим торгов (TQBR, RFUD, TQOB)
-
-    -- ============================================================
-    -- ПАРАМЕТРЫ HTTP-ЗАПРОСА
-    -- ============================================================
-    v_api_url TEXT;                  -- URL API MOEX ISS
-    v_response http_response;        -- Ответ от API
-    v_status INTEGER;                -- HTTP-статус
-    v_content JSONB;                 -- JSON-ответ
-
-    -- ============================================================
-    -- ПАРАМЕТРЫ ДЛЯ РАЗБОРА ОТВЕТА MOEX
-    -- ============================================================
-    v_candles_data JSONB;            -- Массив данных свечей
-    v_columns JSONB;                 -- Массив названий колонок
-    v_col_map JSONB;                 -- Маппинг колонок
-    v_row JSONB;                     -- Одна строка данных
-    v_row_idx INTEGER;               -- Индекс строки
-    v_col_idx INTEGER;               -- Индекс колонки
-    v_dt TIMESTAMP;                  -- Дата/время свечи
-    v_open NUMERIC(18,6);            -- Цена открытия
-    v_high NUMERIC(18,6);            -- Максимум
-    v_low NUMERIC(18,6);             -- Минимум
-    v_close NUMERIC(18,6);           -- Цена закрытия
-    v_volume NUMERIC(20,2);          -- Объем
-    v_value NUMERIC(20,2);           -- Оборот
-    v_records_loaded INTEGER := 0;   -- Счетчик загруженных записей
+    v_prefix VARCHAR(50);
+    v_tf_name VARCHAR(20);
+    v_sec_type VARCHAR(50);
+    v_engine VARCHAR(20);
+    v_market VARCHAR(20);
+    v_board VARCHAR(20);
+    v_api_url TEXT;
+    v_response http_response;
+    v_status INTEGER;
+    v_content JSONB;
+    v_candles_data JSONB;
+    v_columns JSONB;
+    v_col_map JSONB;
+    v_row JSONB;
+    v_row_idx INTEGER;
+    v_col_idx INTEGER;
+    v_dt TIMESTAMP;
+    v_open NUMERIC(18,6);
+    v_high NUMERIC(18,6);
+    v_low NUMERIC(18,6);
+    v_close NUMERIC(18,6);
+    v_volume NUMERIC(20,2);
+    v_value NUMERIC(20,2);
+    v_records_loaded INTEGER := 0;
+    v_store_contract VARCHAR(50);
+    v_moex_ticker VARCHAR(50);
 BEGIN
-    -- ============================================================
-    -- БЛОК 1: ПОЛУЧЕНИЕ ПРЕФИКСА И ТИПА БУМАГИ
-    -- ============================================================
-    SELECT sp.prefix, st.name
-    INTO v_prefix, v_sec_type
-    FROM securities s
-    JOIN security_types st ON s.security_type_id = st.id
-    JOIN security_prefixes sp ON s.id = sp.security_id
-    WHERE s.id = p_security_id AND sp.exchange_id = 1;
+    PERFORM configure_http_ssl();
 
-    IF v_prefix IS NULL THEN
-        RAISE EXCEPTION 'Префикс не найден для security_id=%', p_security_id;
-    END IF;
-
-    -- ============================================================
-    -- БЛОК 2: ОПРЕДЕЛЕНИЕ РЫНКА MOEX
-    -- ============================================================
     SELECT tf INTO v_tf_name FROM timeframes WHERE id = p_timeframe_id;
 
-    -- Маппинг типа бумаги на параметры MOEX
-    v_engine := CASE v_sec_type
-        WHEN 'Stock' THEN 'stock'
-        WHEN 'Futures' THEN 'futures'
-        WHEN 'Bond' THEN 'bonds'
-        WHEN 'Index' THEN 'stock'
-        ELSE 'stock'
-    END;
+    IF p_contract_prefix IS NOT NULL THEN
+        v_prefix := p_contract_prefix;
+        v_store_contract := p_contract_prefix;
+        v_engine := 'futures';
+        v_market := 'forts';
+        v_board := 'RFUD';
+        SELECT fe.moex_secid INTO v_moex_ticker
+        FROM futures_expirations fe
+        WHERE fe.security_id = p_security_id
+          AND fe.prefix = p_contract_prefix
+        LIMIT 1;
+        v_moex_ticker := COALESCE(NULLIF(btrim(v_moex_ticker), ''), v_prefix);
+    ELSE
+        SELECT sp.prefix, st.name INTO v_prefix, v_sec_type
+        FROM securities s
+        JOIN security_types st ON s.security_type_id = st.id
+        JOIN security_prefixes sp ON s.id = sp.security_id
+        WHERE s.id = p_security_id AND sp.exchange_id = 1;
 
-    v_market := CASE v_sec_type
-        WHEN 'Stock' THEN 'shares'
-        WHEN 'Futures' THEN 'forts'
-        WHEN 'Bond' THEN 'bonds'
-        WHEN 'Index' THEN 'index'
-        ELSE 'shares'
-    END;
-
-    v_board := CASE v_sec_type
-        WHEN 'Stock' THEN 'TQBR'
-        WHEN 'Futures' THEN 'RFUD'
-        WHEN 'Bond' THEN 'TQOB'
-        ELSE 'TQBR'
-    END;
-
-    -- Для фьючерсов определяем активный контракт
-    IF v_engine = 'futures' THEN
-        v_prefix := get_active_future_prefix(p_security_id, p_date_from);
         IF v_prefix IS NULL THEN
-            RAISE EXCEPTION 'Активный фьючерс не найден для security_id=% на дату %', 
-                p_security_id, p_date_from;
+            RAISE EXCEPTION 'Префикс не найден для security_id=%', p_security_id;
+        END IF;
+
+        v_store_contract := NULL;
+        v_engine := CASE v_sec_type
+            WHEN 'Stock' THEN 'stock'
+            WHEN 'Futures' THEN 'futures'
+            WHEN 'Bond' THEN 'bonds'
+            WHEN 'Index' THEN 'stock'
+            ELSE 'stock'
+        END;
+        v_market := CASE v_sec_type
+            WHEN 'Stock' THEN 'shares'
+            WHEN 'Futures' THEN 'forts'
+            WHEN 'Bond' THEN 'bonds'
+            WHEN 'Index' THEN 'index'
+            ELSE 'shares'
+        END;
+        v_board := CASE v_sec_type
+            WHEN 'Stock' THEN 'TQBR'
+            WHEN 'Futures' THEN 'RFUD'
+            WHEN 'Bond' THEN 'TQOB'
+            ELSE 'TQBR'
+        END;
+
+        IF v_engine = 'futures' THEN
+            v_prefix := get_active_future_prefix(p_security_id, p_date_to);
+            IF v_prefix IS NULL THEN
+                RAISE EXCEPTION 'Активный фьючерс не найден для security_id=% на дату %',
+                    p_security_id, p_date_to;
+            END IF;
+            v_store_contract := v_prefix;
         END IF;
     END IF;
 
-    -- ============================================================
-    -- БЛОК 3: ФОРМИРОВАНИЕ URL И ВЫПОЛНЕНИЕ HTTP GET
-    -- ============================================================
+    IF p_contract_prefix IS NOT NULL THEN
+        v_prefix := v_moex_ticker;
+    END IF;
+
     v_api_url := format(
         'https://iss.moex.com/iss/engines/%s/markets/%s/boards/%s/securities/%s/candles.json?from=%s&till=%s&interval=%s',
         v_engine, v_market, v_board, v_prefix,
@@ -2661,6 +3715,10 @@ BEGIN
     v_columns := v_content->'candles'->'columns';
 
     IF v_candles_data IS NULL OR jsonb_array_length(v_candles_data) = 0 THEN
+        INSERT INTO price_load_log (security_id, timeframe_id, date_from, date_to, source, records_loaded, error_message)
+        VALUES (p_security_id, p_timeframe_id, p_date_from, p_date_to, 'MOEX', 0,
+            'MOEX ISS: нет свечей M15 за период (ISS часто не хранит минутную историю; URL: '
+            || left(v_api_url, 180) || ')');
         RAISE NOTICE 'MOEX вернул пустой массив свечей';
         RETURN;
     END IF;
@@ -2692,7 +3750,7 @@ BEGIN
         CALL insert_candle(
             p_security_id, p_timeframe_id, v_dt,
             v_open, v_high, v_low, v_close,
-            v_volume, v_value, NULL
+            v_volume, v_value, NULL, v_store_contract
         );
 
         v_records_loaded := v_records_loaded + 1;
@@ -2701,23 +3759,279 @@ BEGIN
     -- ============================================================
     -- БЛОК 6: ЛОГИРОВАНИЕ
     -- ============================================================
-    INSERT INTO price_load_log (security_id, timeframe_id, date_from, date_to, source, records_loaded)
-    VALUES (p_security_id, p_timeframe_id, p_date_from, p_date_to, 'MOEX', v_records_loaded);
+    INSERT INTO price_load_log (
+        security_id, timeframe_id, date_from, date_to,
+        source, records_loaded, contract_prefix
+    )
+    VALUES (
+        p_security_id, p_timeframe_id, p_date_from, p_date_to,
+        'MOEX', v_records_loaded, v_store_contract
+    );
 
-    RAISE NOTICE 'Загружено % свечей из MOEX', v_records_loaded;
+    RAISE NOTICE 'Загружено % свечей из MOEX (контракт %)', v_records_loaded, v_store_contract;
 
 EXCEPTION
     WHEN OTHERS THEN
-        INSERT INTO price_load_log (security_id, timeframe_id, date_from, date_to, source, records_loaded, error_message)
-        VALUES (p_security_id, p_timeframe_id, p_date_from, p_date_to, 'MOEX', 0, SQLERRM);
+        INSERT INTO price_load_log (
+            security_id, timeframe_id, date_from, date_to,
+            source, records_loaded, contract_prefix, error_message
+        )
+        VALUES (
+            p_security_id, p_timeframe_id, p_date_from, p_date_to,
+            'MOEX', 0, v_store_contract, SQLERRM
+        );
         RAISE;
 END;
 $$;
 
-COMMENT ON PROCEDURE load_prices_from_moex_http(INTEGER, INTEGER, DATE, DATE) IS 
-'Загружает цены через MOEX ISS API используя расширение pgsql-http (libcurl).
-Требует предварительной установки: CREATE EXTENSION http;
-Для фьючерсов автоматически выбирает активный контракт.';
+COMMENT ON PROCEDURE load_prices_from_moex_http(INTEGER, INTEGER, DATE, DATE, VARCHAR) IS 
+'Загрузка MOEX ISS. p_contract_prefix — тикер контракта для фьючерсов.';
+
+-- MOEX ASSETCODE для группового префикса (CR → CNY, Br → BR)
+CREATE OR REPLACE FUNCTION moex_future_asset_code(p_group_prefix VARCHAR)
+RETURNS VARCHAR
+LANGUAGE sql IMMUTABLE AS $$
+    SELECT CASE upper(btrim(p_group_prefix))
+        WHEN 'CR' THEN 'CNY'
+        WHEN 'BR' THEN 'BR'
+        ELSE btrim(p_group_prefix)
+    END;
+$$;
+
+COMMENT ON FUNCTION moex_future_asset_code(VARCHAR) IS
+'Код базового актива MOEX FORTS для группового префикса (CR → CNY)';
+
+-- Синхронизация контрактов фьючерса из MOEX ISS → futures_expirations
+CREATE OR REPLACE PROCEDURE sync_futures_expirations_from_moex(
+    p_security_id INTEGER,
+    p_date_from DATE,
+    p_date_to DATE DEFAULT NULL
+)
+LANGUAGE plpgsql AS $$
+DECLARE
+    v_group_prefix VARCHAR(50);
+    v_note TEXT;
+    v_asset_code VARCHAR(50);
+    v_url TEXT;
+    v_response http_response;
+    v_content JSONB;
+    v_data JSONB;
+    v_columns JSONB;
+    v_col_map JSONB;
+    v_row JSONB;
+    v_row_idx INTEGER;
+    v_col_idx INTEGER;
+    v_secid TEXT;
+    v_shortname TEXT;
+    v_asset TEXT;
+    v_lastdel DATE;
+    v_cutoff DATE;
+    v_synced INTEGER := 0;
+BEGIN
+    PERFORM configure_http_ssl();
+
+    SELECT sp.prefix, sp.note INTO v_group_prefix, v_note
+    FROM security_prefixes sp
+    WHERE sp.security_id = p_security_id AND sp.exchange_id = 1;
+
+    IF v_group_prefix IS NULL THEN
+        RAISE EXCEPTION 'Префикс группы не найден для security_id=%', p_security_id;
+    END IF;
+
+    IF is_perpetual_future_group(v_group_prefix, v_note) THEN
+        INSERT INTO futures_expirations (security_id, prefix, expiration_date, is_active)
+        VALUES (p_security_id, v_group_prefix, DATE '2100-01-01', TRUE)
+        ON CONFLICT (security_id, prefix) DO UPDATE SET
+            expiration_date = EXCLUDED.expiration_date,
+            is_active = TRUE;
+        RETURN;
+    END IF;
+
+    v_asset_code := moex_future_asset_code(v_group_prefix);
+    v_cutoff := LEAST(p_date_from, COALESCE(p_date_to, p_date_from)) - INTERVAL '400 days';
+
+    v_url := 'https://iss.moex.com/iss/engines/futures/markets/forts/securities.json'
+        || '?iss.meta=off&iss.only=securities'
+        || '&securities.columns=SECID,SHORTNAME,ASSETCODE,LASTTRADEDATE,LASTDELDATE';
+
+    SELECT * INTO v_response FROM http_get(v_url);
+    IF v_response.status != 200 THEN
+        RAISE EXCEPTION 'MOEX securities list: status %', v_response.status;
+    END IF;
+
+    v_content := v_response.content::JSONB;
+    v_data := v_content->'securities'->'data';
+    v_columns := v_content->'securities'->'columns';
+
+    IF v_data IS NULL OR jsonb_array_length(v_data) = 0 THEN
+        RAISE EXCEPTION 'MOEX securities list: пустой ответ';
+    END IF;
+
+    v_col_map := '{}'::JSONB;
+    FOR v_col_idx IN 0 .. jsonb_array_length(v_columns) - 1
+    LOOP
+        v_col_map := jsonb_set(v_col_map, ARRAY[v_columns->>v_col_idx], to_jsonb(v_col_idx));
+    END LOOP;
+
+    FOR v_row_idx IN 0 .. jsonb_array_length(v_data) - 1
+    LOOP
+        v_row := v_data->v_row_idx;
+        v_secid := v_row->>(v_col_map->>'SECID')::INTEGER;
+        v_shortname := v_row->>(v_col_map->>'SHORTNAME')::INTEGER;
+        v_asset := v_row->>(v_col_map->>'ASSETCODE')::INTEGER;
+        v_lastdel := NULLIF(v_row->>(v_col_map->>'LASTDELDATE')::INTEGER, '')::DATE;
+
+        IF v_shortname IS NULL OR v_lastdel IS NULL THEN
+            CONTINUE;
+        END IF;
+
+        IF upper(v_asset) = upper(v_asset_code)
+           OR upper(v_secid) LIKE upper(v_group_prefix) || '%'
+        THEN
+            IF v_lastdel >= v_cutoff THEN
+                INSERT INTO futures_expirations (security_id, prefix, moex_secid, expiration_date, is_active)
+                VALUES (p_security_id, v_shortname, v_secid, v_lastdel, TRUE)
+                ON CONFLICT (security_id, prefix) DO UPDATE SET
+                    moex_secid = EXCLUDED.moex_secid,
+                    expiration_date = EXCLUDED.expiration_date,
+                    is_active = TRUE;
+                v_synced := v_synced + 1;
+            END IF;
+        END IF;
+    END LOOP;
+
+    RAISE NOTICE 'sync_futures_expirations_from_moex: security_id=% synced % (group=%, asset=%)',
+        p_security_id, v_synced, v_group_prefix, v_asset_code;
+END;
+$$;
+
+COMMENT ON PROCEDURE sync_futures_expirations_from_moex(INTEGER, DATE, DATE) IS
+'Подтягивает контракты MOEX FORTS в futures_expirations по групповому префиксу (Si, CR→CNY …)';
+
+-- Загрузка фьючерса: обход контрактов от date_to назад (rollover)
+CREATE OR REPLACE PROCEDURE load_prices_futures_http(
+    p_security_id INTEGER,
+    p_timeframe_id INTEGER,
+    p_date_from DATE,
+    p_date_to DATE
+)
+LANGUAGE plpgsql AS $$
+DECLARE
+    v_seg_to DATE := p_date_to;
+    v_seg_from DATE;
+    v_contract RECORD;
+    v_tbank_total INTEGER := 0;
+    v_seg_records INTEGER;
+    v_moex_total INTEGER := 0;
+    v_logged_no_contract BOOLEAN := FALSE;
+BEGIN
+    PERFORM configure_http_ssl();
+
+    CALL sync_futures_expirations_from_moex(p_security_id, p_date_from, p_date_to);
+
+    LOOP
+        SELECT * INTO v_contract
+        FROM get_future_contract_for_date(p_security_id, v_seg_to);
+
+        IF NOT FOUND THEN
+            CALL sync_futures_expirations_from_moex(p_security_id, p_date_from, v_seg_to);
+            SELECT * INTO v_contract
+            FROM get_future_contract_for_date(p_security_id, v_seg_to);
+            IF NOT FOUND THEN
+                IF NOT v_logged_no_contract AND v_tbank_total = 0 THEN
+                    INSERT INTO price_load_log (
+                        security_id, timeframe_id, date_from, date_to,
+                        source, records_loaded, error_message
+                    )
+                    VALUES (
+                        p_security_id, p_timeframe_id, p_date_from, p_date_to,
+                        'T-BANK', 0,
+                        format('Контракт не найден на дату %s после sync MOEX', v_seg_to)
+                    );
+                    v_logged_no_contract := TRUE;
+                END IF;
+                EXIT;
+            END IF;
+        END IF;
+
+        v_seg_from := GREATEST(p_date_from, v_contract.start_date);
+
+        BEGIN
+            CALL load_prices_from_tbank_http(
+                p_security_id, p_timeframe_id, v_seg_from, v_seg_to,
+                v_contract.prefix, v_contract.tbank_figi
+            );
+            SELECT records_loaded INTO v_seg_records
+            FROM price_load_log
+            WHERE security_id = p_security_id
+              AND timeframe_id = p_timeframe_id
+              AND date_from = v_seg_from
+              AND date_to = v_seg_to
+              AND source = 'T-BANK'
+            ORDER BY id DESC
+            LIMIT 1;
+            v_tbank_total := v_tbank_total + COALESCE(v_seg_records, 0);
+        EXCEPTION
+            WHEN OTHERS THEN
+                INSERT INTO price_load_log (
+                    security_id, timeframe_id, date_from, date_to,
+                    source, records_loaded, contract_prefix, error_message
+                )
+                VALUES (
+                    p_security_id, p_timeframe_id, v_seg_from, v_seg_to,
+                    'T-BANK', 0, v_contract.prefix, SQLERRM
+                );
+        END;
+
+        IF v_seg_from <= p_date_from THEN
+            EXIT;
+        END IF;
+        v_seg_to := v_seg_from - 1;
+    END LOOP;
+
+    IF v_tbank_total > 0 THEN
+        RETURN;
+    END IF;
+
+    v_seg_to := p_date_to;
+    LOOP
+        SELECT * INTO v_contract
+        FROM get_future_contract_for_date(p_security_id, v_seg_to);
+        IF NOT FOUND THEN
+            EXIT;
+        END IF;
+        v_seg_from := GREATEST(p_date_from, v_contract.start_date);
+
+        BEGIN
+            CALL load_prices_from_moex_http(
+                p_security_id, p_timeframe_id, v_seg_from, v_seg_to,
+                v_contract.prefix
+            );
+            SELECT records_loaded INTO v_seg_records
+            FROM price_load_log
+            WHERE security_id = p_security_id
+              AND timeframe_id = p_timeframe_id
+              AND date_from = v_seg_from
+              AND date_to = v_seg_to
+              AND source = 'MOEX'
+            ORDER BY id DESC
+            LIMIT 1;
+            v_moex_total := v_moex_total + COALESCE(v_seg_records, 0);
+        EXCEPTION
+            WHEN OTHERS THEN
+                NULL;
+        END;
+
+        IF v_seg_from <= p_date_from THEN
+            EXIT;
+        END IF;
+        v_seg_to := v_seg_from - 1;
+    END LOOP;
+END;
+$$;
+
+COMMENT ON PROCEDURE load_prices_futures_http(INTEGER, INTEGER, DATE, DATE) IS
+'Фьючерс-группа: загрузка по контрактам от date_to назад (Si-6.26 → Si-3.26 …), T-Bank → MOEX';
 
 -- ============================================
 -- ГЛАВНАЯ ПРОЦЕДУРА: load_prices_http
@@ -2732,41 +4046,153 @@ CREATE OR REPLACE PROCEDURE load_prices_http(
 LANGUAGE plpgsql AS $$
 DECLARE
     v_tbank_ok BOOLEAN := FALSE;
-    v_error_msg TEXT;
+    v_tbank_records INTEGER := 0;
+    v_tbank_error TEXT;
+    v_moex_records INTEGER := 0;
+    v_is_future BOOLEAN := FALSE;
+    v_group_prefix VARCHAR(50);
+    v_note TEXT;
 BEGIN
-    -- ============================================================
-    -- БЛОК 1: ПОПЫТКА ЗАГРУЗКИ ИЗ T-BANK
-    -- ============================================================
+    PERFORM set_config('lock_timeout', '15000', true);
+    PERFORM set_config('statement_timeout', '180000', true);
+    PERFORM configure_http_ssl();
+
+    SELECT (st.name = 'Futures') INTO v_is_future
+    FROM securities s
+    JOIN security_types st ON s.security_type_id = st.id
+    WHERE s.id = p_security_id;
+
+    SELECT sp.prefix, sp.note INTO v_group_prefix, v_note
+    FROM security_prefixes sp
+    WHERE sp.security_id = p_security_id AND sp.exchange_id = 1;
+
+    IF v_is_future AND is_perpetual_future_group(v_group_prefix, v_note) THEN
+        BEGIN
+            CALL load_prices_from_tbank_http(p_security_id, p_timeframe_id, p_date_from, p_date_to);
+            SELECT records_loaded INTO v_tbank_records
+            FROM price_load_log
+            WHERE security_id = p_security_id
+              AND timeframe_id = p_timeframe_id
+              AND date_from = p_date_from
+              AND date_to = p_date_to
+              AND source = 'T-BANK'
+            ORDER BY id DESC
+            LIMIT 1;
+            v_tbank_ok := COALESCE(v_tbank_records, 0) > 0;
+        EXCEPTION
+            WHEN OTHERS THEN
+                v_tbank_error := SQLERRM;
+                INSERT INTO price_load_log (
+                    security_id, timeframe_id, date_from, date_to,
+                    source, records_loaded, error_message
+                )
+                VALUES (
+                    p_security_id, p_timeframe_id, p_date_from, p_date_to,
+                    'T-BANK', 0, v_tbank_error
+                );
+        END;
+        IF NOT v_tbank_ok THEN
+            BEGIN
+                CALL load_prices_from_moex_http(p_security_id, p_timeframe_id, p_date_from, p_date_to);
+            EXCEPTION
+                WHEN OTHERS THEN
+                    IF v_tbank_error IS NOT NULL THEN
+                        RAISE EXCEPTION 'Оба источника недоступны. T-Bank: %; MOEX: %', v_tbank_error, SQLERRM;
+                    ELSE
+                        RAISE;
+                    END IF;
+            END;
+        END IF;
+        RETURN;
+    END IF;
+
+    IF v_is_future THEN
+        CALL load_prices_futures_http(p_security_id, p_timeframe_id, p_date_from, p_date_to);
+        SELECT COALESCE(SUM(records_loaded), 0) INTO v_tbank_records
+        FROM price_load_log
+        WHERE security_id = p_security_id
+          AND timeframe_id = p_timeframe_id
+          AND date_from >= p_date_from
+          AND date_to <= p_date_to
+          AND source = 'T-BANK'
+          AND loaded_at >= (CURRENT_TIMESTAMP - INTERVAL '5 minutes');
+        IF COALESCE(v_tbank_records, 0) = 0 THEN
+            SELECT COALESCE(SUM(records_loaded), 0) INTO v_moex_records
+            FROM price_load_log
+            WHERE security_id = p_security_id
+              AND timeframe_id = p_timeframe_id
+              AND date_from >= p_date_from
+              AND date_to <= p_date_to
+              AND source = 'MOEX'
+              AND loaded_at >= (CURRENT_TIMESTAMP - INTERVAL '5 minutes');
+        END IF;
+        RETURN;
+    END IF;
+
+    -- Акции и прочее: T-Bank → MOEX
     BEGIN
         CALL load_prices_from_tbank_http(p_security_id, p_timeframe_id, p_date_from, p_date_to);
-        v_tbank_ok := TRUE;
-        RAISE NOTICE 'Цены успешно загружены из T-Bank';
+        SELECT records_loaded INTO v_tbank_records
+        FROM price_load_log
+        WHERE security_id = p_security_id
+          AND timeframe_id = p_timeframe_id
+          AND date_from = p_date_from
+          AND date_to = p_date_to
+          AND source = 'T-BANK'
+        ORDER BY id DESC
+        LIMIT 1;
+        v_tbank_ok := COALESCE(v_tbank_records, 0) > 0;
+        IF v_tbank_ok THEN
+            RAISE NOTICE 'Цены успешно загружены из T-Bank: % свечей', v_tbank_records;
+        ELSE
+            RAISE NOTICE 'T-Bank: 0 свечей, пробуем MOEX...';
+        END IF;
     EXCEPTION
         WHEN OTHERS THEN
-            v_error_msg := SQLERRM;
-            RAISE NOTICE 'T-Bank недоступен: %. Переключаемся на MOEX...', v_error_msg;
+            v_tbank_error := SQLERRM;
+            INSERT INTO price_load_log (
+                security_id, timeframe_id, date_from, date_to,
+                source, records_loaded, error_message
+            )
+            VALUES (
+                p_security_id, p_timeframe_id, p_date_from, p_date_to,
+                'T-BANK', 0, v_tbank_error
+            );
+            RAISE NOTICE 'T-Bank недоступен: %. Переключаемся на MOEX...', v_tbank_error;
     END;
 
     -- ============================================================
-    -- БЛОК 2: ПОПЫТКА ЗАГРУЗКИ ИЗ MOEX (если T-Bank не сработал)
+    -- БЛОК 2: MOEX — если T-Bank не дал данных
     -- ============================================================
     IF NOT v_tbank_ok THEN
         BEGIN
             CALL load_prices_from_moex_http(p_security_id, p_timeframe_id, p_date_from, p_date_to);
-            RAISE NOTICE 'Цены успешно загружены из MOEX';
+            SELECT records_loaded INTO v_moex_records
+            FROM price_load_log
+            WHERE security_id = p_security_id
+              AND timeframe_id = p_timeframe_id
+              AND date_from = p_date_from
+              AND date_to = p_date_to
+              AND source = 'MOEX'
+            ORDER BY id DESC
+            LIMIT 1;
+            IF COALESCE(v_moex_records, 0) > 0 THEN
+                RAISE NOTICE 'Цены успешно загружены из MOEX: % свечей', v_moex_records;
+            END IF;
         EXCEPTION
             WHEN OTHERS THEN
-                v_error_msg := SQLERRM;
-                RAISE EXCEPTION 'Оба источника недоступны. T-Bank: %; MOEX: %', v_error_msg, SQLERRM;
+                IF v_tbank_error IS NOT NULL THEN
+                    RAISE EXCEPTION 'Оба источника недоступны. T-Bank: %; MOEX: %', v_tbank_error, SQLERRM;
+                ELSE
+                    RAISE EXCEPTION 'MOEX: %', SQLERRM;
+                END IF;
         END;
     END IF;
 END;
 $$;
 
 COMMENT ON PROCEDURE load_prices_http(INTEGER, INTEGER, DATE, DATE) IS 
-'Главная процедура загрузки цен через pgsql-http: сначала T-Bank, если не отвечает -- MOEX.
-Требует установки расширения: CREATE EXTENSION http;
-Для фьючерсов автоматически выбирает активный контракт на дату периода.';
+'Загрузка цен: T-Bank (приоритет), MOEX — только если T-Bank дал 0 свечей или ошибку.';
 
 -- ============================================
 -- Процедура: load_prices_batch_http
@@ -2828,6 +4254,427 @@ $$;
 COMMENT ON PROCEDURE load_all_timeframes_http(INTEGER, DATE, DATE) IS 
 'Загружает все таймфреймы для одной бумаги через pgsql-http.
 Требует установки расширения: CREATE EXTENSION http;';
+
+-- ============================================
+-- T-BANK API через pgsql-http (счета, портфель, сделки)
+-- Все HTTP-вызовы к брокеру/бирже — только из PostgreSQL.
+-- ============================================
+
+CREATE OR REPLACE FUNCTION get_tbank_api_url(p_broker_id INTEGER DEFAULT NULL)
+RETURNS TEXT
+LANGUAGE plpgsql AS $$
+DECLARE
+    v_url TEXT;
+BEGIN
+    IF p_broker_id IS NOT NULL THEN
+        SELECT api_url INTO v_url FROM brokers WHERE id = p_broker_id;
+        IF v_url IS NOT NULL THEN
+            RETURN rtrim(v_url, '/');
+        END IF;
+    END IF;
+    SELECT api_url INTO v_url FROM brokers WHERE code = 'T-BANK' LIMIT 1;
+    RETURN rtrim(COALESCE(v_url, 'https://invest-public-api.tinkoff.ru/rest'), '/');
+END;
+$$;
+
+COMMENT ON FUNCTION get_tbank_api_url(INTEGER) IS
+'Базовый REST URL T-Bank из brokers.api_url';
+
+CREATE OR REPLACE FUNCTION tbank_http_post(
+    p_api_url TEXT,
+    p_rpc_path TEXT,
+    p_token TEXT,
+    p_body JSONB DEFAULT '{}'::jsonb
+)
+RETURNS JSONB
+LANGUAGE plpgsql AS $$
+DECLARE
+    v_url TEXT;
+    v_headers http_header[];
+    v_response http_response;
+    v_content JSONB;
+BEGIN
+    PERFORM configure_http_ssl();
+
+    v_url := rtrim(COALESCE(p_api_url, get_tbank_api_url()), '/')
+        || '/' || ltrim(p_rpc_path, '/');
+
+    v_headers := ARRAY[
+        http_header('Authorization', 'Bearer ' || p_token),
+        http_header('Accept', 'application/json')
+    ];
+
+    SELECT * INTO v_response FROM http((
+        'POST',
+        v_url,
+        v_headers,
+        'application/json',
+        COALESCE(p_body, '{}'::jsonb)::TEXT
+    )::http_request);
+
+    IF v_response.status != 200 THEN
+        RAISE EXCEPTION 'T-Bank API HTTP %: %', v_response.status, v_response.content;
+    END IF;
+
+    v_content := v_response.content::JSONB;
+    IF v_content ? 'code' AND (v_content->>'code') NOT IN ('', '0') THEN
+        RAISE EXCEPTION 'T-Bank API: %', COALESCE(v_content->>'message', v_response.content);
+    END IF;
+
+    RETURN v_content;
+END;
+$$;
+
+COMMENT ON FUNCTION tbank_http_post(TEXT, TEXT, TEXT, JSONB) IS
+'Универсальный POST к T-Bank Invest API через pgsql-http';
+
+CREATE OR REPLACE FUNCTION format_money_ru(
+    p_amount NUMERIC,
+    p_currency VARCHAR DEFAULT 'RUB'
+)
+RETURNS TEXT
+LANGUAGE plpgsql AS $$
+BEGIN
+    IF p_amount IS NULL THEN
+        RETURN NULL;
+    END IF;
+    RETURN to_char(p_amount, 'FM999G999G999G990D00') || ' '
+        || CASE upper(COALESCE(p_currency, 'RUB'))
+            WHEN 'RUB' THEN '₽'
+            WHEN 'USD' THEN '$'
+            WHEN 'EUR' THEN '€'
+            ELSE upper(p_currency)
+        END;
+END;
+$$;
+
+COMMENT ON FUNCTION format_money_ru(NUMERIC, VARCHAR) IS
+'Форматирование суммы для UI (остаток на счёте)';
+
+CREATE OR REPLACE FUNCTION fetch_tbank_accounts(
+    p_api_url TEXT,
+    p_token TEXT
+)
+RETURNS JSONB
+LANGUAGE sql AS $$
+    SELECT COALESCE(
+        tbank_http_post(
+            p_api_url,
+            'tinkoff.public.invest.api.contract.v1.UsersService/GetAccounts',
+            p_token,
+            '{}'::jsonb
+        )->'accounts',
+        '[]'::jsonb
+    );
+$$;
+
+COMMENT ON FUNCTION fetch_tbank_accounts(TEXT, TEXT) IS
+'Список счетов T-Bank (GetAccounts)';
+
+CREATE OR REPLACE FUNCTION resolve_tbank_account(
+    p_api_url TEXT,
+    p_token TEXT,
+    p_preferred_account_id VARCHAR DEFAULT NULL
+)
+RETURNS JSONB
+LANGUAGE plpgsql AS $$
+DECLARE
+    v_accounts JSONB;
+    v_acc JSONB;
+    v_picked JSONB;
+    v_i INTEGER;
+    v_mapped JSONB := '[]'::jsonb;
+BEGIN
+    v_accounts := fetch_tbank_accounts(p_api_url, p_token);
+    IF jsonb_array_length(v_accounts) = 0 THEN
+        RAISE EXCEPTION 'По токену не найдено ни одного счёта в T-Bank';
+    END IF;
+
+    IF p_preferred_account_id IS NOT NULL AND btrim(p_preferred_account_id) <> '' THEN
+        FOR v_i IN 0 .. jsonb_array_length(v_accounts) - 1
+        LOOP
+            v_acc := v_accounts->v_i;
+            IF v_acc->>'id' = p_preferred_account_id THEN
+                v_picked := v_acc;
+                EXIT;
+            END IF;
+        END LOOP;
+    END IF;
+
+    IF v_picked IS NULL THEN
+        FOR v_i IN 0 .. jsonb_array_length(v_accounts) - 1
+        LOOP
+            v_acc := v_accounts->v_i;
+            IF v_acc->>'status' = 'ACCOUNT_STATUS_OPEN' THEN
+                v_picked := v_acc;
+                EXIT;
+            END IF;
+        END LOOP;
+    END IF;
+
+    IF v_picked IS NULL THEN
+        v_picked := v_accounts->0;
+    END IF;
+
+    FOR v_i IN 0 .. jsonb_array_length(v_accounts) - 1
+    LOOP
+        v_acc := v_accounts->v_i;
+        v_mapped := v_mapped || jsonb_build_array(jsonb_build_object(
+            'id', v_acc->>'id',
+            'name', COALESCE(v_acc->>'name', ''),
+            'type', COALESCE(v_acc->>'type', ''),
+            'status', COALESCE(v_acc->>'status', '')
+        ));
+    END LOOP;
+
+    RETURN jsonb_build_object(
+        'accounts', v_mapped,
+        'account_id', v_picked->>'id',
+        'account_name', COALESCE(v_picked->>'name', '')
+    );
+END;
+$$;
+
+COMMENT ON FUNCTION resolve_tbank_account(TEXT, TEXT, VARCHAR) IS
+'Выбор счёта T-Bank по токену (GetAccounts + preferred id)';
+
+CREATE OR REPLACE FUNCTION fetch_tbank_portfolio_balance(
+    p_api_url TEXT,
+    p_token TEXT,
+    p_account_id VARCHAR
+)
+RETURNS JSONB
+LANGUAGE plpgsql AS $$
+DECLARE
+    v_data JSONB;
+    v_total JSONB;
+    v_amount NUMERIC;
+    v_currency VARCHAR;
+BEGIN
+    v_data := tbank_http_post(
+        p_api_url,
+        'tinkoff.public.invest.api.contract.v1.OperationsService/GetPortfolio',
+        p_token,
+        jsonb_build_object('accountId', p_account_id)
+    );
+
+    v_total := COALESCE(v_data->'totalAmountPortfolio', v_data->'totalAmountShares');
+    v_amount := parse_tbank_quotation(v_total);
+    v_currency := COALESCE(v_total->>'currency', 'RUB');
+
+    RETURN jsonb_build_object(
+        'amount', v_amount,
+        'currency', v_currency,
+        'display', format_money_ru(v_amount, v_currency)
+    );
+END;
+$$;
+
+COMMENT ON FUNCTION fetch_tbank_portfolio_balance(TEXT, TEXT, VARCHAR) IS
+'Остаток портфеля T-Bank (GetPortfolio)';
+
+CREATE OR REPLACE FUNCTION fetch_tbank_account_balance(p_account_id INTEGER)
+RETURNS JSONB
+LANGUAGE plpgsql AS $$
+DECLARE
+    v_token TEXT;
+    v_api_url TEXT;
+    v_account_code VARCHAR;
+    v_account_type VARCHAR;
+    v_broker_code VARCHAR;
+    v_resolved JSONB;
+BEGIN
+    SELECT btrim(a.token_encrypted), b.api_url, a.account_code, a.account_type, b.code
+    INTO v_token, v_api_url, v_account_code, v_account_type, v_broker_code
+    FROM accounts a
+    JOIN brokers b ON b.id = a.broker_id
+    WHERE a.id = p_account_id;
+
+    IF NOT FOUND THEN
+        RAISE EXCEPTION 'Счёт id=% не найден', p_account_id;
+    END IF;
+
+    IF v_account_type = 'fake' THEN
+        RETURN jsonb_build_object('display', 'демо');
+    END IF;
+
+    IF v_broker_code <> 'T-BANK' THEN
+        RETURN jsonb_build_object('display', 'н/д');
+    END IF;
+
+    IF v_token IS NULL OR v_token = '' THEN
+        RETURN jsonb_build_object('display', '—');
+    END IF;
+
+    v_resolved := resolve_tbank_account(v_api_url, v_token, v_account_code);
+    RETURN fetch_tbank_portfolio_balance(
+        v_api_url,
+        v_token,
+        v_resolved->>'account_id'
+    );
+EXCEPTION
+    WHEN OTHERS THEN
+        RETURN jsonb_build_object(
+            'error', SQLERRM,
+            'display', 'ошибка'
+        );
+END;
+$$;
+
+COMMENT ON FUNCTION fetch_tbank_account_balance(INTEGER) IS
+'Остаток по записи accounts.id (для API/UI)';
+
+-- --- Сделки (заготовки для торговли через PostgreSQL) ---
+
+CREATE OR REPLACE FUNCTION tbank_post_order(
+    p_account_id INTEGER,
+    p_figi VARCHAR,
+    p_quantity NUMERIC,
+    p_price NUMERIC,
+    p_direction VARCHAR
+)
+RETURNS JSONB
+LANGUAGE plpgsql AS $$
+DECLARE
+    v_token TEXT;
+    v_api_url TEXT;
+    v_account_code VARCHAR;
+    v_resolved JSONB;
+    v_dir VARCHAR;
+BEGIN
+    SELECT btrim(a.token_encrypted), b.api_url, a.account_code
+    INTO v_token, v_api_url, v_account_code
+    FROM accounts a
+    JOIN brokers b ON b.id = a.broker_id
+    WHERE a.id = p_account_id AND b.code = 'T-BANK';
+
+    IF v_token IS NULL OR v_token = '' THEN
+        RAISE EXCEPTION 'T-Bank токен не найден для account_id=%', p_account_id;
+    END IF;
+
+    v_resolved := resolve_tbank_account(v_api_url, v_token, v_account_code);
+    v_dir := upper(btrim(p_direction));
+    IF v_dir NOT IN ('BUY', 'SELL', 'ORDER_DIRECTION_BUY', 'ORDER_DIRECTION_SELL') THEN
+        RAISE EXCEPTION 'direction: BUY или SELL';
+    END IF;
+    IF v_dir = 'BUY' THEN
+        v_dir := 'ORDER_DIRECTION_BUY';
+    ELSIF v_dir = 'SELL' THEN
+        v_dir := 'ORDER_DIRECTION_SELL';
+    END IF;
+
+    RETURN tbank_http_post(
+        v_api_url,
+        'tinkoff.public.invest.api.contract.v1.OrdersService/PostOrder',
+        v_token,
+        jsonb_build_object(
+            'accountId', v_resolved->>'account_id',
+            'figi', p_figi,
+            'quantity', p_quantity,
+            'price', jsonb_build_object(
+                'units', trunc(p_price)::bigint,
+                'nano', round((p_price - trunc(p_price)) * 1000000000)::integer
+            ),
+            'direction', v_dir,
+            'orderType', 'ORDER_TYPE_LIMIT',
+            'orderId', gen_random_uuid()::text
+        )
+    );
+END;
+$$;
+
+COMMENT ON FUNCTION tbank_post_order(INTEGER, VARCHAR, NUMERIC, NUMERIC, VARCHAR) IS
+'Лимитная заявка T-Bank (PostOrder). Для будущей торговли из PostgreSQL.';
+
+CREATE OR REPLACE FUNCTION tbank_cancel_order(
+    p_account_id INTEGER,
+    p_order_id VARCHAR
+)
+RETURNS JSONB
+LANGUAGE plpgsql AS $$
+DECLARE
+    v_token TEXT;
+    v_api_url TEXT;
+    v_account_code VARCHAR;
+    v_resolved JSONB;
+BEGIN
+    SELECT btrim(a.token_encrypted), b.api_url, a.account_code
+    INTO v_token, v_api_url, v_account_code
+    FROM accounts a
+    JOIN brokers b ON b.id = a.broker_id
+    WHERE a.id = p_account_id AND b.code = 'T-BANK';
+
+    IF v_token IS NULL OR v_token = '' THEN
+        RAISE EXCEPTION 'T-Bank токен не найден для account_id=%', p_account_id;
+    END IF;
+
+    v_resolved := resolve_tbank_account(v_api_url, v_token, v_account_code);
+
+    RETURN tbank_http_post(
+        v_api_url,
+        'tinkoff.public.invest.api.contract.v1.OrdersService/CancelOrder',
+        v_token,
+        jsonb_build_object(
+            'accountId', v_resolved->>'account_id',
+            'orderId', p_order_id
+        )
+    );
+END;
+$$;
+
+COMMENT ON FUNCTION tbank_cancel_order(INTEGER, VARCHAR) IS
+'Отмена заявки T-Bank (CancelOrder)';
+
+CREATE OR REPLACE FUNCTION tbank_get_orders(
+    p_account_id INTEGER
+)
+RETURNS JSONB
+LANGUAGE plpgsql AS $$
+DECLARE
+    v_token TEXT;
+    v_api_url TEXT;
+    v_account_code VARCHAR;
+    v_resolved JSONB;
+BEGIN
+    SELECT btrim(a.token_encrypted), b.api_url, a.account_code
+    INTO v_token, v_api_url, v_account_code
+    FROM accounts a
+    JOIN brokers b ON b.id = a.broker_id
+    WHERE a.id = p_account_id AND b.code = 'T-BANK';
+
+    IF v_token IS NULL OR v_token = '' THEN
+        RAISE EXCEPTION 'T-Bank токен не найден для account_id=%', p_account_id;
+    END IF;
+
+    v_resolved := resolve_tbank_account(v_api_url, v_token, v_account_code);
+
+    RETURN tbank_http_post(
+        v_api_url,
+        'tinkoff.public.invest.api.contract.v1.OrdersService/GetOrders',
+        v_token,
+        jsonb_build_object('accountId', v_resolved->>'account_id')
+    );
+END;
+$$;
+
+COMMENT ON FUNCTION tbank_get_orders(INTEGER) IS
+'Список заявок T-Bank (GetOrders)';
+
+-- Главная load_prices → HTTP (переопределение заглушек части A)
+CREATE OR REPLACE PROCEDURE load_prices(
+    p_security_id INTEGER,
+    p_timeframe_id INTEGER,
+    p_date_from DATE,
+    p_date_to DATE
+)
+LANGUAGE plpgsql AS $$
+BEGIN
+    CALL load_prices_http(p_security_id, p_timeframe_id, p_date_from, p_date_to);
+END;
+$$;
+
+COMMENT ON PROCEDURE load_prices(INTEGER, INTEGER, DATE, DATE) IS
+'Загрузка цен через PostgreSQL (pgsql-http): T-Bank → MOEX. Требует CREATE EXTENSION http;';
 
 
 -- ============================================

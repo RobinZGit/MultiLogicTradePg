@@ -5,9 +5,12 @@ on:
     branches: [main]
     paths:
       - 'web/**'
+      - '00_create_database.sql'
       - '01_multilogictrade_tables_and_data.sql'
       - '02_multilogictrade_functions_and_procedures.sql'
       - 'scripts/generate-offline-schema.mjs'
+      - 'scripts/verify-sql.mjs'
+      - 'scripts/verify-indicators.mjs'
       - '.github/workflows/pages.yml'
   workflow_dispatch:
 
@@ -34,12 +37,30 @@ jobs:
           cache: npm
           cache-dependency-path: web/package-lock.json
 
-      - name: Generate offline schema from SQL scripts
-        run: node scripts/generate-offline-schema.mjs
+      - name: Setup PostgreSQL client
+        run: sudo apt-get update && sudo apt-get install -y postgresql-client postgresql
+
+      - name: Verify SQL scripts (01 + 02 core + indicators)
+        env:
+          PGPASSWORD: postgres
+          PGUSER: postgres
+          PGHOST: localhost
+        run: |
+          sudo service postgresql start
+          sudo -u postgres psql -c "ALTER USER postgres PASSWORD 'postgres';"
+          node scripts/verify-sql.mjs --core-only
+          node scripts/verify-indicators.mjs
 
       - name: Install dependencies
         working-directory: web
         run: npm ci
+
+      - name: Unit tests (Angular)
+        working-directory: web
+        run: npm run test:unit -- --browsers=ChromeHeadlessCI
+
+      - name: Generate offline schema from SQL scripts
+        run: node scripts/generate-offline-schema.mjs
 
       - name: Build Angular (GitHub Pages)
         working-directory: web

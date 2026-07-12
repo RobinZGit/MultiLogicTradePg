@@ -64,7 +64,9 @@ Write-Host "Проект: $ProjectRoot"
 Write-Host "PostgreSQL: $psql"
 Write-Host "Шаги: $($Steps -join ', ')"
 Write-Host ""
-Write-Host "Пароль пользователя '$User' (Enter, если есть pgpass.conf):" -ForegroundColor Yellow
+if (-not $env:PGPASSWORD) {
+    Write-Host "Пароль пользователя '$User' (Enter, если есть pgpass.conf):" -ForegroundColor Yellow
+}
 
 $files = @{
     0 = @{ Db = "postgres";         File = "00_create_database.sql" }

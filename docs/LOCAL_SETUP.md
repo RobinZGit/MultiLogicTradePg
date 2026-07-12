@@ -142,6 +142,20 @@ SELECT code, name FROM indicators ORDER BY id LIMIT 5;
 
 ---
 
+## Автотесты перед сборкой
+
+Из каталога `web/`:
+
+```powershell
+npm run test:unit          # Angular (разворот бумаги без цен, график)
+npm run verify:sql         # SQL 01/02 + smoke индикаторов (verify-indicators)
+npm run build              # prebuild: verify:sql → test:unit → generate:schema
+```
+
+Пропуск (не рекомендуется): `SKIP_SQL_VERIFY=1` или `SKIP_INDICATOR_VERIFY=1`.
+
+---
+
 ## Частые ошибки
 
 | Ошибка | Решение |
@@ -149,6 +163,7 @@ SELECT code, name FROM indicators ORDER BY id LIMIT 5;
 | `password authentication failed` | Неверный пароль `postgres`; сброс через pgAdmin или переустановка пароля |
 | `DROP DATABASE ... being accessed` | Закройте Query Tool/DBeaver, подключённые к `multilogictrade`; скрипт **00** сам завершает сессии |
 | `extension "http" is not available` | Не выполняйте HTTP-блок в **02** или установите [pgsql-http](https://github.com/pramsey/pgsql-http) |
+| «Загрузить цены» висит на «с сегодня назад…» | Часто **блокировка в PostgreSQL** (прерванный `psql -f 02`, зависший `ALTER TABLE`). Остановите Start.bat, в psql: `SELECT pid, query FROM pg_stat_activity WHERE datname='multilogictrade' AND state<>'idle';` — завершите зависшие сессии (`pg_terminate_backend(pid)`), перезапустите Start.bat |
 | Кракозябры в комментариях | UTF-8 в редакторе; для `psql`: `$env:PGCLIENTENCODING='UTF8'` |
 
 ---

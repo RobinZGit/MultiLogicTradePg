@@ -1,4 +1,4 @@
-<section class="page">
+<section class="page page-scroll">
   <header class="page-header">
     <h1>Справочники</h1>
     <p class="subtitle">Брокеры, торговые площадки и счета</p>
@@ -16,7 +16,7 @@
   }
 
   @if (!loading && !error) {
-    <div class="sections">
+    <div class="sections scroll-list">
       <!-- Брокеры -->
       <section class="accordion">
         <header class="accordion-head">
@@ -28,7 +28,7 @@
           <button type="button" class="icon-btn icon-add" title="Добавить" aria-label="Добавить" (click)="openAddBroker()">+</button>
         </header>
         @if (isExpanded('brokers')) {
-          <div class="table-wrap">
+          <div class="table-wrap scroll-list-panel">
             <table>
               <thead>
                 <tr>
@@ -77,7 +77,7 @@
           <button type="button" class="icon-btn icon-add" title="Добавить" aria-label="Добавить" (click)="openAddExchange()">+</button>
         </header>
         @if (isExpanded('exchanges')) {
-          <div class="table-wrap">
+          <div class="table-wrap scroll-list-panel">
             <table>
               <thead>
                 <tr>
@@ -120,7 +120,7 @@
           <button type="button" class="icon-btn icon-add" title="Добавить" aria-label="Добавить" (click)="openAddAccount()">+</button>
         </header>
         @if (isExpanded('accounts')) {
-          <div class="table-wrap">
+          <div class="table-wrap scroll-list-panel">
             <table>
               <thead>
                 <tr>

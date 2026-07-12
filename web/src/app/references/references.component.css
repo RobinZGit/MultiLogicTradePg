@@ -156,8 +156,9 @@
   color: #b91c1c;
 }
 
-.table-wrap {
-  overflow-x: auto;
+.table-wrap.scroll-list-panel {
+  overflow: auto;
+  max-height: min(360px, 40vh);
 }
 
 table {

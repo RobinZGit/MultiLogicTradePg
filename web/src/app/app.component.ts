@@ -32,11 +32,11 @@ import { DbSchemaPanelComponent } from './db-schema/db-schema-panel.component';
       <a routerLink="/operations" routerLinkActive="active" [routerLinkActiveOptions]="{ exact: true }">
         Торговые операции
       </a>
-      <a routerLink="/references" routerLinkActive="active">
-        Счета, Брокеры, Торговые площадки
-      </a>
       <a routerLink="/indicators" routerLinkActive="active">
-        Индикаторы
+        Бумаги и индикаторы
+      </a>
+      <a routerLink="/references" routerLinkActive="active">
+        Справочники
       </a>
     </nav>
     <main>

@@ -1,4 +1,4 @@
-<section class="page">
+<section class="page page-scroll">
 
   <header class="page-header">
 
@@ -62,6 +62,7 @@
 
   @if (!error || logics.length > 0) {
 
+    <div class="scroll-list">
     <div class="table-wrap" [class.table-dimmed]="loading && logics.length > 0">
 
       <table>
@@ -226,6 +227,7 @@
 
       </table>
 
+    </div>
     </div>
 
   }
