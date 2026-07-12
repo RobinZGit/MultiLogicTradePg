@@ -241,10 +241,12 @@ try {
   );
 
   // SMAT3 — тройная свёртка sma * sma * sma
+  const smat3Formula =
+    'sma(period=20, series=VALUE) * sma(period=20, series=VALUE) * sma(period=20, series=VALUE)';
   assertEq(
     'SMAT3 formula',
     runPsql(psql, `SELECT btrim(formula) FROM indicators WHERE code = 'SMAT3'`),
-    'sma * sma * sma'
+    smat3Formula
   );
   assertEq(
     'SMA formula',
@@ -267,7 +269,7 @@ try {
     runPsql(
       psql,
       `SELECT COUNT(*)::text FROM calc_poly_formula_array(
-         'sma * sma * sma', 'VALUE', ${sberId}, ${m15Id}, 15, NULL, 20, NULL, NULL, NULL, NULL, NULL, NULL, NULL
+         '${smat3Formula}', 'VALUE', ${sberId}, ${m15Id}, 15, NULL, 20, NULL, NULL, NULL, NULL, NULL, NULL, NULL
        )`
     ),
     1
@@ -275,7 +277,13 @@ try {
   const smat3Last = runPsql(
     psql,
     `SELECT value::text FROM calc_poly_formula_array(
-       'sma * sma * sma', 'VALUE', ${sberId}, ${m15Id}, 15, NULL, 20, NULL, NULL, NULL, NULL, NULL, NULL, NULL
+       '${smat3Formula}', 'VALUE', ${sberId}, ${m15Id}, 15, NULL, 20, NULL, NULL, NULL, NULL, NULL, NULL, NULL
+     ) ORDER BY dt DESC LIMIT 1`
+  );
+  const smaPosLast = runPsql(
+    psql,
+    `SELECT value::text FROM calc_poly_formula_array(
+       'sma(20)', 'VALUE', ${sberId}, ${m15Id}, 15, NULL, 20, NULL, NULL, NULL, NULL, NULL, NULL, NULL
      ) ORDER BY dt DESC LIMIT 1`
   );
   const smaLast = runPsql(
@@ -291,7 +299,7 @@ try {
     );
     process.exit(1);
   }
-  console.log(`verify-indicators: OK SMAT3 (${smat3Last}) on price scale; SMA (${smaLast})`);
+  console.log(`verify-indicators: OK SMAT3 (${smat3Last}) on price scale; sma(20)=${smaPosLast}; sma=${smaLast}`);
 
   // Линейный ряд close → вторая разность ≈ 0
   const paccLast = runPsql(

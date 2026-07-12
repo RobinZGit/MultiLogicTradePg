@@ -2155,6 +2155,18 @@ BEGIN
             CONTINUE;
         END IF;
 
+        IF v_c = '=' THEN
+            v_tokens := array_append(v_tokens, 'OP:=');
+            v_i := v_i + 1;
+            CONTINUE;
+        END IF;
+
+        IF v_c = ',' THEN
+            v_tokens := array_append(v_tokens, 'COMMA');
+            v_i := v_i + 1;
+            CONTINUE;
+        END IF;
+
         IF v_c IN ('+', '-', '*', '#') THEN
             v_tokens := array_append(v_tokens, 'OP:' || v_c);
             v_i := v_i + 1;
@@ -2174,6 +2186,162 @@ LANGUAGE sql IMMUTABLE AS $$
                 THEN p_tokens[p_pos] ELSE NULL END;
 $$;
 
+CREATE OR REPLACE FUNCTION poly_fn_empty_args()
+RETURNS JSONB
+LANGUAGE sql IMMUTABLE AS $$
+    SELECT jsonb_build_object('named', '{}'::JSONB, 'positional', '[]'::JSONB);
+$$;
+
+CREATE OR REPLACE FUNCTION poly_parse_fn_args(
+    p_tokens TEXT[],
+    p_pos INTEGER
+)
+RETURNS JSONB
+LANGUAGE plpgsql IMMUTABLE AS $$
+DECLARE
+    v_pos INTEGER := p_pos;
+    v_t TEXT;
+    v_name TEXT;
+    v_named JSONB := '{}'::JSONB;
+    v_positional JSONB := '[]'::JSONB;
+BEGIN
+    IF poly_peek_token(p_tokens, v_pos) = 'RP' THEN
+        RETURN jsonb_build_object('named', v_named, 'positional', v_positional, 'p', v_pos);
+    END IF;
+
+    LOOP
+        v_t := poly_peek_token(p_tokens, v_pos);
+        EXIT WHEN v_t IS NULL OR v_t = 'RP';
+
+        IF v_t LIKE 'ID:%' THEN
+            v_name := lower(substr(v_t, 4));
+            IF poly_peek_token(p_tokens, v_pos + 1) = 'OP:=' THEN
+                v_pos := v_pos + 2;
+                v_t := poly_peek_token(p_tokens, v_pos);
+                IF v_t LIKE 'NUM:%' THEN
+                    v_named := v_named || jsonb_build_object(v_name, (substr(v_t, 5))::NUMERIC);
+                    v_pos := v_pos + 1;
+                ELSIF v_t LIKE 'ID:%' THEN
+                    v_named := v_named || jsonb_build_object(v_name, to_jsonb(upper(substr(v_t, 4))));
+                    v_pos := v_pos + 1;
+                ELSE
+                    RAISE EXCEPTION 'poly_parse_fn_args: expected value after %=%', v_name, v_name;
+                END IF;
+            ELSE
+                v_positional := v_positional || jsonb_build_array(to_jsonb(upper(substr(v_t, 4))));
+                v_pos := v_pos + 1;
+            END IF;
+        ELSIF v_t LIKE 'NUM:%' THEN
+            v_positional := v_positional || jsonb_build_array(to_jsonb((substr(v_t, 5))::NUMERIC));
+            v_pos := v_pos + 1;
+        ELSE
+            RAISE EXCEPTION 'poly_parse_fn_args: unexpected token %', v_t;
+        END IF;
+
+        IF poly_peek_token(p_tokens, v_pos) = 'COMMA' THEN
+            v_pos := v_pos + 1;
+            CONTINUE;
+        END IF;
+        EXIT WHEN poly_peek_token(p_tokens, v_pos) = 'RP';
+    END LOOP;
+
+    IF poly_peek_token(p_tokens, v_pos) <> 'RP' THEN
+        RAISE EXCEPTION 'poly_parse_fn_args: expected )';
+    END IF;
+
+    RETURN jsonb_build_object('named', v_named, 'positional', v_positional, 'p', v_pos + 1);
+END;
+$$;
+
+CREATE OR REPLACE FUNCTION poly_fn_validate_args(p_fn TEXT, p_args JSONB)
+RETURNS VOID
+LANGUAGE plpgsql IMMUTABLE AS $$
+DECLARE
+    v_pos JSONB;
+    v_n INTEGER;
+    v_i INTEGER;
+    v_s TEXT;
+    v_has_num BOOLEAN := FALSE;
+BEGIN
+    v_pos := COALESCE(p_args -> 'positional', '[]'::JSONB);
+    v_n := COALESCE(jsonb_array_length(v_pos), 0);
+    FOR v_i IN 0 .. GREATEST(v_n - 1, 0) LOOP
+        IF jsonb_typeof(v_pos -> v_i) = 'string' THEN
+            v_s := lower(v_pos ->> v_i);
+            IF v_s IN ('pp', 'oo', 'hh', 'll', 'vv') THEN
+                RAISE EXCEPTION 'poly_fn: use bare % for close; () does not take market columns', p_fn;
+            END IF;
+            IF v_i < v_n - 1 THEN
+                RAISE EXCEPTION 'poly_fn: series must be the last positional argument in %()', p_fn;
+            END IF;
+        ELSIF jsonb_typeof(v_pos -> v_i) = 'number' THEN
+            v_has_num := TRUE;
+        END IF;
+    END LOOP;
+
+    IF v_n = 1 AND jsonb_typeof(v_pos -> 0) = 'string' AND NOT v_has_num THEN
+        IF lower(p_fn) IN ('sma', 'ema', 'ww') AND lower(v_pos ->> 0) NOT IN ('value') THEN
+            RAISE EXCEPTION 'poly_fn: %() needs period before series; use % or %(period=N)', p_fn, p_fn, p_fn;
+        END IF;
+    END IF;
+END;
+$$;
+
+CREATE OR REPLACE FUNCTION poly_fn_resolve_period(p_node JSONB, p_ctx JSONB)
+RETURNS INTEGER
+LANGUAGE plpgsql IMMUTABLE AS $$
+DECLARE
+    v_args JSONB;
+    v_named JSONB;
+    v_pos JSONB;
+    v_i INTEGER;
+    v_n INTEGER;
+BEGIN
+    v_args := COALESCE(p_node -> 'args', poly_fn_empty_args());
+    v_named := COALESCE(v_args -> 'named', '{}'::JSONB);
+    v_pos := COALESCE(v_args -> 'positional', '[]'::JSONB);
+
+    IF v_named ? 'period' THEN
+        RETURN GREATEST((v_named ->> 'period')::INTEGER, 1);
+    END IF;
+
+    v_n := COALESCE(jsonb_array_length(v_pos), 0);
+    FOR v_i IN 0 .. GREATEST(v_n - 1, 0) LOOP
+        IF jsonb_typeof(v_pos -> v_i) = 'number' THEN
+            RETURN GREATEST((v_pos ->> v_i)::INTEGER, 1);
+        END IF;
+    END LOOP;
+
+    RETURN poly_ctx_period(p_ctx);
+END;
+$$;
+
+CREATE OR REPLACE FUNCTION poly_fn_resolve_series(p_node JSONB, p_default TEXT DEFAULT 'VALUE')
+RETURNS TEXT
+LANGUAGE plpgsql IMMUTABLE AS $$
+DECLARE
+    v_args JSONB;
+    v_named JSONB;
+    v_pos JSONB;
+    v_n INTEGER;
+BEGIN
+    v_args := COALESCE(p_node -> 'args', poly_fn_empty_args());
+    v_named := COALESCE(v_args -> 'named', '{}'::JSONB);
+    v_pos := COALESCE(v_args -> 'positional', '[]'::JSONB);
+
+    IF v_named ? 'series' THEN
+        RETURN upper(v_named ->> 'series');
+    END IF;
+
+    v_n := COALESCE(jsonb_array_length(v_pos), 0);
+    IF v_n > 0 AND jsonb_typeof(v_pos -> (v_n - 1)) = 'string' THEN
+        RETURN upper(v_pos ->> (v_n - 1));
+    END IF;
+
+    RETURN upper(COALESCE(p_default, 'VALUE'));
+END;
+$$;
+
 CREATE OR REPLACE FUNCTION poly_parse_atom(
     p_tokens TEXT[],
     p_pos INTEGER
@@ -2185,6 +2353,8 @@ DECLARE
     v_parts TEXT[];
     v_vec NUMERIC[];
     v_inner JSONB;
+    v_args JSONB;
+    v_fn TEXT;
     i INTEGER;
     v_pos INTEGER := p_pos;
 BEGIN
@@ -2204,20 +2374,32 @@ BEGIN
     END IF;
 
     IF v_t LIKE 'ID:%' AND lower(substr(v_t, 4)) IN ('sma', 'ema', 'ww') THEN
-        -- sma / ema / ww — всегда от close (pp); без аргументов в скобках
+        v_fn := lower(substr(v_t, 4));
         IF poly_peek_token(p_tokens, v_pos + 1) IS DISTINCT FROM 'LP' THEN
             RETURN jsonb_build_object(
-                'n', jsonb_build_object('fn', lower(substr(v_t, 4)), 'has_arg', FALSE),
+                'n', jsonb_build_object('fn', v_fn, 'args', poly_fn_empty_args()),
                 'p', v_pos + 1
             );
         END IF;
         v_pos := v_pos + 2;
-        IF poly_peek_token(p_tokens, v_pos) <> 'RP' THEN
-            RAISE EXCEPTION 'poly_parse: %() without arguments only (from close); use bare %', substr(v_t, 4), substr(v_t, 4);
-        END IF;
+        v_args := poly_parse_fn_args(p_tokens, v_pos);
+        v_pos := (v_args ->> 'p')::INTEGER;
+        PERFORM poly_fn_validate_args(
+            v_fn,
+            jsonb_build_object(
+                'named', COALESCE(v_args -> 'named', '{}'::JSONB),
+                'positional', COALESCE(v_args -> 'positional', '[]'::JSONB)
+            )
+        );
         RETURN jsonb_build_object(
-            'n', jsonb_build_object('fn', lower(substr(v_t, 4)), 'has_arg', FALSE),
-            'p', v_pos + 1
+            'n', jsonb_build_object(
+                'fn', v_fn,
+                'args', jsonb_build_object(
+                    'named', COALESCE(v_args -> 'named', '{}'::JSONB),
+                    'positional', COALESCE(v_args -> 'positional', '[]'::JSONB)
+                )
+            ),
+            'p', v_pos
         );
     END IF;
 
@@ -2522,7 +2704,6 @@ DECLARE
     v_series TEXT;
     v_fn TEXT;
     v_period INTEGER;
-    v_arg NUMERIC[];
     i INTEGER;
 BEGIN
     IF p_node ? 'num' THEN
@@ -2543,23 +2724,20 @@ BEGIN
 
     IF p_node ? 'fn' THEN
         v_fn := lower(p_node ->> 'fn');
-        v_period := poly_ctx_period(p_ctx);
-        IF COALESCE((p_node ->> 'has_arg')::BOOLEAN, FALSE) THEN
-            v_arg := poly_eval_node(p_node -> 'arg', p_ctx);
-        ELSE
-            v_arg := NULL;
-        END IF;
+        PERFORM poly_fn_validate_args(v_fn, COALESCE(p_node -> 'args', poly_fn_empty_args()));
+        v_period := poly_fn_resolve_period(p_node, p_ctx);
+        v_series := poly_fn_resolve_series(p_node, 'VALUE');
         CASE v_fn
             WHEN 'ww' THEN
                 RETURN poly_build_sma_kernel(v_period);
             WHEN 'sma' THEN
                 RETURN poly_convolve(
-                    COALESCE(v_arg, poly_pp_from_ctx(p_ctx)),
+                    poly_pp_from_ctx(p_ctx),
                     poly_build_sma_kernel(v_period)
                 );
             WHEN 'ema' THEN
                 RETURN poly_convolve(
-                    COALESCE(v_arg, poly_pp_from_ctx(p_ctx)),
+                    poly_pp_from_ctx(p_ctx),
                     poly_build_ema_kernel(v_period)
                 );
             ELSE

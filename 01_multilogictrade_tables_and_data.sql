@@ -533,7 +533,7 @@ ALTER TABLE indicators ADD COLUMN IF NOT EXISTS is_custom BOOLEAN NOT NULL DEFAU
 UPDATE indicators SET formula = 'sma', is_custom = FALSE WHERE code = 'SMA';
 UPDATE indicators SET formula = 'ema', is_custom = FALSE WHERE code = 'EMA';
 UPDATE indicators SET formula = 'pp * (1; -2; 1)', is_custom = TRUE WHERE code = 'PACC';
-UPDATE indicators SET formula = 'sma * sma * sma', is_custom = TRUE WHERE code = 'SMAT3';
+UPDATE indicators SET formula = 'sma(period=20, series=VALUE) * sma(period=20, series=VALUE) * sma(period=20, series=VALUE)', is_custom = TRUE WHERE code = 'SMAT3';
 
 -- Подробные описания индикаторов с функциями расчёта в PostgreSQL
 UPDATE indicators SET description = $desc$
@@ -621,8 +621,8 @@ $desc$ WHERE code = 'PACC';
 UPDATE indicators SET description = $desc$
 SMA Triple (SMAT3) — тройная свёртка ряда SMA
 
-Расчёт: sma * sma * sma. Функция sma — SMA от close (pp); * — свёртка вычисленных рядов.
-S = sma, затем ((S * S) * S) с нормализацией при равной длине рядов.
+Расчёт: sma(period=20, series=VALUE) * … (трижды). В () — параметры: позиционно (20, VALUE) или period=20, series=VALUE; без () — дефолты серии на бумаге.
+S = sma(…), затем ((S * S) * S) с нормализацией при равной длине рядов.
 
 Сигналы: усиленное сглаживание на шкале цены; отлично от одинарного SMA.
 
@@ -673,7 +673,7 @@ JOIN (VALUES
     ('ATR', 'ATR', 'Значение ATR', 'float', FALSE, NULL, 'ATR', 1),
     ('ATR', 'ATR_PCT', 'ATR в процентах', 'float', FALSE, NULL, 'ATR %', 2),
     ('PACC', 'VALUE', 'Ускорение цены', 'float', FALSE, NULL, 'pp * (1;-2;1)', 1),
-    ('SMAT3', 'VALUE', 'SMA³ свёртка', 'float', FALSE, NULL, 'sma*sma*sma', 1),
+    ('SMAT3', 'VALUE', 'SMA³ свёртка', 'float', FALSE, NULL, 'sma(period=20,series=VALUE)*3', 1),
     ('SMA', 'VALUE', 'Значение MA', 'float', FALSE, NULL, 'SMA value', 1),
     ('EMA', 'VALUE', 'Значение EMA', 'float', FALSE, NULL, 'EMA value', 1),
     ('WMA', 'VALUE', 'Значение WMA', 'float', FALSE, NULL, 'WMA value', 1)

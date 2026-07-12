@@ -2,7 +2,7 @@ import { IndicatorRow } from '../models/lookup.model';
 
 /** Краткая подсказка под полем формулы (create / edit). */
 export const INDICATOR_FORMULA_HINT =
-  'pp, sma, ema, * — свёртка, @CODE — ряд индикатора (SMA, RSI…). Кнопка «И.» — полный список.';
+  'pp, sma(period=20), ema, * — свёртка, @CODE — ряд индикатора. Кнопка «И.» — полный список.';
 
 /** Базовая справка (без каталога индикаторов). */
 export const INDICATOR_FORMULA_HELP_BASE = `Многочленная формула — выражение над числовыми рядами (массивами по барам).
@@ -19,23 +19,22 @@ export const INDICATOR_FORMULA_HELP_BASE = `Многочленная форму�
   #, /# — покомponentное умножение / деление
   +, − — покомponentное сложение / вычитание
 
-Функции (всегда от close, pp)
-  sma — простое MA от close; sma() то же
-  ema — экспоненциальное MA от close
-  ww() — только ядро SMA периода N (для pp * ww() …)
+Функции sma / ema / ww (источник — close, pp)
+  sma — SMA от close, параметры серии по умолчанию
+  sma() — то же
+  sma(20) — period=20 (позиционно)
+  sma(20, VALUE) — period и серия (последний аргумент — серия)
+  sma(period=20, series=VALUE) — именованные параметры
+  ema(period=20), ww(period=20) — аналогично
+  Без () — param_period и VALUE из серии на бумаге
+
+Имена параметров: period, fast_period, slow_period, signal_period, std_dev, k_period, d_period, smooth, series
 
 @CODE — ссылка на индикатор из справочника
-  Код в таблице (SMA, RSI, MACD, SMAT3…) = @CODE в формулах.
-  @SMA — серия SMA; @MACD:HISTOGRAM — конкретная линия.
-  Без «:СЕРИЯ» — первая нетreshold-серия или VALUE.
-
-Когда @CODE, когда sma?
-  sma, ema — новый ряд от close в этой формуле (без sma(pp) в скобках).
-  @SMA — уже рассчитанный индикатор с param_period серии на бумаге.
-  Для комбинаций (@RSI # pp) — @; для свёрток (sma * sma, PACC) — функции и *.
+  @SMA, @MACD:HISTOGRAM — уже рассчитанные серии на бумаге
 
 SMAT3
-  sma * sma * sma — три раза SMA(close), свёртка ряда с собой (нормализация на шкале цены)`;
+  sma(period=20, series=VALUE) * sma(period=20, series=VALUE) * sma(period=20, series=VALUE)`;
 
 const IMPLEMENTED_CODES = new Set([
   'RSI',
@@ -93,10 +92,10 @@ export function buildIndicatorCatalogHelp(indicators: IndicatorRow[]): string {
 
   lines.push('');
   lines.push('Примеры');
-  lines.push('  sma * sma * sma         — SMAT3');
-  lines.push('  sma                     — SMA от close');
-  lines.push('  @RSI # pp               — RSI покомponentно × цена');
-  lines.push('  @MACD:HISTOGRAM         — гистограмма MACD');
+  lines.push('  sma(period=20, series=VALUE) * … — SMAT3');
+  lines.push('  sma(20)                 — SMA period 20');
+  lines.push('  sma                     — SMA, дефолт серии');
+  lines.push('  @RSI # pp               — RSI × цена');
   lines.push('  pp * (1; -2; 1)         — PACC');
 
   return lines.join('\n');

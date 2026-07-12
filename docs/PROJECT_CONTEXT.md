@@ -71,8 +71,8 @@
 
 - справочник `indicators` (32 шт.: + **SMAT3**), классические + **PACC** + пользовательские через `formula`;
 - **`indicators.formula`** — многочлен для `calc_poly_formula_array`; **`is_custom`** — подсветка в списке;
-- **`sma`**, **`ema`**, **`ww()`**, `@CODE`, `*`, `#`, ядра `(1;-2;1)` — единый парсер `poly_*` в `02` (sma/ema всегда от close);
-- **`*`** — свёртка вычисленных рядов; SMAT3 = `sma * sma * sma`;
+- **`sma`**, **`ema`**, **`ww()`** — от close; **`sma(period=20)`**, **`sma(period=20, series=VALUE)`** — параметры в ();
+- **`@CODE`**, `*`, `#`, ядра `(1;-2;1)` — единый парсер `poly_*` в `02`;
 - `invoke_formula` / `default_invoke_formula`: если не `calc_*` — многочлен;
 - UI: **«+»** у «Индикаторы» → форма (код, название, описание, формула); **«И.»** — справка по синтаксису;
 - API: `GET/POST /api/indicators`, `PUT /api/indicators/:id` (formula для `is_custom`);
@@ -162,6 +162,7 @@
 | 2026-07-12 | security_indicator_series, calc_ind_*_array, sync инкрементальный |
 | 2026-07-12 | verify-indicators, test:unit, fullscreen график, fix expand hang |
 | 2026-07-12 | PACC + poly parser; fix hang assign; линия нуля на графике; push в репо |
+| 2026-07-12 | sma/ema/ww с параметрами в (); SMAT3 с period=20, series=VALUE |
 | 2026-07-12 | Убран SMAT3COMP; sma без скобок; SMAT3 = sma*sma*sma |
 | 2026-07-12 | Async sync при drag; SMAT3 нормализация свёртки |
 | 2026-07-12 | Единый formula engine, SMAT3, UI создать индикатор (+), справка «И.» |
@@ -204,4 +205,4 @@
 20. «При drag индикатора страница зависает — сразу показывать в списке, пересчёт в PostgreSQL в фоне, спиннер «Пересчёт …» как при загрузке цен».
 21. «SMAT3 — sma(pp)*sma(pp)*sma(pp) (свёртка рядов); SMAT3COMP — sma(sma(sma(pp))) (композиция); при том же N числа разные; * без подмены ядром».
 22. «После пересоздания БД теряется токен T-Bank — диалог ввода при загрузке цен, хранить в глобальных параметрах, отмена → MOEX; пересоздать БД; в репо».
-24. «Убрать SMAT3COMP и композицию sma(…); sma без (pp); SMAT3 = sma*sma*sma; БД с нуля».
+25. «sma(period=20, series=VALUE) в формулах; позиционные и именованные параметры; SMAT3 с явными параметрами; БД с нуля».
