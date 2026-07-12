@@ -35,6 +35,9 @@ import { DbSchemaPanelComponent } from './db-schema/db-schema-panel.component';
       <a routerLink="/references" routerLinkActive="active">
         Счета, Брокеры, Торговые площадки
       </a>
+      <a routerLink="/indicators" routerLinkActive="active">
+        Индикаторы
+      </a>
     </nav>
     <main>
       <router-outlet />

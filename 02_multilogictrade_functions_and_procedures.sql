@@ -544,6 +544,565 @@ COMMENT ON PROCEDURE cleanup_old_prices(INTEGER) IS
 'Удаляет цены старше указанного количества дней (по умолчанию 365).';
 
 -- ============================================
+-- Индикаторы: подстановка плейсхолдеров и функции calc_ind_*
+-- (вставляется в 02_multilogictrade_functions_and_procedures.sql)
+-- ============================================
+
+CREATE OR REPLACE FUNCTION get_ind_series_threshold(
+    p_indicator_id INTEGER,
+    p_series VARCHAR
+)
+RETURNS NUMERIC
+LANGUAGE sql
+STABLE
+AS $$
+    SELECT threshold_value
+    FROM indicator_value_types
+    WHERE indicator_id = p_indicator_id
+      AND code = p_series
+      AND is_threshold = TRUE;
+$$;
+
+COMMENT ON FUNCTION get_ind_series_threshold(INTEGER, VARCHAR) IS
+'Пороговое значение серии индикатора (OVERBOUGHT, ZERO и т.д.).';
+
+-- Подстановка плейсхолдеров в indicators.script перед EXECUTE.
+-- Длинные имена (:fast_period) заменяются раньше коротких (:period).
+CREATE OR REPLACE FUNCTION substitute_indicator_script(
+    p_template TEXT,
+    p_period INTEGER DEFAULT NULL,
+    p_fast_period INTEGER DEFAULT NULL,
+    p_slow_period INTEGER DEFAULT NULL,
+    p_signal_period INTEGER DEFAULT NULL,
+    p_std_dev NUMERIC DEFAULT NULL,
+    p_k_period INTEGER DEFAULT NULL,
+    p_d_period INTEGER DEFAULT NULL,
+    p_smooth INTEGER DEFAULT NULL,
+    p_series VARCHAR DEFAULT NULL,
+    p_security_id INTEGER DEFAULT NULL,
+    p_timeframe_id INTEGER DEFAULT NULL,
+    p_dt TIMESTAMP DEFAULT NULL,
+    p_indicator_id INTEGER DEFAULT NULL
+)
+RETURNS TEXT
+LANGUAGE plpgsql
+STABLE
+AS $$
+DECLARE
+    v_sql TEXT := p_template;
+BEGIN
+    IF v_sql IS NULL OR TRIM(v_sql) = '' THEN
+        RETURN NULL;
+    END IF;
+
+    v_sql := REPLACE(v_sql, ':fast_period', COALESCE(p_fast_period::TEXT, 'NULL'));
+    v_sql := REPLACE(v_sql, ':slow_period', COALESCE(p_slow_period::TEXT, 'NULL'));
+    v_sql := REPLACE(v_sql, ':signal_period', COALESCE(p_signal_period::TEXT, 'NULL'));
+    v_sql := REPLACE(v_sql, ':k_period', COALESCE(p_k_period::TEXT, 'NULL'));
+    v_sql := REPLACE(v_sql, ':d_period', COALESCE(p_d_period::TEXT, 'NULL'));
+    v_sql := REPLACE(v_sql, ':std_dev', COALESCE(p_std_dev::TEXT, 'NULL'));
+    v_sql := REPLACE(v_sql, ':smooth', COALESCE(p_smooth::TEXT, 'NULL'));
+    v_sql := REPLACE(v_sql, ':security_id', COALESCE(p_security_id::TEXT, 'NULL'));
+    v_sql := REPLACE(v_sql, ':timeframe_id', COALESCE(p_timeframe_id::TEXT, 'NULL'));
+    v_sql := REPLACE(v_sql, ':indicator_id', COALESCE(p_indicator_id::TEXT, 'NULL'));
+    v_sql := REPLACE(v_sql, ':period', COALESCE(p_period::TEXT, 'NULL'));
+    v_sql := REPLACE(v_sql, ':series', quote_literal(COALESCE(p_series, '')));
+    v_sql := REPLACE(v_sql, ':dt', quote_literal(p_dt));
+
+    RETURN v_sql;
+END;
+$$;
+
+COMMENT ON FUNCTION substitute_indicator_script(TEXT, INTEGER, INTEGER, INTEGER, INTEGER, NUMERIC, INTEGER, INTEGER, INTEGER, VARCHAR, INTEGER, INTEGER, TIMESTAMP, INTEGER) IS
+'Подставляет значения параметров и :series в шаблон indicators.script для EXECUTE.';
+
+CREATE OR REPLACE FUNCTION exec_indicator_script(
+    p_template TEXT,
+    p_period INTEGER DEFAULT NULL,
+    p_fast_period INTEGER DEFAULT NULL,
+    p_slow_period INTEGER DEFAULT NULL,
+    p_signal_period INTEGER DEFAULT NULL,
+    p_std_dev NUMERIC DEFAULT NULL,
+    p_k_period INTEGER DEFAULT NULL,
+    p_d_period INTEGER DEFAULT NULL,
+    p_smooth INTEGER DEFAULT NULL,
+    p_series VARCHAR DEFAULT NULL,
+    p_security_id INTEGER DEFAULT NULL,
+    p_timeframe_id INTEGER DEFAULT NULL,
+    p_dt TIMESTAMP DEFAULT NULL,
+    p_indicator_id INTEGER DEFAULT NULL
+)
+RETURNS NUMERIC
+LANGUAGE plpgsql
+AS $$
+DECLARE
+    v_sql TEXT;
+    v_result NUMERIC;
+BEGIN
+    v_sql := substitute_indicator_script(
+        p_template, p_period, p_fast_period, p_slow_period, p_signal_period,
+        p_std_dev, p_k_period, p_d_period, p_smooth, p_series,
+        p_security_id, p_timeframe_id, p_dt, p_indicator_id
+    );
+    IF v_sql IS NULL THEN
+        RETURN NULL;
+    END IF;
+    EXECUTE v_sql INTO v_result;
+    RETURN v_result;
+EXCEPTION
+    WHEN OTHERS THEN
+        RAISE NOTICE 'exec_indicator_script [%]: %', p_series, SQLERRM;
+        RETURN NULL;
+END;
+$$;
+
+COMMENT ON FUNCTION exec_indicator_script(TEXT, INTEGER, INTEGER, INTEGER, INTEGER, NUMERIC, INTEGER, INTEGER, INTEGER, VARCHAR, INTEGER, INTEGER, TIMESTAMP, INTEGER) IS
+'Выполняет indicators.script (аналог EXECUTE IMMEDIATE) и возвращает NUMERIC.';
+
+-- RSI
+CREATE OR REPLACE FUNCTION calc_ind_rsi(
+    p_period INTEGER,
+    p_series VARCHAR,
+    p_security_id INTEGER,
+    p_timeframe_id INTEGER,
+    p_dt TIMESTAMP,
+    p_indicator_id INTEGER DEFAULT NULL
+)
+RETURNS NUMERIC
+LANGUAGE plpgsql
+STABLE
+AS $$
+DECLARE
+    v_closes NUMERIC[];
+    v_idx INTEGER;
+    v_gain NUMERIC := 0;
+    v_loss NUMERIC := 0;
+    v_avg_gain NUMERIC;
+    v_avg_loss NUMERIC;
+    v_rs NUMERIC;
+    v_thr NUMERIC;
+    j INTEGER;
+BEGIN
+    IF p_series IS NOT NULL AND p_series <> 'RSI' AND p_indicator_id IS NOT NULL THEN
+        v_thr := get_ind_series_threshold(p_indicator_id, p_series);
+        IF v_thr IS NOT NULL THEN
+            RETURN v_thr;
+        END IF;
+        RETURN NULL;
+    END IF;
+
+    SELECT array_agg(close_price ORDER BY dt), COUNT(*)
+    INTO v_closes, v_idx
+    FROM prices
+    WHERE security_id = p_security_id
+      AND timeframe_id = p_timeframe_id
+      AND dt <= p_dt;
+
+    IF v_idx IS NULL OR v_idx < p_period + 1 THEN
+        RETURN NULL;
+    END IF;
+
+    FOR j IN v_idx - p_period + 1 .. v_idx LOOP
+        IF v_closes[j] > v_closes[j - 1] THEN
+            v_gain := v_gain + (v_closes[j] - v_closes[j - 1]);
+        ELSE
+            v_loss := v_loss + (v_closes[j - 1] - v_closes[j]);
+        END IF;
+    END LOOP;
+
+    v_avg_gain := v_gain / p_period;
+    v_avg_loss := v_loss / p_period;
+    IF v_avg_loss = 0 THEN
+        RETURN 100;
+    END IF;
+    v_rs := v_avg_gain / v_avg_loss;
+    RETURN 100 - (100 / (1 + v_rs));
+END;
+$$;
+
+-- SMA
+CREATE OR REPLACE FUNCTION calc_ind_sma(
+    p_period INTEGER,
+    p_series VARCHAR,
+    p_security_id INTEGER,
+    p_timeframe_id INTEGER,
+    p_dt TIMESTAMP,
+    p_indicator_id INTEGER DEFAULT NULL
+)
+RETURNS NUMERIC
+LANGUAGE plpgsql
+STABLE
+AS $$
+DECLARE
+    v_thr NUMERIC;
+BEGIN
+    IF p_series IS NOT NULL AND p_series <> 'VALUE' AND p_indicator_id IS NOT NULL THEN
+        v_thr := get_ind_series_threshold(p_indicator_id, p_series);
+        IF v_thr IS NOT NULL THEN RETURN v_thr; END IF;
+        RETURN NULL;
+    END IF;
+
+    RETURN (
+        SELECT AVG(close_price)
+        FROM (
+            SELECT close_price
+            FROM prices
+            WHERE security_id = p_security_id
+              AND timeframe_id = p_timeframe_id
+              AND dt <= p_dt
+            ORDER BY dt DESC
+            LIMIT p_period
+        ) s
+    );
+END;
+$$;
+
+-- EMA (значение на свече p_dt)
+CREATE OR REPLACE FUNCTION calc_ind_ema(
+    p_period INTEGER,
+    p_series VARCHAR,
+    p_security_id INTEGER,
+    p_timeframe_id INTEGER,
+    p_dt TIMESTAMP,
+    p_indicator_id INTEGER DEFAULT NULL
+)
+RETURNS NUMERIC
+LANGUAGE plpgsql
+STABLE
+AS $$
+DECLARE
+    v_thr NUMERIC;
+    v_ema NUMERIC;
+    v_mult NUMERIC;
+    r RECORD;
+BEGIN
+    IF p_series IS NOT NULL AND p_series <> 'VALUE' AND p_indicator_id IS NOT NULL THEN
+        v_thr := get_ind_series_threshold(p_indicator_id, p_series);
+        IF v_thr IS NOT NULL THEN RETURN v_thr; END IF;
+        RETURN NULL;
+    END IF;
+
+    v_mult := 2.0 / (p_period + 1);
+    v_ema := NULL;
+    FOR r IN
+        SELECT close_price
+        FROM prices
+        WHERE security_id = p_security_id
+          AND timeframe_id = p_timeframe_id
+          AND dt <= p_dt
+        ORDER BY dt
+    LOOP
+        IF v_ema IS NULL THEN
+            v_ema := r.close_price;
+        ELSE
+            v_ema := (r.close_price - v_ema) * v_mult + v_ema;
+        END IF;
+    END LOOP;
+    RETURN v_ema;
+END;
+$$;
+
+-- MACD
+CREATE OR REPLACE FUNCTION calc_ind_macd(
+    p_fast_period INTEGER,
+    p_slow_period INTEGER,
+    p_signal_period INTEGER,
+    p_series VARCHAR,
+    p_security_id INTEGER,
+    p_timeframe_id INTEGER,
+    p_dt TIMESTAMP,
+    p_indicator_id INTEGER DEFAULT NULL
+)
+RETURNS NUMERIC
+LANGUAGE plpgsql
+STABLE
+AS $$
+DECLARE
+    v_closes NUMERIC[];
+    v_idx INTEGER;
+    v_mult_fast NUMERIC;
+    v_mult_slow NUMERIC;
+    v_mult_signal NUMERIC;
+    v_ema_fast NUMERIC;
+    v_ema_slow NUMERIC;
+    v_macd NUMERIC;
+    v_macd_signal NUMERIC;
+    v_macd_line NUMERIC[];
+    i INTEGER;
+    v_thr NUMERIC;
+BEGIN
+    IF p_indicator_id IS NOT NULL AND p_series IN ('ZERO', 'OVERBOUGHT', 'OVERSOLD') THEN
+        v_thr := get_ind_series_threshold(p_indicator_id, p_series);
+        IF v_thr IS NOT NULL THEN RETURN v_thr; END IF;
+    END IF;
+
+    SELECT array_agg(close_price ORDER BY dt), COUNT(*)
+    INTO v_closes, v_idx
+    FROM prices
+    WHERE security_id = p_security_id
+      AND timeframe_id = p_timeframe_id
+      AND dt <= p_dt;
+
+    IF v_idx IS NULL OR v_idx < p_slow_period THEN
+        RETURN NULL;
+    END IF;
+
+    v_mult_fast := 2.0 / (p_fast_period + 1);
+    v_mult_slow := 2.0 / (p_slow_period + 1);
+    v_mult_signal := 2.0 / (p_signal_period + 1);
+    v_ema_fast := v_closes[1];
+    v_ema_slow := v_closes[1];
+    v_macd_line := ARRAY[]::NUMERIC[];
+
+    FOR i IN 2 .. v_idx LOOP
+        v_ema_fast := (v_closes[i] - v_ema_fast) * v_mult_fast + v_ema_fast;
+        v_ema_slow := (v_closes[i] - v_ema_slow) * v_mult_slow + v_ema_slow;
+        v_macd := v_ema_fast - v_ema_slow;
+        v_macd_line := array_append(v_macd_line, v_macd);
+    END LOOP;
+
+    IF array_length(v_macd_line, 1) IS NULL THEN
+        RETURN NULL;
+    END IF;
+
+    v_macd_signal := v_macd_line[1];
+    FOR i IN 2 .. array_length(v_macd_line, 1) LOOP
+        v_macd_signal := (v_macd_line[i] - v_macd_signal) * v_mult_signal + v_macd_signal;
+    END LOOP;
+
+    v_macd := v_macd_line[array_length(v_macd_line, 1)];
+
+    RETURN CASE p_series
+        WHEN 'MACD' THEN v_macd
+        WHEN 'SIGNAL' THEN v_macd_signal
+        WHEN 'HISTOGRAM' THEN v_macd - v_macd_signal
+        WHEN 'ZERO' THEN 0
+        ELSE NULL
+    END;
+END;
+$$;
+
+-- Bollinger Bands
+CREATE OR REPLACE FUNCTION calc_ind_bb(
+    p_period INTEGER,
+    p_std_dev NUMERIC,
+    p_series VARCHAR,
+    p_security_id INTEGER,
+    p_timeframe_id INTEGER,
+    p_dt TIMESTAMP,
+    p_indicator_id INTEGER DEFAULT NULL
+)
+RETURNS NUMERIC
+LANGUAGE plpgsql
+STABLE
+AS $$
+DECLARE
+    v_middle NUMERIC;
+    v_std NUMERIC;
+    v_thr NUMERIC;
+BEGIN
+    IF p_indicator_id IS NOT NULL AND p_series NOT IN ('UPPER', 'MIDDLE', 'LOWER', 'BANDWIDTH') THEN
+        v_thr := get_ind_series_threshold(p_indicator_id, p_series);
+        IF v_thr IS NOT NULL THEN RETURN v_thr; END IF;
+        RETURN NULL;
+    END IF;
+
+    SELECT AVG(close_price), STDDEV_SAMP(close_price)
+    INTO v_middle, v_std
+    FROM (
+        SELECT close_price
+        FROM prices
+        WHERE security_id = p_security_id
+          AND timeframe_id = p_timeframe_id
+          AND dt <= p_dt
+        ORDER BY dt DESC
+        LIMIT p_period
+    ) s;
+
+    IF v_middle IS NULL THEN
+        RETURN NULL;
+    END IF;
+    v_std := COALESCE(v_std, 0);
+
+    RETURN CASE p_series
+        WHEN 'MIDDLE' THEN v_middle
+        WHEN 'UPPER' THEN v_middle + p_std_dev * v_std
+        WHEN 'LOWER' THEN v_middle - p_std_dev * v_std
+        WHEN 'BANDWIDTH' THEN
+            CASE WHEN v_middle = 0 THEN NULL
+                 ELSE (2 * p_std_dev * v_std) / v_middle * 100
+            END
+        ELSE NULL
+    END;
+END;
+$$;
+
+-- ATR
+CREATE OR REPLACE FUNCTION calc_ind_atr(
+    p_period INTEGER,
+    p_series VARCHAR,
+    p_security_id INTEGER,
+    p_timeframe_id INTEGER,
+    p_dt TIMESTAMP,
+    p_indicator_id INTEGER DEFAULT NULL
+)
+RETURNS NUMERIC
+LANGUAGE plpgsql
+STABLE
+AS $$
+DECLARE
+    v_highs NUMERIC[];
+    v_lows NUMERIC[];
+    v_closes NUMERIC[];
+    v_idx INTEGER;
+    v_atr NUMERIC;
+    v_tr NUMERIC;
+    v_tr_high NUMERIC;
+    v_tr_low NUMERIC;
+    v_tr_close NUMERIC;
+    i INTEGER;
+    v_thr NUMERIC;
+BEGIN
+    IF p_series = 'ATR_PCT' THEN
+        v_atr := calc_ind_atr(p_period, 'ATR', p_security_id, p_timeframe_id, p_dt, p_indicator_id);
+        SELECT close_price INTO v_tr_close
+        FROM prices
+        WHERE security_id = p_security_id AND timeframe_id = p_timeframe_id AND dt = p_dt;
+        IF v_atr IS NULL OR v_tr_close IS NULL OR v_tr_close = 0 THEN
+            RETURN NULL;
+        END IF;
+        RETURN v_atr / v_tr_close * 100;
+    END IF;
+
+    IF p_series IS NOT NULL AND p_series <> 'ATR' AND p_indicator_id IS NOT NULL THEN
+        v_thr := get_ind_series_threshold(p_indicator_id, p_series);
+        IF v_thr IS NOT NULL THEN RETURN v_thr; END IF;
+        RETURN NULL;
+    END IF;
+
+    SELECT
+        array_agg(high_price ORDER BY dt),
+        array_agg(low_price ORDER BY dt),
+        array_agg(close_price ORDER BY dt),
+        COUNT(*)
+    INTO v_highs, v_lows, v_closes, v_idx
+    FROM prices
+    WHERE security_id = p_security_id
+      AND timeframe_id = p_timeframe_id
+      AND dt <= p_dt;
+
+    IF v_idx IS NULL OR v_idx < p_period + 1 THEN
+        RETURN NULL;
+    END IF;
+
+    v_atr := 0;
+    FOR i IN 2 .. v_idx LOOP
+        v_tr_high := v_highs[i] - v_lows[i];
+        v_tr_low := ABS(v_highs[i] - v_closes[i - 1]);
+        v_tr_close := ABS(v_lows[i] - v_closes[i - 1]);
+        v_tr := GREATEST(v_tr_high, v_tr_low, v_tr_close);
+        IF i <= p_period THEN
+            v_atr := v_atr + v_tr;
+            IF i = p_period THEN
+                v_atr := v_atr / p_period;
+            END IF;
+        ELSE
+            v_atr := (v_atr * (p_period - 1) + v_tr) / p_period;
+        END IF;
+    END LOOP;
+
+    RETURN v_atr;
+END;
+$$;
+
+-- Stochastic
+CREATE OR REPLACE FUNCTION calc_ind_stoch(
+    p_k_period INTEGER,
+    p_d_period INTEGER,
+    p_smooth INTEGER,
+    p_series VARCHAR,
+    p_security_id INTEGER,
+    p_timeframe_id INTEGER,
+    p_dt TIMESTAMP,
+    p_indicator_id INTEGER DEFAULT NULL
+)
+RETURNS NUMERIC
+LANGUAGE plpgsql
+STABLE
+AS $$
+DECLARE
+    v_highs NUMERIC[];
+    v_lows NUMERIC[];
+    v_closes NUMERIC[];
+    v_idx INTEGER;
+    v_k_values NUMERIC[] := ARRAY[]::NUMERIC[];
+    v_stoch_k NUMERIC;
+    v_stoch_d NUMERIC;
+    i INTEGER;
+    j INTEGER;
+    v_lowest NUMERIC;
+    v_highest NUMERIC;
+    v_sum NUMERIC;
+    v_thr NUMERIC;
+BEGIN
+    IF p_indicator_id IS NOT NULL AND p_series IN ('OVERBOUGHT', 'OVERSOLD') THEN
+        v_thr := get_ind_series_threshold(p_indicator_id, p_series);
+        IF v_thr IS NOT NULL THEN RETURN v_thr; END IF;
+    END IF;
+
+    SELECT
+        array_agg(high_price ORDER BY dt),
+        array_agg(low_price ORDER BY dt),
+        array_agg(close_price ORDER BY dt),
+        COUNT(*)
+    INTO v_highs, v_lows, v_closes, v_idx
+    FROM prices
+    WHERE security_id = p_security_id
+      AND timeframe_id = p_timeframe_id
+      AND dt <= p_dt;
+
+    IF v_idx IS NULL OR v_idx < p_k_period THEN
+        RETURN NULL;
+    END IF;
+
+    FOR i IN p_k_period .. v_idx LOOP
+        v_lowest := v_lows[i];
+        v_highest := v_highs[i];
+        FOR j IN i - p_k_period + 1 .. i LOOP
+            IF v_lows[j] < v_lowest THEN v_lowest := v_lows[j]; END IF;
+            IF v_highs[j] > v_highest THEN v_highest := v_highs[j]; END IF;
+        END LOOP;
+        IF v_highest = v_lowest THEN
+            v_stoch_k := 50;
+        ELSE
+            v_stoch_k := (v_closes[i] - v_lowest) / (v_highest - v_lowest) * 100;
+        END IF;
+        v_k_values := array_append(v_k_values, v_stoch_k);
+    END LOOP;
+
+    IF array_length(v_k_values, 1) IS NULL THEN
+        RETURN NULL;
+    END IF;
+
+    v_stoch_k := v_k_values[array_length(v_k_values, 1)];
+
+    IF p_series = 'K' THEN
+        RETURN v_stoch_k;
+    END IF;
+
+    IF p_series = 'D' THEN
+        v_sum := 0;
+        FOR i IN GREATEST(1, array_length(v_k_values, 1) - p_d_period + 1) .. array_length(v_k_values, 1) LOOP
+            v_sum := v_sum + v_k_values[i];
+        END LOOP;
+        RETURN v_sum / LEAST(p_d_period, array_length(v_k_values, 1));
+    END IF;
+
+    RETURN NULL;
+END;
+$$;
+
+-- ============================================
 -- Процедура: refresh_indicator_values
 -- Пересчет индикаторов для свежих цен
 -- ============================================
@@ -556,27 +1115,44 @@ LANGUAGE plpgsql AS $$
 DECLARE
     v_script TEXT;
     v_indicator_code VARCHAR(20);
+    v_date_from DATE;
+    v_date_to DATE;
 BEGIN
     SELECT code, script INTO v_indicator_code, v_script
     FROM indicators WHERE id = p_indicator_id;
 
-    IF v_script IS NULL OR v_script = '' THEN
+    IF NOT FOUND THEN
+        RAISE NOTICE 'Индикатор id=% не найден', p_indicator_id;
+        RETURN;
+    END IF;
+
+    IF v_script IS NULL OR TRIM(v_script) = '' THEN
         RAISE NOTICE 'Скрипт для индикатора % не заполнен', v_indicator_code;
         RETURN;
     END IF;
 
-    -- Выполняем скрипт индикатора (динамический SQL)
-    -- Примечание: реальный скрипт должен быть написан и протестирован
-    RAISE NOTICE 'Выполнение скрипта индикатора %...', v_indicator_code;
+    v_date_to := CURRENT_DATE;
+    v_date_from := (CURRENT_DATE - INTERVAL '30 days')::DATE;
+
+    RAISE NOTICE 'Пересчёт индикатора % по script за % — %', v_indicator_code, v_date_from, v_date_to;
+
+    CALL calculate_indicator(
+        p_security_id,
+        p_timeframe_id,
+        p_indicator_id,
+        v_date_from,
+        v_date_to,
+        TRUE
+    );
 
 EXCEPTION
     WHEN OTHERS THEN
-        RAISE NOTICE 'Ошибка выполнения скрипта индикатора %: %', v_indicator_code, SQLERRM;
+        RAISE NOTICE 'Ошибка пересчёта индикатора %: %', v_indicator_code, SQLERRM;
 END;
 $$;
 
 COMMENT ON PROCEDURE refresh_indicator_values(INTEGER, INTEGER, INTEGER) IS 
-'Пересчитывает значения индикатора для свежих цен. Скрипт берется из поля indicators.script.';
+'Пересчитывает значения индикатора для свежих цен через indicators.script и calculate_indicator.';
 
 
 -- ============================================
@@ -630,7 +1206,7 @@ DECLARE
     v_indicator_code VARCHAR(20);    -- Код индикатора (RSI, MACD, BB и т.д.)
     v_indicator_name VARCHAR(100);   -- Полное имя индикатора
     v_indicator_category VARCHAR(50);-- Категория: trend, momentum, volatility, volume
-    v_script TEXT;                   -- SQL-скрипт из indicators.script (пока не используется)
+    v_script TEXT;                   -- Шаблон indicators.script → EXECUTE (calc_ind_* + :series)
 
     -- ============================================================
     -- ПАРАМЕТРЫ ИНДИКАТОРА (загружаются из parameter_values или берутся по умолчанию)
@@ -842,7 +1418,19 @@ BEGIN
     RAISE NOTICE 'Загружено % свечей для расчета индикатора %', v_idx, v_indicator_code;
 
     -- ============================================================
-    -- БЛОК 6: РАСЧЕТ ИНДИКАТОРА (ветвление по типу)
+    -- БЛОК 5.1: РАСЧЁТ ПО ШАБЛОНУ indicators.script (EXECUTE)
+    -- ============================================================
+    IF COALESCE(TRIM(v_script), '') <> '' THEN
+        EXECUTE 'CALL calculate_indicator_via_script($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17)'
+        USING p_security_id, p_timeframe_id, p_indicator_id,
+              p_date_from, p_date_to, p_overwrite, v_script,
+              v_period, v_fast_period, v_slow_period, v_signal_period,
+              v_std_dev, v_k_period, v_d_period, v_smooth;
+        RETURN;
+    END IF;
+
+    -- ============================================================
+    -- БЛОК 6: РАСЧЕТ ИНДИКАТОРА (ветвление по типу, legacy)
     -- ============================================================
 
     -- ==========================================
@@ -1433,6 +2021,81 @@ BEGIN
     );
 END;
 $$ LANGUAGE plpgsql;
+
+-- Расчёт через indicators.script (EXECUTE)
+CREATE OR REPLACE PROCEDURE calculate_indicator_via_script(
+    p_security_id INTEGER,
+    p_timeframe_id INTEGER,
+    p_indicator_id INTEGER,
+    p_date_from DATE,
+    p_date_to DATE,
+    p_overwrite BOOLEAN,
+    p_script TEXT,
+    p_period INTEGER,
+    p_fast_period INTEGER,
+    p_slow_period INTEGER,
+    p_signal_period INTEGER,
+    p_std_dev NUMERIC,
+    p_k_period INTEGER,
+    p_d_period INTEGER,
+    p_smooth INTEGER
+)
+LANGUAGE plpgsql AS $$
+DECLARE
+    v_value_type RECORD;
+    v_dt TIMESTAMP;
+    v_value NUMERIC;
+    v_records_inserted INTEGER := 0;
+    v_records_skipped INTEGER := 0;
+BEGIN
+    FOR v_dt IN
+        SELECT dt
+        FROM prices
+        WHERE security_id = p_security_id
+          AND timeframe_id = p_timeframe_id
+          AND dt >= p_date_from::TIMESTAMP
+          AND dt < (p_date_to + INTERVAL '1 day')::TIMESTAMP
+        ORDER BY dt
+    LOOP
+        FOR v_value_type IN
+            SELECT id, code, is_threshold
+            FROM indicator_value_types
+            WHERE indicator_id = p_indicator_id
+              AND is_threshold = FALSE
+            ORDER BY display_order, id
+        LOOP
+            v_value := exec_indicator_script(
+                p_script, p_period, p_fast_period, p_slow_period, p_signal_period,
+                p_std_dev, p_k_period, p_d_period, p_smooth, v_value_type.code,
+                p_security_id, p_timeframe_id, v_dt, p_indicator_id
+            );
+
+            IF v_value IS NULL THEN
+                CONTINUE;
+            END IF;
+
+            PERFORM insert_indicator_value(
+                p_indicator_id,
+                v_value_type.id,
+                p_security_id,
+                p_timeframe_id,
+                v_dt,
+                v_value,
+                v_value_type.is_threshold,
+                CASE WHEN v_value_type.is_threshold THEN lower(v_value_type.code) ELSE NULL END,
+                p_overwrite
+            );
+            v_records_inserted := v_records_inserted + 1;
+        END LOOP;
+    END LOOP;
+
+    RAISE NOTICE 'calculate_indicator_via_script: записано % значений', v_records_inserted;
+END;
+$$;
+
+COMMENT ON PROCEDURE calculate_indicator_via_script IS
+'Расчёт индикатора по шаблону indicators.script (динамический EXECUTE, :series — код линии).';
+
 
 -- ============================================
 -- КОММЕНТАРИЙ К ФУНКЦИИ insert_indicator_value

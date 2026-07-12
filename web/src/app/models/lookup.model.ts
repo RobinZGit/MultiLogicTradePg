@@ -76,3 +76,32 @@ export interface TbankApiAccount {
   type: string;
   status: string;
 }
+
+export interface IndicatorValueTypeRow {
+  id: number;
+  code: string;
+  name: string;
+  value_type: string;
+  is_threshold: boolean;
+  threshold_value: number | null;
+  display_order: number;
+}
+
+export interface IndicatorRow {
+  id: number;
+  code: string;
+  name: string;
+  script: string | null;
+  description: string | null;
+  category: string | null;
+  is_active: boolean;
+  value_types: IndicatorValueTypeRow[];
+}
+
+export interface IndicatorPayload {
+  name: string;
+  description: string | null;
+  category: string | null;
+  script: string | null;
+  is_active: boolean;
+}

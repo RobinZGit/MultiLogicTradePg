@@ -33,6 +33,117 @@ app.get('/api/health', async (_req, res) => {
   }
 });
 
+app.get('/api/indicators', async (req, res) => {
+  const withCalc = req.query.with_calc === '1';
+  try {
+    const { rows } = await pool.query(
+      `
+      SELECT
+        i.id,
+        i.code,
+        i.name,
+        i.script,
+        i.description,
+        i.category,
+        i.is_active,
+        COALESCE(
+          json_agg(
+            json_build_object(
+              'id', vt.id,
+              'code', vt.code,
+              'name', vt.name,
+              'value_type', vt.value_type,
+              'is_threshold', vt.is_threshold,
+              'threshold_value', vt.threshold_value,
+              'display_order', vt.display_order
+            )
+            ORDER BY vt.display_order, vt.id
+          ) FILTER (WHERE vt.id IS NOT NULL),
+          '[]'::json
+        ) AS value_types
+      FROM indicators i
+      LEFT JOIN indicator_value_types vt ON vt.indicator_id = i.id
+      WHERE ($1::boolean = FALSE OR (i.script IS NOT NULL AND BTRIM(i.script) <> ''))
+      GROUP BY i.id
+      ORDER BY i.code
+    `,
+      [withCalc]
+    );
+    res.json(rows);
+  } catch (err) {
+    console.error('GET /api/indicators', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.put('/api/indicators/:id', async (req, res) => {
+  const id = parseId(req.params.id);
+  if (!id) {
+    res.status(400).json({ error: 'Invalid indicator id' });
+    return;
+  }
+  const parsed = parseIndicatorBody(req.body);
+  if (parsed.error) {
+    res.status(400).json({ error: parsed.error });
+    return;
+  }
+  try {
+    const { rows } = await pool.query(
+      `UPDATE indicators
+       SET name = $1, description = $2, category = $3, script = $4, is_active = $5
+       WHERE id = $6
+       RETURNING id, code, name, script, description, category, is_active`,
+      [
+        parsed.name,
+        parsed.description,
+        parsed.category,
+        parsed.script,
+        parsed.is_active,
+        id,
+      ]
+    );
+    if (rows.length === 0) {
+      res.status(404).json({ error: 'Indicator not found' });
+      return;
+    }
+    const { rows: full } = await pool.query(
+      `
+      SELECT
+        i.id,
+        i.code,
+        i.name,
+        i.script,
+        i.description,
+        i.category,
+        i.is_active,
+        COALESCE(
+          json_agg(
+            json_build_object(
+              'id', vt.id,
+              'code', vt.code,
+              'name', vt.name,
+              'value_type', vt.value_type,
+              'is_threshold', vt.is_threshold,
+              'threshold_value', vt.threshold_value,
+              'display_order', vt.display_order
+            )
+            ORDER BY vt.display_order, vt.id
+          ) FILTER (WHERE vt.id IS NOT NULL),
+          '[]'::json
+        ) AS value_types
+      FROM indicators i
+      LEFT JOIN indicator_value_types vt ON vt.indicator_id = i.id
+      WHERE i.id = $1
+      GROUP BY i.id
+    `,
+      [id]
+    );
+    res.json(full[0]);
+  } catch (err) {
+    handleDbError(res, err, 'PUT /api/indicators/:id');
+  }
+});
+
 app.get('/api/logics', async (_req, res) => {
   try {
     const { rows } = await pool.query(`
@@ -774,6 +885,28 @@ function parseExchangeBody(body) {
   if (!name) return { error: 'Укажите название площадки' };
   if (name.length > 50) return { error: 'Название площадки не длиннее 50 символов' };
   return { name };
+}
+
+function parseIndicatorBody(body) {
+  const name = typeof body?.name === 'string' ? body.name.trim() : '';
+  const description =
+    body?.description == null || body.description === ''
+      ? null
+      : String(body.description).trim();
+  const category =
+    body?.category == null || body.category === ''
+      ? null
+      : String(body.category).trim();
+  const script =
+    body?.script == null || body.script === ''
+      ? null
+      : String(body.script).trim();
+  const is_active = body?.is_active === undefined ? true : Boolean(body.is_active);
+
+  if (!name) return { error: 'Укажите название индикатора' };
+  if (name.length > 100) return { error: 'Название индикатора не длиннее 100 символов' };
+  if (category && category.length > 50) return { error: 'Категория не длиннее 50 символов' };
+  return { name, description, category, script, is_active };
 }
 
 function parseAccountBody(body) {

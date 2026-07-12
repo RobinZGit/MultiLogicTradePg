@@ -59,15 +59,23 @@
 
 .field input[type='text'],
 .field input[type='url'],
-.field select {
+.field select,
+.field textarea {
   padding: 0.5rem 0.6rem;
   border: 1px solid #d1d5db;
   border-radius: 6px;
   font-size: 0.95rem;
 }
 
+.field textarea {
+  resize: vertical;
+  min-height: 2.5rem;
+  font-family: inherit;
+}
+
 .field input:focus,
-.field select:focus {
+.field select:focus,
+.field textarea:focus {
   outline: 2px solid #93c5fd;
   border-color: #2563eb;
 }

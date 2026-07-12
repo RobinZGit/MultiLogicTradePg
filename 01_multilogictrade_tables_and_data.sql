@@ -440,12 +440,22 @@ CREATE TABLE IF NOT EXISTS indicators (
     id SERIAL PRIMARY KEY,
     code VARCHAR(20) NOT NULL UNIQUE,
     name VARCHAR(100) NOT NULL,
+    -- Шаблон вызова функции расчёта (EXECUTE в PostgreSQL / EXECUTE IMMEDIATE в Oracle).
+    -- Плейсхолдеры :period, :fast_period, :series, :security_id, :timeframe_id, :dt, :indicator_id и др.
+    -- :series — код серии из indicator_value_types (RSI, MACD, UPPER, …).
     script TEXT,
+    -- Подробное описание: полное название, расчёт, сигналы, применение (многострочный TEXT).
     description TEXT,
     category VARCHAR(50),
     is_active BOOLEAN NOT NULL DEFAULT TRUE,
     created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
+
+COMMENT ON COLUMN indicators.script IS
+'Шаблон SQL для динамического расчёта: SELECT calc_ind_*(…). Плейсхолдеры подставляются при EXECUTE.';
+
+COMMENT ON COLUMN indicators.description IS
+'Справочное описание: полное наименование, расчёт, типичные сигналы и область применения.';
 
 INSERT INTO indicators (code, name, description, category) VALUES
     ('SMA', 'Simple Moving Average', 'Простое скользящее среднее', 'trend'),
@@ -479,6 +489,86 @@ INSERT INTO indicators (code, name, description, category) VALUES
     ('HMA', 'Hull Moving Average', 'Скользящее среднее Халла', 'trend'),
     ('ZLEMA', 'Zero Lag EMA', 'EMA с нулевым запаздыванием', 'trend')
 ON CONFLICT (code) DO NOTHING;
+
+-- Шаблоны расчёта (функция + параметры; :series подставляется для каждой линии индикатора)
+UPDATE indicators SET script = 'SELECT calc_ind_rsi(:period, :series, :security_id, :timeframe_id, :dt, :indicator_id)' WHERE code = 'RSI';
+UPDATE indicators SET script = 'SELECT calc_ind_sma(:period, :series, :security_id, :timeframe_id, :dt, :indicator_id)' WHERE code = 'SMA';
+UPDATE indicators SET script = 'SELECT calc_ind_ema(:period, :series, :security_id, :timeframe_id, :dt, :indicator_id)' WHERE code = 'EMA';
+UPDATE indicators SET script = 'SELECT calc_ind_macd(:fast_period, :slow_period, :signal_period, :series, :security_id, :timeframe_id, :dt, :indicator_id)' WHERE code = 'MACD';
+UPDATE indicators SET script = 'SELECT calc_ind_bb(:period, :std_dev, :series, :security_id, :timeframe_id, :dt, :indicator_id)' WHERE code = 'BB';
+UPDATE indicators SET script = 'SELECT calc_ind_atr(:period, :series, :security_id, :timeframe_id, :dt, :indicator_id)' WHERE code = 'ATR';
+UPDATE indicators SET script = 'SELECT calc_ind_stoch(:k_period, :d_period, :smooth, :series, :security_id, :timeframe_id, :dt, :indicator_id)' WHERE code = 'STOCH';
+
+-- Подробные описания индикаторов с функциями расчёта в PostgreSQL
+UPDATE indicators SET description = $desc$
+Relative Strength Index (RSI) — индекс относительной силы
+
+Расчёт: за период N (по умолчанию 14) суммируются приросты и падения цены закрытия; RS = средний прирост / среднее падение; RSI = 100 − 100/(1+RS). Значения в диапазоне 0–100.
+
+Сигналы: RSI выше 70 — зона перекупленности (риск коррекции вниз); ниже 30 — перепроданность (возможен отскок); пересечение уровня 50 — смена краткосрочного импульса; расхождение RSI и цены предупреждает о ослаблении тренда.
+
+Применение: фильтр входов в тренд и контртренд, оценка силы движения, тайминг на боковом рынке, комбинация с MA и объёмом.
+$desc$ WHERE code = 'RSI';
+
+UPDATE indicators SET description = $desc$
+Simple Moving Average (SMA) — простое скользящее среднее
+
+Расчёт: среднее арифметическое цен закрытия за последние N свечей (по умолчанию 20). Каждая свеча в окне имеет одинаковый вес.
+
+Сигналы: цена выше SMA — бычий фон, ниже — медвежий; пересечение цены и линии SMA — возможная смена краткосрочного тренда; наклон SMA показывает направление и силу тренда; несколько SMA разного периода дают «золотой/мёртвый крест».
+
+Применение: определение тренда, динамические уровни поддержки и сопротивления, trailing stop, база для MACD, полос Боллинджера и других индикаторов.
+$desc$ WHERE code = 'SMA';
+
+UPDATE indicators SET description = $desc$
+Exponential Moving Average (EMA) — экспоненциальное скользящее среднее
+
+Расчёт: рекурсивное сглаживание цены закрытия; последним свечам присваивается больший вес (множитель 2/(N+1), по умолчанию N=20). Быстрее реагирует на изменения, чем SMA.
+
+Сигналы: цена выше EMA — восходящий импульс, ниже — нисходящий; пересечение быстрой и медленной EMA — классический трендовый сигнал; резкий отрыв цены от EMA — перегрев движения.
+
+Применение: трендовые системы, основа MACD, фильтр направления сделок, короткие и среднесрочные стратегии на ликвидных инструментах.
+$desc$ WHERE code = 'EMA';
+
+UPDATE indicators SET description = $desc$
+Moving Average Convergence Divergence (MACD) — схождение/расхождение скользящих средних
+
+Расчёт: линия MACD = EMA(12) − EMA(26); сигнальная линия = EMA(9) от MACD; гистограмма = MACD − Signal. Серии: MACD, SIGNAL, HISTOGRAM, ZERO.
+
+Сигналы: пересечение MACD и Signal снизу вверх — бычий сигнал, сверху вниз — медвежий; гистограмма выше/ниже нуля подтверждает импульс; дивергенция MACD и цены — предупреждение о развороте; пересечение нулевой линии — смена доминирующего тренда.
+
+Применение: определение момента входа в тренд, подтверждение пробоев, фильтр для swing- и позиционной торговли, сочетание с RSI и объёмом.
+$desc$ WHERE code = 'MACD';
+
+UPDATE indicators SET description = $desc$
+Bollinger Bands (BB) — полосы Боллинджера
+
+Расчёт: средняя полоса = SMA(N), по умолчанию N=20; верхняя и нижняя = SMA ± k·σ (k=2 стандартных отклонения); bandwidth — относительная ширина канала. Серии: UPPER, MIDDLE, LOWER, BANDWIDTH.
+
+Сигналы: касание/пробой верхней полосы — перекупленность или сильный тренд; нижней — перепроданность или падение; сжатие полос (низкий bandwidth) — ожидание всплеска волатильности; «walking the bands» — устойчивый тренд вдоль границы.
+
+Применение: оценка волатильности, mean-reversion на боковике, подтверждение пробоев при расширении полос, постановка стопов относительно полос.
+$desc$ WHERE code = 'BB';
+
+UPDATE indicators SET description = $desc$
+Average True Range (ATR) — средний истинный диапазон
+
+Расчёт: True Range = max(High−Low, |High−Close_prev|, |Low−Close_prev|); ATR — сглаженное среднее TR за N периодов (Wilder, по умолчанию 14). ATR_PCT — ATR в процентах от цены.
+
+Сигналы: рост ATR — усиление волатильности и движения; падение ATR — затишье и сжатие; резкий скачок ATR после консолидации — начало импульса. Сам по себе не даёт направления buy/sell.
+
+Применение: расчёт стоп-лоссов и тейк-профитов в пунктах цены, sizing позиции, фильтр «достаточной» волатильности для входа, сравнение активности инструментов.
+$desc$ WHERE code = 'ATR';
+
+UPDATE indicators SET description = $desc$
+Stochastic Oscillator (STOCH) — стохастический осциллятор
+
+Расчёт: %K = (Close − Low_N) / (High_N − Low_N) × 100 за период N (по умолчанию 14); %D — SMA(%K) за 3 периода. Значения 0–100. Серии: K, D, пороги 80/20.
+
+Сигналы: %K и %D выше 80 — перекупленность; ниже 20 — перепроданность; пересечение %K и %D в зонах экстремумов — сигнал разворота; бычья/медвежья дивергенция с ценой — предупреждение о смене импульса.
+
+Применение: тайминг входа на коррекциях в тренде, скальпинг и intraday, комбинация с уровнями и трендовыми фильтрами (MA, ADX).
+$desc$ WHERE code = 'STOCH';
 
 -- ============================================
 -- Таблица: indicator_value_types (линии индикаторов)

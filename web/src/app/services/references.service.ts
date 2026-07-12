@@ -10,6 +10,8 @@ import {
   BrokerRow,
   ExchangePayload,
   ExchangeRow,
+  IndicatorPayload,
+  IndicatorRow,
 } from '../models/lookup.model';
 
 @Injectable({ providedIn: 'root' })
@@ -106,6 +108,23 @@ export class ReferencesService {
     return this.http.post<AccountConnectionPreview>(
       `${this.appConfig.apiUrl}/accounts/preview-connection`,
       body
+    );
+  }
+
+  getIndicators(withCalc = false): Observable<IndicatorRow[]> {
+    let params = new HttpParams();
+    if (withCalc) {
+      params = params.set('with_calc', '1');
+    }
+    return this.http.get<IndicatorRow[]>(`${this.appConfig.apiUrl}/indicators`, {
+      params,
+    });
+  }
+
+  updateIndicator(id: number, payload: IndicatorPayload): Observable<IndicatorRow> {
+    return this.http.put<IndicatorRow>(
+      `${this.appConfig.apiUrl}/indicators/${id}`,
+      payload
     );
   }
 }
