@@ -1,750 +1,107 @@
 -- ============================================
--- БАЗА ДАННЫХ: multilogictrade
--- УСТАРЕЛО: используйте файлы 01, 02, 03 (v12)
+-- MultiLogicTrade — шаг 2: функции и процедуры
+-- Версия: v12 (идемпотентный запуск)
 -- ============================================
--- Этот монолитный скрипт v11 сохранён для истории.
--- Актуальная схема:
---   00_create_database.sql
---   01_multilogictrade_tables_and_data.sql
---   02_multilogictrade_functions_and_procedures.sql
---   03_multilogictrade_examples.sql
--- ============================================
-
--- ============================================
--- БАЗА ДАННЫХ: multilogictrade
--- Полный скрипт создания с нуля (v11)
--- ============================================
--- Этот скрипт создает БД, таблицы, заполняет данные, создает процедуры и индексы
--- Запускать единым блоком (весь файл сразу)
+-- Подключение: база multilogictrade
+-- Предварительно выполните: 01_multilogictrade_tables_and_data.sql
+-- Можно выполнять многократно (CREATE OR REPLACE).
+--
+-- Для HTTP-загрузки цен нужно расширение pgsql-http:
+--   CREATE EXTENSION IF NOT EXISTS http;
+-- Если расширение не установлено — закомментируйте блок «HTTP-ЗАГРУЗКА» в конце файла.
 -- ============================================
 
 -- ============================================
--- ЧАСТЬ 1: СОЗДАНИЕ БАЗЫ ДАННЫХ
+-- Вспомогательная функция: parse_tbank_quotation
+-- Разбор цены T-Bank: {units, nano} или число
 -- ============================================
+CREATE OR REPLACE FUNCTION parse_tbank_quotation(p_value JSONB)
+RETURNS NUMERIC(18,6) AS $$
+DECLARE
+    v_units BIGINT;
+    v_nano INTEGER;
+BEGIN
+    IF p_value IS NULL OR p_value = 'null'::JSONB THEN
+        RETURN NULL;
+    END IF;
 
--- Удаление базы данных если существует (ОПЦИОНАЛЬНО, раскомментируй если нужно)
--- DROP DATABASE IF EXISTS multilogictrade;
+    IF jsonb_typeof(p_value) = 'number' THEN
+        RETURN p_value::TEXT::NUMERIC(18,6);
+    END IF;
 
--- Создание базы данных
-SELECT 'CREATE DATABASE multilogictrade' WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = 'multilogictrade')\gexec
+    IF jsonb_typeof(p_value) = 'string' THEN
+        RETURN (p_value #>> '{}')::NUMERIC(18,6);
+    END IF;
 
--- Подключение к базе данных
-\c multilogictrade;
+    v_units := COALESCE((p_value->>'units')::BIGINT, 0);
+    v_nano := COALESCE((p_value->>'nano')::INTEGER, 0);
+    RETURN v_units + (v_nano / 1000000000.0);
+END;
+$$ LANGUAGE plpgsql IMMUTABLE;
 
--- ============================================
--- БАЗА ДАННЫХ: multilogictrade
--- Полный скрипт создания с нуля (v10: + индикаторы)
--- ============================================
-
--- Удаление базы данных если существует (опционально, раскомментируй если нужно)
--- DROP DATABASE IF EXISTS multilogictrade;
-
--- Создание базы данных
-SELECT 'CREATE DATABASE multilogictrade' WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = 'multilogictrade')\gexec
-
--- Подключение к базе данных
-\c multilogictrade;
-
--- ============================================
--- Таблица: security_types (типы ценных бумаг)
--- ============================================
-CREATE TABLE IF NOT EXISTS security_types (
-    id SERIAL PRIMARY KEY,
-    name VARCHAR(50) NOT NULL UNIQUE,
-    note VARCHAR(100)
-);
-
-INSERT INTO security_types (name, note) VALUES
-    ('Stock', 'Акции'),
-    ('Bond', 'Облигации'),
-    ('Futures', 'Фьючерсы'),
-    ('Options', 'Опционы'),
-    ('ETF', 'Биржевые фонды'),
-    ('CFD', 'Контракты на разницу'),
-    ('Warrant', 'Варранты'),
-    ('Swap', 'Свопы'),
-    ('Commodity', 'Товары/сырьё'),
-    ('Index', 'Индексы'),
-    ('Forex', 'Валютные пары'),
-    ('MutualFund', 'Паевые фонды'),
-    ('PreferredStock', 'Привилегированные акции'),
-    ('ConvertibleBond', 'Конвертируемые облигации') ON CONFLICT (name) DO NOTHING;
-
-COMMENT ON TABLE security_types IS 'Таблица типов ценных бумаг';
-COMMENT ON COLUMN security_types.name IS 'Название типа (латиницей)';
-COMMENT ON COLUMN security_types.note IS 'Расшифровка типа по-русски';
+COMMENT ON FUNCTION parse_tbank_quotation(JSONB) IS
+'Преобразует Quotation T-Bank API (units+nano) или число в NUMERIC';
 
 -- ============================================
--- Таблица: exchanges (торговые площадки)
+-- Вспомогательная функция: get_moex_candle_interval
+-- Код интервала для MOEX ISS API
 -- ============================================
-CREATE TABLE IF NOT EXISTS exchanges (
-    id SERIAL PRIMARY KEY,
-    name VARCHAR(50) NOT NULL UNIQUE
-);
+CREATE OR REPLACE FUNCTION get_moex_candle_interval(p_tf VARCHAR)
+RETURNS INTEGER AS $$
+BEGIN
+    RETURN CASE p_tf
+        WHEN 'M1' THEN 1
+        WHEN 'M2' THEN 2
+        WHEN 'M3' THEN 3
+        WHEN 'M5' THEN 5
+        WHEN 'M10' THEN 10
+        WHEN 'M15' THEN 15
+        WHEN 'M20' THEN 20
+        WHEN 'M30' THEN 30
+        WHEN 'M60' THEN 60
+        WHEN 'H1' THEN 60
+        WHEN 'H2' THEN 120
+        WHEN 'H4' THEN 240
+        WHEN 'D1' THEN 24
+        WHEN 'W1' THEN 7
+        WHEN 'MN1' THEN 31
+        ELSE 1
+    END;
+END;
+$$ LANGUAGE plpgsql IMMUTABLE;
 
-INSERT INTO exchanges (name) VALUES ('MOEX'), ('SPB') ON CONFLICT (name) DO NOTHING;
-
-COMMENT ON TABLE exchanges IS 'Таблица торговых площадок';
-COMMENT ON COLUMN exchanges.name IS 'Название торговой площадки';
-
--- ============================================
--- Таблица: securities (ценные бумаги)
--- ============================================
-CREATE TABLE IF NOT EXISTS securities (
-    id SERIAL PRIMARY KEY,
-    name VARCHAR(200) NOT NULL,
-    security_type_id INTEGER REFERENCES security_types(id)
-);
-
-COMMENT ON TABLE securities IS 'Таблица ценных бумаг';
-COMMENT ON COLUMN securities.name IS 'Название ценной бумаги (по-русски)';
-COMMENT ON COLUMN securities.security_type_id IS 'Ссылка на тип ценной бумаги';
-
--- ============================================
--- Таблица: security_prefixes (префиксы)
--- ============================================
-CREATE TABLE IF NOT EXISTS security_prefixes (
-    id SERIAL PRIMARY KEY,
-    security_id INTEGER NOT NULL REFERENCES securities(id) ON DELETE CASCADE,
-    exchange_id INTEGER NOT NULL REFERENCES exchanges(id) ON DELETE CASCADE,
-    prefix VARCHAR(50) NOT NULL UNIQUE
-);
-
-COMMENT ON TABLE security_prefixes IS 'Префиксы (тикеры) на торговых площадках';
-COMMENT ON COLUMN security_prefixes.security_id IS 'Ссылка на ценную бумагу';
-COMMENT ON COLUMN security_prefixes.exchange_id IS 'Ссылка на торговую площадку';
-COMMENT ON COLUMN security_prefixes.prefix IS 'Префикс (тикер) на данной площадке';
+COMMENT ON FUNCTION get_moex_candle_interval(VARCHAR) IS
+'Возвращает параметр interval для MOEX ISS candles API';
 
 -- ============================================
--- 34 АКЦИИ ММВБ
+-- Вспомогательная функция: get_tbank_candle_interval
+-- Интервал свечи для T-Bank Invest API
 -- ============================================
-INSERT INTO securities (name, security_type_id) VALUES
-    ('Сбербанк (обыкновенные)', 1),
-    ('Сбербанк (привилегированные)', 13),
-    ('Газпром', 1),
-    ('ЛУКОЙЛ', 1),
-    ('Роснефть', 1),
-    ('НОВАТЭК', 1),
-    ('Норникель', 1),
-    ('Татнефть (обыкновенные)', 1),
-    ('Татнефть (привилегированные)', 13),
-    ('Сургутнефтегаз (обыкновенные)', 1),
-    ('Сургутнефтегаз (привилегированные)', 13),
-    ('Полюс', 1),
-    ('Алроса', 1),
-    ('Северсталь', 1),
-    ('НЛМК', 1),
-    ('ММК', 1),
-    ('Мечел (обыкновенные)', 1),
-    ('Мечел (привилегированные)', 13),
-    ('Магнит', 1),
-    ('МТС', 1),
-    ('ВТБ', 1),
-    ('РУСАЛ', 1),
-    ('РусГидро', 1),
-    ('Интер РАО', 1),
-    ('ФСК-Россети', 1),
-    ('Транснефть (привилегированные)', 13),
-    ('Юнипро', 1),
-    ('Московская биржа', 1),
-    ('Ростелеком', 1),
-    ('Яндекс', 1),
-    ('Аэрофлот', 1),
-    ('Совкомфлот', 1),
-    ('ФосАгро', 1),
-    ('АФК Система', 1) ON CONFLICT (name) DO NOTHING;
+CREATE OR REPLACE FUNCTION get_tbank_candle_interval(p_tf VARCHAR)
+RETURNS TEXT AS $$
+BEGIN
+    RETURN CASE p_tf
+        WHEN 'M1' THEN 'CANDLE_INTERVAL_1_MIN'
+        WHEN 'M2' THEN 'CANDLE_INTERVAL_2_MIN'
+        WHEN 'M3' THEN 'CANDLE_INTERVAL_3_MIN'
+        WHEN 'M5' THEN 'CANDLE_INTERVAL_5_MIN'
+        WHEN 'M10' THEN 'CANDLE_INTERVAL_10_MIN'
+        WHEN 'M15' THEN 'CANDLE_INTERVAL_15_MIN'
+        WHEN 'M30' THEN 'CANDLE_INTERVAL_30_MIN'
+        WHEN 'H1' THEN 'CANDLE_INTERVAL_HOUR'
+        WHEN 'H2' THEN 'CANDLE_INTERVAL_2_HOUR'
+        WHEN 'H4' THEN 'CANDLE_INTERVAL_4_HOUR'
+        WHEN 'D1' THEN 'CANDLE_INTERVAL_DAY'
+        WHEN 'W1' THEN 'CANDLE_INTERVAL_WEEK'
+        WHEN 'MN1' THEN 'CANDLE_INTERVAL_MONTH'
+        ELSE 'CANDLE_INTERVAL_DAY'
+    END;
+END;
+$$ LANGUAGE plpgsql IMMUTABLE;
+
+COMMENT ON FUNCTION get_tbank_candle_interval(VARCHAR) IS
+'Возвращает CANDLE_INTERVAL_* для T-Bank GetCandles API';
 
--- ============================================
--- 20 ФЬЮЧЕРСОВ ММВБ
--- ============================================
-INSERT INTO securities (name, security_type_id) VALUES
-    ('USD/RUB (доллар/рубль)', 3),
-    ('EUR/RUB (евро/рубль)', 3),
-    ('CNY/RUB (юань/рубль)', 3),
-    ('CNY/RUB вечный фьючерс', 3),
-    ('USD/RUB вечный фьючерс', 3),
-    ('Природный газ', 3),
-    ('Нефть Brent', 3),
-    ('Золото (USD)', 3),
-    ('Серебро (USD)', 3),
-    ('Золото (рублевый)', 3),
-    ('Золото вечный фьючерс', 3),
-    ('Сбербанк (фьючерс на акции)', 3),
-    ('ВТБ (фьючерс на акции)', 3),
-    ('Газпром (фьючерс на акции)', 3),
-    ('ЛУКОЙЛ (фьючерс на акции)', 3),
-    ('Индекс Мосбиржи (IMOEX)', 3),
-    ('Индекс РТС', 3),
-    ('Индекс Мосбиржи (дневной фьючерс)', 3),
-    ('Серебро (квартальный)', 3),
-    ('Золото (квартальный)', 3) ON CONFLICT (name) DO NOTHING;
-
--- ============================================
--- ПРЕФИКСЫ: 54 инструмента на ММВБ (exchange_id = 1)
--- ============================================
-INSERT INTO security_prefixes (security_id, exchange_id, prefix) VALUES
-    (1, 1, 'SBER'), (2, 1, 'SBERP'), (3, 1, 'GAZP'), (4, 1, 'LKOH'),
-    (5, 1, 'ROSN'), (6, 1, 'NVTK'), (7, 1, 'GMKN'), (8, 1, 'TATN'),
-    (9, 1, 'TATNP'), (10, 1, 'SNGS'), (11, 1, 'SNGSP'), (12, 1, 'PLZL'),
-    (13, 1, 'ALRS'), (14, 1, 'CHMF'), (15, 1, 'NLMK'), (16, 1, 'MAGN'),
-    (17, 1, 'MTLR'), (18, 1, 'MTLRP'), (19, 1, 'MGNT'), (20, 1, 'MTSS'),
-    (21, 1, 'VTBR'), (22, 1, 'RUAL'), (23, 1, 'HYDR'), (24, 1, 'IRAO'),
-    (25, 1, 'FEES'), (26, 1, 'TRNFP'), (27, 1, 'UPRO'), (28, 1, 'MOEX'),
-    (29, 1, 'RTKM'), (30, 1, 'YDEX'), (31, 1, 'AFLT'), (32, 1, 'FLOT'),
-    (33, 1, 'PHOR'), (34, 1, 'AFKS'),
-    (35, 1, 'Si'), (36, 1, 'Eu'), (37, 1, 'CR'), (38, 1, 'CNYRUBF'),
-    (39, 1, 'USDRUBF'), (40, 1, 'NG'), (41, 1, 'Br'), (42, 1, 'GD'),
-    (43, 1, 'SV'), (44, 1, 'GL'), (45, 1, 'GLDRUBF'), (46, 1, 'SBRF'),
-    (47, 1, 'VTBR'), (48, 1, 'GAZR'), (49, 1, 'LKOH'), (50, 1, 'MX'),
-    (51, 1, 'RI'), (52, 1, 'IMOEXF'), (53, 1, 'SILV'), (54, 1, 'GOLD') ON CONFLICT (prefix) DO NOTHING;
-
--- ============================================
--- Таблица: timeframes (таймфреймы)
--- ============================================
-CREATE TABLE IF NOT EXISTS timeframes (
-    id SERIAL PRIMARY KEY,
-    tf VARCHAR(20) NOT NULL UNIQUE,
-    full_name VARCHAR(50) NOT NULL,
-    sec INTEGER NOT NULL CHECK (sec > 0)
-);
-
-INSERT INTO timeframes (tf, full_name, sec) VALUES
-    ('M1', '1 минута', 60), ('M2', '2 минуты', 120), ('M3', '3 минуты', 180),
-    ('M5', '5 минут', 300), ('M10', '10 минут', 600), ('M15', '15 минут', 900),
-    ('M20', '20 минут', 1200), ('M30', '30 минут', 1800),
-    ('H1', '1 час', 3600), ('H2', '2 часа', 7200), ('H4', '4 часа', 14400),
-    ('H6', '6 часов', 21600), ('H8', '8 часов', 28800), ('H12', '12 часов', 43200),
-    ('D1', '1 день', 86400), ('D2', '2 дня', 172800), ('D3', '3 дня', 259200),
-    ('W1', '1 неделя', 604800), ('W2', '2 недели', 1209600), ('W3', '3 недели', 1814400),
-    ('MN1', '1 месяц', 2592000), ('MN2', '2 месяца', 5184000), ('MN3', '3 месяца', 7776000),
-    ('MN6', '6 месяцев', 15552000), ('Y1', '1 год', 31536000) ON CONFLICT (tf) DO NOTHING;
-
-COMMENT ON TABLE timeframes IS 'Таблица таймфреймов';
-COMMENT ON COLUMN timeframes.tf IS 'Краткое обозначение таймфрейма';
-COMMENT ON COLUMN timeframes.full_name IS 'Полное имя таймфрейма по-русски';
-COMMENT ON COLUMN timeframes.sec IS 'Количество секунд в таймфрейме';
-
--- ============================================
--- Таблица: brokers (брокеры)
--- ============================================
-CREATE TABLE IF NOT EXISTS brokers (
-    id SERIAL PRIMARY KEY,
-    code VARCHAR(50) NOT NULL UNIQUE,
-    name VARCHAR(100) NOT NULL,
-    api_url VARCHAR(255),
-    is_active BOOLEAN NOT NULL DEFAULT TRUE,
-    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
-);
-
-INSERT INTO brokers (code, name, api_url) VALUES
-    ('T-BANK', 'T-Bank (Т-Банк)', 'https://invest-public-api.tinkoff.ru/rest') ON CONFLICT (code) DO NOTHING;
-
-COMMENT ON TABLE brokers IS 'Таблица брокеров';
-COMMENT ON COLUMN brokers.code IS 'Код брокера (для API и внутреннего использования)';
-COMMENT ON COLUMN brokers.name IS 'Наименование брокера';
-COMMENT ON COLUMN brokers.api_url IS 'URL API брокера';
-COMMENT ON COLUMN brokers.is_active IS 'Активен ли брокер';
-COMMENT ON COLUMN brokers.created_at IS 'Дата создания записи';
-
--- ============================================
--- Таблица: accounts (счета)
--- ============================================
-CREATE TABLE IF NOT EXISTS accounts (
-    id SERIAL PRIMARY KEY,
-    broker_id INTEGER NOT NULL REFERENCES brokers(id) ON DELETE CASCADE,
-    account_code VARCHAR(100) NOT NULL,
-    name VARCHAR(100) NOT NULL,
-    account_type VARCHAR(20) NOT NULL CHECK (account_type IN ('real', 'fake')),
-    is_efficient BOOLEAN NOT NULL DEFAULT FALSE,
-    token_encrypted TEXT,
-    token_hash VARCHAR(64),
-    is_active BOOLEAN NOT NULL DEFAULT TRUE,
-    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
-);
-
-CREATE UNIQUE INDEX IF NOT EXISTS idx_accounts_broker_account_code ON accounts(broker_id, account_code);
-
-INSERT INTO accounts (broker_id, account_code, name, account_type, is_efficient, token_encrypted, token_hash) VALUES
-    (1, 'FAKE-EFF-001', 'Демо-счет T-Bank (эффективный)', 'fake', TRUE, NULL, NULL) ON CONFLICT ((broker_id, account_code)) DO NOTHING;
-
-COMMENT ON TABLE accounts IS 'Таблица торговых счетов';
-COMMENT ON COLUMN accounts.broker_id IS 'Ссылка на брокера';
-COMMENT ON COLUMN accounts.account_code IS 'Код счета (ID у брокера)';
-COMMENT ON COLUMN accounts.name IS 'Наименование счета';
-COMMENT ON COLUMN accounts.account_type IS 'Тип счета: real (реальный) или fake (фейковый/демо)';
-COMMENT ON COLUMN accounts.is_efficient IS 'Эффективный счет (налогообложение по прибыли)';
-COMMENT ON COLUMN accounts.token_encrypted IS 'Зашифрованный API-токен (хранить с осторожностью!)';
-COMMENT ON COLUMN accounts.token_hash IS 'SHA-256 хеш токена для проверки без расшифровки';
-COMMENT ON COLUMN accounts.is_active IS 'Активен ли счет';
-COMMENT ON COLUMN accounts.created_at IS 'Дата создания';
-COMMENT ON COLUMN accounts.updated_at IS 'Дата последнего обновления';
-
--- ============================================
--- Таблица: prices (цены бумаг)
--- ============================================
-CREATE TABLE IF NOT EXISTS prices (
-    id BIGSERIAL PRIMARY KEY,
-    security_id INTEGER NOT NULL REFERENCES securities(id) ON DELETE CASCADE,
-    timeframe_id INTEGER NOT NULL REFERENCES timeframes(id) ON DELETE CASCADE,
-    dt TIMESTAMP NOT NULL,
-    open_price NUMERIC(18, 6) NOT NULL,
-    high_price NUMERIC(18, 6) NOT NULL,
-    low_price NUMERIC(18, 6) NOT NULL,
-    close_price NUMERIC(18, 6) NOT NULL,
-    volume NUMERIC(20, 2),
-    value NUMERIC(20, 2),
-    trades INTEGER,
-    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
-);
-
-CREATE INDEX IF NOT EXISTS idx_prices_security_id ON prices(security_id);
-CREATE INDEX IF NOT EXISTS idx_prices_timeframe_id ON prices(timeframe_id);
-CREATE INDEX IF NOT EXISTS idx_prices_dt ON prices(dt);
-CREATE INDEX IF NOT EXISTS idx_prices_security_timeframe ON prices(security_id, timeframe_id);
-CREATE INDEX IF NOT EXISTS idx_prices_security_timeframe_dt ON prices(security_id, timeframe_id, dt);
-CREATE INDEX IF NOT EXISTS idx_prices_timeframe_dt ON prices(timeframe_id, dt);
-CREATE UNIQUE INDEX IF NOT EXISTS idx_prices_unique_candle ON prices(security_id, timeframe_id, dt);
-
-COMMENT ON TABLE prices IS 'Таблица цен (OHLCV) ценных бумаг по таймфреймам';
-COMMENT ON COLUMN prices.security_id IS 'Ссылка на ценную бумагу';
-COMMENT ON COLUMN prices.timeframe_id IS 'Ссылка на таймфрейм';
-COMMENT ON COLUMN prices.dt IS 'Дата и время свечи';
-COMMENT ON COLUMN prices.open_price IS 'Цена открытия';
-COMMENT ON COLUMN prices.high_price IS 'Максимальная цена';
-COMMENT ON COLUMN prices.low_price IS 'Минимальная цена';
-COMMENT ON COLUMN prices.close_price IS 'Цена закрытия';
-COMMENT ON COLUMN prices.volume IS 'Объём торгов';
-COMMENT ON COLUMN prices.value IS 'Оборот в валюте';
-COMMENT ON COLUMN prices.trades IS 'Количество сделок';
-COMMENT ON COLUMN prices.created_at IS 'Дата записи в БД';
-
--- ============================================
--- Таблица: parameter_types (типы параметров)
--- ============================================
-CREATE TABLE IF NOT EXISTS parameter_types (
-    id SERIAL PRIMARY KEY,
-    name VARCHAR(100) NOT NULL UNIQUE,
-    short_name VARCHAR(20) NOT NULL,
-    value_type VARCHAR(20) NOT NULL,
-    is_control BOOLEAN NOT NULL DEFAULT FALSE,
-    is_fake_only BOOLEAN NOT NULL DEFAULT FALSE,
-    description TEXT,
-    default_value TEXT,
-    min_value NUMERIC(18, 6),
-    max_value NUMERIC(18, 6),
-    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
-);
-
-COMMENT ON TABLE parameter_types IS 'Справочник типов параметров (что можно настроить)';
-COMMENT ON COLUMN parameter_types.name IS 'Полное имя параметра';
-COMMENT ON COLUMN parameter_types.short_name IS 'Короткое имя/код';
-COMMENT ON COLUMN parameter_types.value_type IS 'Тип: integer, float, string, boolean, json';
-COMMENT ON COLUMN parameter_types.is_control IS '0 = обычный, 1 = управляющий';
-COMMENT ON COLUMN parameter_types.description IS 'Описание назначения';
-COMMENT ON COLUMN parameter_types.default_value IS 'Значение по умолчанию';
-COMMENT ON COLUMN parameter_types.min_value IS 'Минимально допустимое';
-COMMENT ON COLUMN parameter_types.max_value IS 'Максимально допустимое';
-COMMENT ON COLUMN parameter_types.is_fake_only IS '0 = используется для всех счетов, 1 = только для фейковых/демо счетов (например: тестовый период, виртуальный депозит)';
-
--- ============================================
--- Таблица: parameter_sets (сеты параметров)
--- ============================================
-CREATE TABLE IF NOT EXISTS parameter_sets (
-    id SERIAL PRIMARY KEY,
-    name VARCHAR(100) NOT NULL,
-    description TEXT,
-    is_active BOOLEAN NOT NULL DEFAULT TRUE,
-    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
-);
-
-INSERT INTO parameter_sets (name, description) VALUES
-    ('Default', 'Базовый набор параметров по умолчанию') ON CONFLICT (name) DO NOTHING;
-
-COMMENT ON TABLE parameter_sets IS 'Наборы (сеты) параметров';
-COMMENT ON COLUMN parameter_sets.name IS 'Наименование сета';
-COMMENT ON COLUMN parameter_sets.description IS 'Описание';
-COMMENT ON COLUMN parameter_sets.is_active IS 'Активен ли';
-COMMENT ON COLUMN parameter_sets.created_at IS 'Дата создания';
-
--- ============================================
--- Таблица: parameter_values (значения параметров)
--- ============================================
-CREATE TABLE IF NOT EXISTS parameter_values (
-    id SERIAL PRIMARY KEY,
-    parameter_set_id INTEGER NOT NULL REFERENCES parameter_sets(id) ON DELETE CASCADE,
-    parameter_type_id INTEGER NOT NULL REFERENCES parameter_types(id) ON DELETE CASCADE,
-    value TEXT NOT NULL,
-    record_date TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
-);
-
-CREATE UNIQUE INDEX IF NOT EXISTS idx_parameter_values_unique ON parameter_values(parameter_set_id, parameter_type_id);
-
-COMMENT ON TABLE parameter_values IS 'Значения параметров в сетах';
-COMMENT ON COLUMN parameter_values.parameter_set_id IS '→ parameter_sets';
-COMMENT ON COLUMN parameter_values.parameter_type_id IS '→ parameter_types';
-COMMENT ON COLUMN parameter_values.value IS 'Значение (строковое)';
-COMMENT ON COLUMN parameter_values.record_date IS 'Дата записи значения';
-COMMENT ON COLUMN parameter_values.created_at IS 'Дата создания записи';
-
--- ============================================
--- ТАБЛИЦА: indicators (ИНДИКАТОРЫ) — НОВАЯ
--- ============================================
-CREATE TABLE IF NOT EXISTS indicators (
-    id SERIAL PRIMARY KEY,
-    code VARCHAR(20) NOT NULL UNIQUE,         -- Сокращение: SMA, EMA, RSI, MACD, etc.
-    name VARCHAR(100) NOT NULL,              -- Полное имя индикатора
-    script TEXT,                              -- SQL-скрипт для EXECUTE IMMEDIATE
-    description TEXT,                         -- Описание
-    category VARCHAR(50),                    -- Категория: trend, momentum, volatility, volume, etc.
-    is_active BOOLEAN NOT NULL DEFAULT TRUE,
-    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
-);
-
--- Заполнение популярных индикаторов (скрипт пустой — заполнять позже)
-INSERT INTO indicators (code, name, description, category) VALUES
-    ('SMA', 'Simple Moving Average', 'Простое скользящее среднее', 'trend'),
-    ('EMA', 'Exponential Moving Average', 'Экспоненциальное скользящее среднее', 'trend'),
-    ('WMA', 'Weighted Moving Average', 'Взвешенное скользящее среднее', 'trend'),
-    ('RSI', 'Relative Strength Index', 'Индекс относительной силы (0-100)', 'momentum'),
-    ('MACD', 'Moving Average Convergence Divergence', 'Схождение/расхождение скользящих средних', 'momentum'),
-    ('STOCH', 'Stochastic Oscillator', 'Стохастический осциллятор (%K, %D)', 'momentum'),
-    ('BB', 'Bollinger Bands', 'Полосы Боллинджера (Upper, Middle, Lower)', 'volatility'),
-    ('ATR', 'Average True Range', 'Средний истинный диапазон', 'volatility'),
-    ('ADX', 'Average Directional Index', 'Индекс среднего направления', 'trend'),
-    ('OBV', 'On-Balance Volume', 'Накопленный объем', 'volume'),
-    ('VWAP', 'Volume Weighted Average Price', 'Объемно-взвешенная средняя цена', 'volume'),
-    ('MFI', 'Money Flow Index', 'Индекс денежного потока', 'momentum'),
-    ('CCI', 'Commodity Channel Index', 'Индекс товарного канала', 'momentum'),
-    ('WILLR', 'Williams %R', 'Процентный диапазон Вильямса', 'momentum'),
-    ('PSAR', 'Parabolic SAR', 'Параболическая система SAR', 'trend'),
-    ('ICHIMOKU', 'Ichimoku Cloud', 'Облако Ишимоку', 'trend'),
-    ('KDJ', 'KDJ Indicator', 'Индикатор KDJ (K, D, J)', 'momentum'),
-    ('DMI', 'Directional Movement Index', 'Индекс направленного движения (+DI, -DI, ADX)', 'trend'),
-    ('KELTNER', 'Keltner Channels', 'Каналы Кельтнера', 'volatility'),
-    ('DONCHIAN', 'Donchian Channels', 'Каналы Дончиана', 'volatility'),
-    ('ROC', 'Rate of Change', 'Темп изменения', 'momentum'),
-    ('TRIX', 'Triple Exponential Average', 'Тройное экспоненциальное среднее', 'momentum'),
-    ('CMO', 'Chande Momentum Oscillator', 'Осциллятор моментума Чанде', 'momentum'),
-    ('RVI', 'Relative Vigor Index', 'Индекс относительной бодрости', 'momentum'),
-    ('TSI', 'True Strength Index', 'Индекс истинной силы', 'momentum'),
-    ('UO', 'Ultimate Oscillator', 'Ультимативный осциллятор', 'momentum'),
-    ('AROON', 'Aroon Indicator', 'Индикатор Арун (Up, Down)', 'trend'),
-    ('SAR', 'Stop And Reverse', 'Стоп и реверс', 'trend'),
-    ('HMA', 'Hull Moving Average', 'Скользящее среднее Халла', 'trend'),
-    ('ZLEMA', 'Zero Lag EMA', 'EMA с нулевым запаздыванием', 'trend') ON CONFLICT (code) DO NOTHING;
-
-COMMENT ON TABLE indicators IS 'Справочник технических индикаторов';
-COMMENT ON COLUMN indicators.code IS 'Сокращение индикатора (SMA, RSI, MACD и т.д.)';
-COMMENT ON COLUMN indicators.name IS 'Полное имя индикатора';
-COMMENT ON COLUMN indicators.script IS 'SQL-скрипт для расчета (EXECUTE IMMEDIATE)';
-COMMENT ON COLUMN indicators.description IS 'Описание индикатора';
-COMMENT ON COLUMN indicators.category IS 'Категория: trend, momentum, volatility, volume';
-COMMENT ON COLUMN indicators.is_active IS 'Активен ли';
-
--- ============================================
--- ТАБЛИЦА: indicator_value_types (ТИПЫ ЗНАЧЕНИЙ ИНДИКАТОРОВ) — НОВАЯ
--- ============================================
-CREATE TABLE IF NOT EXISTS indicator_value_types (
-    id SERIAL PRIMARY KEY,
-    indicator_id INTEGER NOT NULL REFERENCES indicators(id) ON DELETE CASCADE,
-    code VARCHAR(20) NOT NULL,               -- Код линии/значения: K, D, J, UPPER, LOWER, etc.
-    name VARCHAR(50) NOT NULL,               -- Имя линии: '%K линия', '%D линия', 'Верхняя полоса'
-    value_type VARCHAR(20) NOT NULL DEFAULT 'float', -- Тип: float, integer, boolean
-    is_threshold BOOLEAN NOT NULL DEFAULT FALSE, -- Это пороговое значение (80, 20, 0)?
-    threshold_value NUMERIC(18, 6),          -- Значение порога (если is_threshold = TRUE)
-    description TEXT,                         -- Описание
-    display_order INTEGER NOT NULL DEFAULT 0,  -- Порядок отображения
-    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
-);
-
--- Уникальный индекс: один индикатор = уникальные коды линий
-CREATE UNIQUE INDEX IF NOT EXISTS idx_indicator_value_types_unique 
-ON indicator_value_types(indicator_id, code);
-
--- Заполнение типов значений для популярных индикаторов
-INSERT INTO indicator_value_types (indicator_id, code, name, value_type, is_threshold, threshold_value, description, display_order) VALUES
-    -- RSI
-    (4, 'RSI', 'Значение RSI', 'float', FALSE, NULL, 'Основное значение RSI (0-100)', 1),
-    (4, 'OVERBOUGHT', 'Перекупленность', 'float', TRUE, 70, 'Порог перекупленности', 2),
-    (4, 'OVERSOLD', 'Перепроданность', 'float', TRUE, 30, 'Порог перепроданности', 3),
-    (4, 'NEUTRAL', 'Нейтральная зона', 'float', TRUE, 50, 'Нейтральный уровень', 4),
-
-    -- MACD
-    (5, 'MACD', 'MACD линия', 'float', FALSE, NULL, 'Разница быстрой и медленной EMA', 1),
-    (5, 'SIGNAL', 'Сигнальная линия', 'float', FALSE, NULL, 'Сигнальная линия (EMA от MACD)', 2),
-    (5, 'HISTOGRAM', 'Гистограмма', 'float', FALSE, NULL, 'Разница MACD и Signal', 3),
-    (5, 'ZERO', 'Нулевая линия', 'float', TRUE, 0, 'Нулевой уровень', 4),
-
-    -- Stochastic
-    (6, 'K', '%K линия', 'float', FALSE, NULL, 'Быстрая линия стохастика', 1),
-    (6, 'D', '%D линия', 'float', FALSE, NULL, 'Медленная линия стохастика (SMA от %K)', 2),
-    (6, 'OVERBOUGHT', 'Перекупленность', 'float', TRUE, 80, 'Порог перекупленности', 3),
-    (6, 'OVERSOLD', 'Перепроданность', 'float', TRUE, 20, 'Порог перепроданности', 4),
-
-    -- Bollinger Bands
-    (7, 'UPPER', 'Верхняя полоса', 'float', FALSE, NULL, 'Верхняя полоса (SMA + 2σ)', 1),
-    (7, 'MIDDLE', 'Средняя полоса', 'float', FALSE, NULL, 'Средняя полоса (SMA)', 2),
-    (7, 'LOWER', 'Нижняя полоса', 'float', FALSE, NULL, 'Нижняя полоса (SMA - 2σ)', 3),
-    (7, 'BANDWIDTH', 'Ширина полос', 'float', FALSE, NULL, 'Относительная ширина полос', 4),
-
-    -- ATR
-    (8, 'ATR', 'Значение ATR', 'float', FALSE, NULL, 'Средний истинный диапазон', 1),
-    (8, 'ATR_PCT', 'ATR в процентах', 'float', FALSE, NULL, 'ATR как % от цены', 2),
-
-    -- ADX
-    (9, 'ADX', 'Значение ADX', 'float', FALSE, NULL, 'Сила тренда (0-100)', 1),
-    (9, 'PLUS_DI', '+DI', 'float', FALSE, NULL, 'Плюсовое направление', 2),
-    (9, 'MINUS_DI', '-DI', 'float', FALSE, NULL, 'Минусовое направление', 3),
-    (9, 'TREND_STRONG', 'Сильный тренд', 'float', TRUE, 25, 'Порог сильного тренда', 4),
-    (9, 'TREND_WEAK', 'Слабый тренд', 'float', TRUE, 20, 'Порог слабого тренда', 5),
-
-    -- VWAP
-    (10, 'VWAP', 'Значение VWAP', 'float', FALSE, NULL, 'Объемно-взвешенная цена', 1),
-    (10, 'STD1_UPPER', 'Верхняя +1σ', 'float', FALSE, NULL, 'Верхняя граница 1 ст.откл.', 2),
-    (10, 'STD1_LOWER', 'Нижняя -1σ', 'float', FALSE, NULL, 'Нижняя граница 1 ст.откл.', 3),
-    (10, 'STD2_UPPER', 'Верхняя +2σ', 'float', FALSE, NULL, 'Верхняя граница 2 ст.откл.', 4),
-    (10, 'STD2_LOWER', 'Нижняя -2σ', 'float', FALSE, NULL, 'Нижняя граница 2 ст.откл.', 5),
-
-    -- MFI
-    (11, 'MFI', 'Значение MFI', 'float', FALSE, NULL, 'Индекс денежного потока (0-100)', 1),
-    (11, 'OVERBOUGHT', 'Перекупленность', 'float', TRUE, 80, 'Порог перекупленности', 2),
-    (11, 'OVERSOLD', 'Перепроданность', 'float', TRUE, 20, 'Порог перепроданности', 3),
-
-    -- CCI
-    (12, 'CCI', 'Значение CCI', 'float', FALSE, NULL, 'Индекс товарного канала', 1),
-    (12, 'OVERBOUGHT', 'Перекупленность', 'float', TRUE, 100, 'Порог перекупленности', 2),
-    (12, 'OVERSOLD', 'Перепроданность', 'float', TRUE, -100, 'Порог перепроданности', 3),
-
-    -- Williams %R
-    (13, 'WILLR', 'Значение %R', 'float', FALSE, NULL, 'Процентный диапазон Вильямса (-100..0)', 1),
-    (13, 'OVERBOUGHT', 'Перекупленность', 'float', TRUE, -20, 'Порог перекупленности', 2),
-    (13, 'OVERSOLD', 'Перепроданность', 'float', TRUE, -80, 'Порог перепроданности', 3),
-
-    -- Parabolic SAR
-    (14, 'PSAR', 'Значение SAR', 'float', FALSE, NULL, 'Точка разворота', 1),
-    (14, 'TREND', 'Направление тренда', 'integer', FALSE, NULL, '1 = восходящий, -1 = нисходящий', 2),
-
-    -- Ichimoku
-    (15, 'TENKAN', 'Tenkan-sen', 'float', FALSE, NULL, 'Линия разворота (9 периодов)', 1),
-    (15, 'KIJUN', 'Kijun-sen', 'float', FALSE, NULL, 'Линия стандарта (26 периодов)', 2),
-    (15, 'SENKOU_A', 'Senkou Span A', 'float', FALSE, NULL, 'Ведущая линия A', 3),
-    (15, 'SENKOU_B', 'Senkou Span B', 'float', FALSE, NULL, 'Ведущая линия B', 4),
-    (15, 'CHIKOU', 'Chikou Span', 'float', FALSE, NULL, 'Запаздывающая линия', 5),
-
-    -- KDJ
-    (16, 'K', 'K линия', 'float', FALSE, NULL, 'Линия K', 1),
-    (16, 'D', 'D линия', 'float', FALSE, NULL, 'Линия D', 2),
-    (16, 'J', 'J линия', 'float', FALSE, NULL, 'Линия J (3K - 2D)', 3),
-    (16, 'OVERBOUGHT', 'Перекупленность', 'float', TRUE, 80, 'Порог перекупленности', 4),
-    (16, 'OVERSOLD', 'Перепроданность', 'float', TRUE, 20, 'Порог перепроданности', 5),
-
-    -- DMI
-    (17, 'ADX', 'ADX', 'float', FALSE, NULL, 'Сила тренда', 1),
-    (17, 'PLUS_DI', '+DI', 'float', FALSE, NULL, 'Плюсовое направление', 2),
-    (17, 'MINUS_DI', '-DI', 'float', FALSE, NULL, 'Минусовое направление', 3),
-
-    -- Keltner Channels
-    (18, 'UPPER', 'Верхняя полоса', 'float', FALSE, NULL, 'Верхняя граница канала', 1),
-    (18, 'MIDDLE', 'Средняя полоса', 'float', FALSE, NULL, 'EMA средняя линия', 2),
-    (18, 'LOWER', 'Нижняя полоса', 'float', FALSE, NULL, 'Нижняя граница канала', 3),
-
-    -- Donchian Channels
-    (19, 'UPPER', 'Верхняя полоса', 'float', FALSE, NULL, 'Максимум за период', 1),
-    (19, 'MIDDLE', 'Средняя полоса', 'float', FALSE, NULL, 'Среднее макс/мин', 2),
-    (19, 'LOWER', 'Нижняя полоса', 'float', FALSE, NULL, 'Минимум за период', 3),
-
-    -- SMA/EMA/WMA (общие)
-    (1, 'VALUE', 'Значение MA', 'float', FALSE, NULL, 'Значение скользящей средней', 1),
-    (2, 'VALUE', 'Значение EMA', 'float', FALSE, NULL, 'Значение экспоненциальной MA', 1),
-    (3, 'VALUE', 'Значение WMA', 'float', FALSE, NULL, 'Значение взвешенной MA', 1) ON CONFLICT ((indicator_id, code)) DO NOTHING;
-
-COMMENT ON TABLE indicator_value_types IS 'Типы значений (линий) индикаторов';
-COMMENT ON COLUMN indicator_value_types.indicator_id IS '→ indicators';
-COMMENT ON COLUMN indicator_value_types.code IS 'Код линии/значения (K, D, UPPER, LOWER и т.д.)';
-COMMENT ON COLUMN indicator_value_types.name IS 'Имя линии';
-COMMENT ON COLUMN indicator_value_types.value_type IS 'Тип данных: float, integer, boolean';
-COMMENT ON COLUMN indicator_value_types.is_threshold IS 'Это пороговое значение?';
-COMMENT ON COLUMN indicator_value_types.threshold_value IS 'Значение порога (80, 20, 0, -20 и т.д.)';
-COMMENT ON COLUMN indicator_value_types.description IS 'Описание линии/порога';
-COMMENT ON COLUMN indicator_value_types.display_order IS 'Порядок отображения';
-
--- ============================================
--- ТАБЛИЦА: indicator_values (ЗНАЧЕНИЯ ИНДИКАТОРОВ) — НОВАЯ
--- ============================================
-CREATE TABLE IF NOT EXISTS indicator_values (
-    id BIGSERIAL PRIMARY KEY,
-    indicator_id INTEGER NOT NULL REFERENCES indicators(id) ON DELETE CASCADE,
-    indicator_value_type_id INTEGER NOT NULL REFERENCES indicator_value_types(id) ON DELETE CASCADE,
-    security_id INTEGER NOT NULL REFERENCES securities(id) ON DELETE CASCADE,
-    timeframe_id INTEGER NOT NULL REFERENCES timeframes(id) ON DELETE CASCADE,
-    dt TIMESTAMP NOT NULL,                    -- Дата/время свечи
-    value NUMERIC(18, 6),                     -- Значение индикатора
-    is_signal BOOLEAN NOT NULL DEFAULT FALSE,  -- Это сигнальное значение?
-    signal_type VARCHAR(20),                  -- Тип сигнала: buy, sell, overbought, oversold
-    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
-);
-
--- Индексы для быстрого поиска
-CREATE INDEX IF NOT EXISTS idx_indicator_values_indicator_id ON indicator_values(indicator_id);
-CREATE INDEX IF NOT EXISTS idx_indicator_values_security_id ON indicator_values(security_id);
-CREATE INDEX IF NOT EXISTS idx_indicator_values_timeframe_id ON indicator_values(timeframe_id);
-CREATE INDEX IF NOT EXISTS idx_indicator_values_dt ON indicator_values(dt);
-CREATE INDEX IF NOT EXISTS idx_indicator_values_security_timeframe ON indicator_values(security_id, timeframe_id);
-CREATE INDEX IF NOT EXISTS idx_indicator_values_security_timeframe_dt ON indicator_values(security_id, timeframe_id, dt);
-CREATE INDEX IF NOT EXISTS idx_indicator_values_indicator_security_tf_dt ON indicator_values(indicator_id, security_id, timeframe_id, dt);
-
--- Уникальный индекс: одно значение одного типа индикатора на одну свечу
-CREATE UNIQUE INDEX IF NOT EXISTS idx_indicator_values_unique 
-ON indicator_values(indicator_id, indicator_value_type_id, security_id, timeframe_id, dt);
-
-COMMENT ON TABLE indicator_values IS 'Рассчитанные значения индикаторов';
-COMMENT ON COLUMN indicator_values.indicator_id IS '→ indicators';
-COMMENT ON COLUMN indicator_values.indicator_value_type_id IS '→ indicator_value_types (какая линия/порог)';
-COMMENT ON COLUMN indicator_values.security_id IS '→ securities (бумага)';
-COMMENT ON COLUMN indicator_values.timeframe_id IS '→ timeframes (таймфрейм)';
-COMMENT ON COLUMN indicator_values.dt IS 'Дата/время свечи';
-COMMENT ON COLUMN indicator_values.value IS 'Значение индикатора';
-COMMENT ON COLUMN indicator_values.is_signal IS 'Это сигнальное значение?';
-COMMENT ON COLUMN indicator_values.signal_type IS 'Тип сигнала: buy, sell, overbought, oversold';
-
--- ============================================
--- Таблица: logics (логики)
--- ============================================
-CREATE TABLE IF NOT EXISTS logics (
-    id SERIAL PRIMARY KEY,
-    name VARCHAR(100) NOT NULL UNIQUE
-);
-
-COMMENT ON TABLE logics IS 'Таблица логик';
-COMMENT ON COLUMN logics.name IS 'Название логики';
-
--- ============================================
--- Таблица: sides (стороны)
--- ============================================
-CREATE TABLE IF NOT EXISTS sides (
-    id SERIAL PRIMARY KEY,
-    name VARCHAR(20) NOT NULL UNIQUE
-);
-
-INSERT INTO sides (name) VALUES ('Open'), ('Close') ON CONFLICT (name) DO NOTHING;
-
-COMMENT ON TABLE sides IS 'Таблица сторон (Open/Close)';
-COMMENT ON COLUMN sides.name IS 'Название стороны: Open или Close';
-
--- ============================================
--- Таблица: actions (действия)
--- ============================================
-CREATE TABLE IF NOT EXISTS actions (
-    id SERIAL PRIMARY KEY,
-    name VARCHAR(20) NOT NULL UNIQUE
-);
-
-INSERT INTO actions (name) VALUES ('Long'), ('Short') ON CONFLICT (name) DO NOTHING;
-
-COMMENT ON TABLE actions IS 'Таблица действий (Long/Short)';
-COMMENT ON COLUMN actions.name IS 'Название действия: Long или Short';
-
--- ============================================
--- Таблица: logics_detail (детали логики)
--- ============================================
-CREATE TABLE IF NOT EXISTS logics_detail (
-    id SERIAL PRIMARY KEY,
-    logic_name VARCHAR(100) NOT NULL REFERENCES logics(name),
-    formula TEXT NOT NULL,
-    side_id INTEGER NOT NULL REFERENCES sides(id),
-    action_id INTEGER NOT NULL REFERENCES actions(id)
-);
-
-COMMENT ON TABLE logics_detail IS 'Таблица деталей логики';
-COMMENT ON COLUMN logics_detail.logic_name IS 'Ссылка на логику (название)';
-COMMENT ON COLUMN logics_detail.formula IS 'Формула для расчета';
-COMMENT ON COLUMN logics_detail.side_id IS 'Ссылка на сторону (sides): Open или Close';
-COMMENT ON COLUMN logics_detail.action_id IS 'Ссылка на действие (actions): Long или Short';
-
--- ============================================
--- Индексы для оптимизации
--- ============================================
-CREATE INDEX IF NOT EXISTS idx_security_types_name ON security_types(name);
-CREATE INDEX IF NOT EXISTS idx_exchanges_name ON exchanges(name);
-CREATE INDEX IF NOT EXISTS idx_securities_name ON securities(name);
-CREATE INDEX IF NOT EXISTS idx_securities_type_id ON securities(security_type_id);
-CREATE INDEX IF NOT EXISTS idx_security_prefixes_security_id ON security_prefixes(security_id);
-CREATE INDEX IF NOT EXISTS idx_security_prefixes_exchange_id ON security_prefixes(exchange_id);
-CREATE INDEX IF NOT EXISTS idx_security_prefixes_prefix ON security_prefixes(prefix);
-CREATE INDEX IF NOT EXISTS idx_timeframes_tf ON timeframes(tf);
-CREATE INDEX IF NOT EXISTS idx_timeframes_full_name ON timeframes(full_name);
-CREATE INDEX IF NOT EXISTS idx_brokers_code ON brokers(code);
-CREATE INDEX IF NOT EXISTS idx_brokers_name ON brokers(name);
-CREATE INDEX IF NOT EXISTS idx_accounts_broker_id ON accounts(broker_id);
-CREATE INDEX IF NOT EXISTS idx_accounts_account_code ON accounts(account_code);
-CREATE INDEX IF NOT EXISTS idx_accounts_account_type ON accounts(account_type);
-CREATE INDEX IF NOT EXISTS idx_accounts_is_efficient ON accounts(is_efficient);
-CREATE INDEX IF NOT EXISTS idx_parameter_types_name ON parameter_types(name);
-CREATE INDEX IF NOT EXISTS idx_parameter_types_short_name ON parameter_types(short_name);
-CREATE INDEX IF NOT EXISTS idx_parameter_types_is_control ON parameter_types(is_control);
-CREATE INDEX IF NOT EXISTS idx_parameter_types_is_fake_only ON parameter_types(is_fake_only);
-CREATE INDEX IF NOT EXISTS idx_parameter_sets_name ON parameter_sets(name);
-CREATE INDEX IF NOT EXISTS idx_parameter_values_set_id ON parameter_values(parameter_set_id);
-CREATE INDEX IF NOT EXISTS idx_parameter_values_type_id ON parameter_values(parameter_type_id);
-CREATE INDEX IF NOT EXISTS idx_parameter_values_record_date ON parameter_values(record_date);
-CREATE INDEX IF NOT EXISTS idx_indicators_code ON indicators(code);
-CREATE INDEX IF NOT EXISTS idx_indicators_category ON indicators(category);
-CREATE INDEX IF NOT EXISTS idx_indicator_value_types_indicator_id ON indicator_value_types(indicator_id);
-CREATE INDEX IF NOT EXISTS idx_indicator_value_types_code ON indicator_value_types(code);
-CREATE INDEX IF NOT EXISTS idx_logics_name ON logics(name);
-CREATE INDEX IF NOT EXISTS idx_logics_detail_logic_name ON logics_detail(logic_name);
-CREATE INDEX IF NOT EXISTS idx_logics_detail_side_id ON logics_detail(side_id);
-CREATE INDEX IF NOT EXISTS idx_logics_detail_action_id ON logics_detail(action_id);
-
-
--- ============================================
--- ПРОЦЕДУРЫ ЗАГРУЗКИ ЦЕН (T-BANK / MOEX)
--- ============================================
-
--- ============================================
--- Таблица: futures_expirations (сроки экспирации фьючерсов)
--- ============================================
-CREATE TABLE IF NOT EXISTS futures_expirations (
-    id SERIAL PRIMARY KEY,
-    security_id INTEGER NOT NULL REFERENCES securities(id) ON DELETE CASCADE,
-    prefix VARCHAR(50) NOT NULL,
-    expiration_date DATE NOT NULL,
-    is_active BOOLEAN NOT NULL DEFAULT TRUE,
-    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
-);
-
-CREATE INDEX IF NOT EXISTS idx_futures_exp_security_id ON futures_expirations(security_id);
-CREATE INDEX IF NOT EXISTS idx_futures_exp_prefix ON futures_expirations(prefix);
-CREATE INDEX IF NOT EXISTS idx_futures_exp_date ON futures_expirations(expiration_date);
-
-COMMENT ON TABLE futures_expirations IS 'Сроки экспирации фьючерсов для определения активного контракта';
-COMMENT ON COLUMN futures_expirations.security_id IS 'Ссылка на базовый фьючерс (без окончания)';
-COMMENT ON COLUMN futures_expirations.prefix IS 'Полный тикер с датой экспирации (Si-6.26)';
-COMMENT ON COLUMN futures_expirations.expiration_date IS 'Дата экспирации контракта';
-
--- ============================================
--- Таблица: price_load_log (лог загрузки цен)
--- ============================================
-CREATE TABLE IF NOT EXISTS price_load_log (
-    id BIGSERIAL PRIMARY KEY,
-    security_id INTEGER NOT NULL REFERENCES securities(id),
-    timeframe_id INTEGER NOT NULL REFERENCES timeframes(id),
-    date_from DATE NOT NULL,
-    date_to DATE NOT NULL,
-    source VARCHAR(20) NOT NULL,
-    records_loaded INTEGER DEFAULT 0,
-    error_message TEXT,
-    loaded_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
-);
-
-CREATE INDEX IF NOT EXISTS idx_price_load_log_security ON price_load_log(security_id, timeframe_id);
-CREATE INDEX IF NOT EXISTS idx_price_load_log_loaded_at ON price_load_log(loaded_at);
-
-COMMENT ON TABLE price_load_log IS 'Лог загрузки цен (для мониторинга и отладки)';
-
--- ============================================
 -- Функция: get_active_future_prefix
 -- Определяет активный фьючерс на заданную дату
 -- ============================================
@@ -982,15 +339,7 @@ BEGIN
         v_engine, v_market, v_board, v_prefix,
         to_char(v_start_dt, 'YYYY-MM-DD'),
         to_char(v_end_dt, 'YYYY-MM-DD'),
-        CASE v_tf_name
-            WHEN 'M1' THEN '1'
-            WHEN 'M10' THEN '10'
-            WHEN 'M60' THEN '60'
-            WHEN 'D1' THEN '24'
-            WHEN 'W1' THEN '7'
-            WHEN 'MN1' THEN '31'
-            ELSE '1'
-        END
+        get_moex_candle_interval(v_tf_name)::TEXT
     );
 
     RAISE NOTICE 'MOEX API URL: %', v_url;
@@ -1096,7 +445,7 @@ LANGUAGE plpgsql AS $$
 DECLARE
     v_tf RECORD;
 BEGIN
-    FOR v_tf IN SELECT id FROM timeframes WHERE is_active IS DISTINCT FROM FALSE ORDER BY sec
+    FOR v_tf IN SELECT id FROM timeframes WHERE COALESCE(is_active, TRUE) = TRUE ORDER BY sec
     LOOP
         BEGIN
             CALL load_prices(p_security_id, v_tf.id, p_date_from, p_date_to);
@@ -1347,6 +696,7 @@ DECLARE
     -- ПЕРЕМЕННАЯ ДЛЯ ПРОВЕРКИ СУЩЕСТВОВАНИЯ ЗАПИСИ
     -- ============================================================
     v_existing_count INTEGER;        -- Количество существующих записей (0 или 1)
+    v_price RECORD;                  -- Строка курсора цен
 BEGIN
     -- ============================================================
     -- БЛОК 1: ЗАГРУЗКА ИНФОРМАЦИИ ОБ ИНДИКАТОРЕ
@@ -2265,6 +1615,13 @@ COMMENT ON PROCEDURE calculate_indicators_batch(INTEGER[], INTEGER, DATE, DATE, 
 --
 -- ================================================================
 -- ============================================
+
+-- ============================================
+-- ОПЦИОНАЛЬНЫЙ БЛОК: HTTP-ЗАГРУЗКА (pgsql-http)
+-- Если расширение не установлено — пропустите блок до «КОНЕЦ HTTP».
+-- ============================================
+CREATE EXTENSION IF NOT EXISTS http;
+
 -- Процедура: load_prices_from_tbank_http
 -- Загрузка цен через T-Bank API с использованием pgsql-http
 -- ============================================
@@ -2279,7 +1636,8 @@ DECLARE
     -- ============================================================
     -- ПАРАМЕТРЫ ЗАПРОСА
     -- ============================================================
-    v_prefix VARCHAR(50);            -- Тикер/FIGI бумаги
+    v_prefix VARCHAR(50);            -- Тикер MOEX
+    v_tbank_figi VARCHAR(50);        -- FIGI T-Bank
     v_tf_name VARCHAR(20);           -- Код таймфрейма (M5, D1 и т.д.)
     v_is_future BOOLEAN;             -- Флаг: это фьючерс?
     v_token TEXT;                    -- API-токен T-Bank (из accounts)
@@ -2311,7 +1669,7 @@ BEGIN
     -- ============================================================
     -- БЛОК 1: ПОЛУЧЕНИЕ ПРЕФИКСА БУМАГИ
     -- ============================================================
-    SELECT sp.prefix INTO v_prefix
+    SELECT sp.prefix, sp.tbank_figi INTO v_prefix, v_tbank_figi
     FROM security_prefixes sp
     WHERE sp.security_id = p_security_id AND sp.exchange_id = 1;
 
@@ -2335,9 +1693,15 @@ BEGIN
 
     -- Для фьючерса определяем активный контракт
     IF v_is_future THEN
-        v_prefix := get_active_future_prefix(p_security_id, p_date_from);
+        SELECT fe.prefix, fe.tbank_figi INTO v_prefix, v_tbank_figi
+        FROM futures_expirations fe
+        WHERE fe.security_id = p_security_id
+          AND fe.expiration_date > p_date_from
+          AND fe.is_active = TRUE
+        ORDER BY fe.expiration_date ASC
+        LIMIT 1;
         IF v_prefix IS NULL THEN
-            RAISE EXCEPTION 'Активный фьючерс не найден для security_id=% на дату %', 
+            RAISE EXCEPTION 'Активный фьючерс не найден для security_id=% на дату %',
                 p_security_id, p_date_from;
         END IF;
     END IF;
@@ -2358,18 +1722,10 @@ BEGIN
 
     -- Формируем JSON-тело запроса
     v_payload := jsonb_build_object(
-        'figi', v_prefix,
+        'figi', COALESCE(v_tbank_figi, v_prefix),
         'from', p_date_from::TIMESTAMP::TEXT || 'Z',
         'to', (p_date_to + INTERVAL '1 day')::TIMESTAMP::TEXT || 'Z',
-        'interval', CASE v_tf_name
-            WHEN 'M1' THEN 'CANDLE_INTERVAL_1_MIN'
-            WHEN 'M5' THEN 'CANDLE_INTERVAL_5_MIN'
-            WHEN 'M15' THEN 'CANDLE_INTERVAL_15_MIN'
-            WHEN 'H1' THEN 'CANDLE_INTERVAL_HOUR'
-            WHEN 'D1' THEN 'CANDLE_INTERVAL_DAY'
-            WHEN 'W1' THEN 'CANDLE_INTERVAL_WEEK'
-            ELSE 'CANDLE_INTERVAL_DAY'
-        END
+        'interval', get_tbank_candle_interval(v_tf_name)
     )::TEXT;
 
     -- Формируем заголовки с авторизацией
@@ -2422,11 +1778,11 @@ BEGIN
 
         -- Извлекаем поля свечи из JSON
         v_candle_time := (v_candle->>'time')::TIMESTAMP;
-        v_candle_open := (v_candle->>'open')::NUMERIC;
-        v_candle_high := (v_candle->>'high')::NUMERIC;
-        v_candle_low := (v_candle->>'low')::NUMERIC;
-        v_candle_close := (v_candle->>'close')::NUMERIC;
-        v_candle_volume := (v_candle->>'volume')::NUMERIC;
+        v_candle_open := parse_tbank_quotation(v_candle->'open');
+        v_candle_high := parse_tbank_quotation(v_candle->'high');
+        v_candle_low := parse_tbank_quotation(v_candle->'low');
+        v_candle_close := parse_tbank_quotation(v_candle->'close');
+        v_candle_volume := COALESCE(parse_tbank_quotation(v_candle->'volume'), (v_candle->>'volume')::NUMERIC);
 
         -- Вставляем свечу через процедуру insert_candle (UPSERT)
         CALL insert_candle(
@@ -2574,15 +1930,7 @@ BEGIN
         v_engine, v_market, v_board, v_prefix,
         p_date_from::TEXT,
         p_date_to::TEXT,
-        CASE v_tf_name
-            WHEN 'M1' THEN '1'
-            WHEN 'M10' THEN '10'
-            WHEN 'M60' THEN '60'
-            WHEN 'D1' THEN '24'
-            WHEN 'W1' THEN '7'
-            WHEN 'MN1' THEN '31'
-            ELSE '1'
-        END
+        get_moex_candle_interval(v_tf_name)::TEXT
     );
 
     RAISE NOTICE 'MOEX API URL: %', v_api_url;
@@ -2756,7 +2104,7 @@ LANGUAGE plpgsql AS $$
 DECLARE
     v_tf RECORD;
 BEGIN
-    FOR v_tf IN SELECT id FROM timeframes WHERE is_active IS DISTINCT FROM FALSE ORDER BY sec
+    FOR v_tf IN SELECT id FROM timeframes WHERE COALESCE(is_active, TRUE) = TRUE ORDER BY sec
     LOOP
         BEGIN
             CALL load_prices_http(p_security_id, v_tf.id, p_date_from, p_date_to);
@@ -2793,473 +2141,5 @@ COMMENT ON PROCEDURE load_all_timeframes_http(INTEGER, DATE, DATE) IS
 
 
 -- ============================================
--- ПРИМЕРЫ ЗАПРОСОВ (SQL EXAMPLES)
--- ============================================
 
--- ============================================
--- 1. ЦЕНЫ (prices)
--- ============================================
-
--- 1.1 Получить все свечи Сбербанка (SBER, id=1) на M5 (id=4) за неделю
-SELECT 
-    p.dt,
-    p.open_price,
-    p.high_price,
-    p.low_price,
-    p.close_price,
-    p.volume
-FROM prices p
-WHERE p.security_id = 1
-  AND p.timeframe_id = 4
-  AND p.dt BETWEEN '2026-06-17' AND '2026-06-24'
-ORDER BY p.dt;
-
--- 1.2 Получить последнюю свечу по каждой бумаге на D1
-SELECT DISTINCT ON (p.security_id)
-    s.name AS security_name,
-    sp.prefix,
-    p.dt,
-    p.close_price,
-    p.volume
-FROM prices p
-JOIN securities s ON p.security_id = s.id
-JOIN security_prefixes sp ON s.id = sp.security_id AND sp.exchange_id = 1
-WHERE p.timeframe_id = 15  -- D1
-ORDER BY p.security_id, p.dt DESC;
-
--- 1.3 Получить диапазон цен (мин/макс) за период
-SELECT 
-    s.name AS security_name,
-    MIN(p.low_price) AS min_price,
-    MAX(p.high_price) AS max_price,
-    AVG(p.close_price) AS avg_close,
-    SUM(p.volume) AS total_volume
-FROM prices p
-JOIN securities s ON p.security_id = s.id
-WHERE p.security_id = 3   -- GAZP
-  AND p.timeframe_id = 15 -- D1
-  AND p.dt BETWEEN '2026-06-01' AND '2026-06-24'
-GROUP BY s.name;
-
--- 1.4 Сравнение цен акции и фьючерса на неё
-SELECT 
-    p_stock.dt,
-    p_stock.close_price AS stock_price,
-    p_fut.close_price AS futures_price,
-    p_fut.close_price - p_stock.close_price AS basis
-FROM prices p_stock
-JOIN prices p_fut ON p_stock.dt = p_fut.dt AND p_stock.timeframe_id = p_fut.timeframe_id
-WHERE p_stock.security_id = 1   -- SBER акция
-  AND p_fut.security_id = 46    -- SBRF фьючерс
-  AND p_stock.timeframe_id = 4  -- M5
-  AND p_stock.dt >= '2026-06-24'
-ORDER BY p_stock.dt;
-
--- ============================================
--- 2. ИНДИКАТОРЫ (indicators + indicator_values)
--- ============================================
-
--- 2.1 Получить все линии RSI для Сбербанка на M5 за сегодня
-SELECT 
-    i.code AS indicator,
-    ivt.code AS line_code,
-    ivt.name AS line_name,
-    iv.dt,
-    iv.value,
-    iv.is_signal,
-    iv.signal_type
-FROM indicator_values iv
-JOIN indicators i ON iv.indicator_id = i.id
-JOIN indicator_value_types ivt ON iv.indicator_value_type_id = ivt.id
-WHERE i.code = 'RSI'
-  AND iv.security_id = 1      -- SBER
-  AND iv.timeframe_id = 4     -- M5
-  AND iv.dt >= '2026-06-24'
-ORDER BY iv.dt, ivt.display_order;
-
--- 2.2 Получить только основные линии (без порогов) MACD
-SELECT 
-    s.name AS security,
-    tf.tf AS timeframe,
-    iv.dt,
-    MAX(CASE WHEN ivt.code = 'MACD' THEN iv.value END) AS macd_line,
-    MAX(CASE WHEN ivt.code = 'SIGNAL' THEN iv.value END) AS signal_line,
-    MAX(CASE WHEN ivt.code = 'HISTOGRAM' THEN iv.value END) AS histogram
-FROM indicator_values iv
-JOIN indicator_value_types ivt ON iv.indicator_value_type_id = ivt.id
-JOIN securities s ON iv.security_id = s.id
-JOIN timeframes tf ON iv.timeframe_id = tf.id
-WHERE iv.indicator_id = 5       -- MACD
-  AND iv.security_id = 1        -- SBER
-  AND iv.timeframe_id = 4     -- M5
-  AND iv.dt >= '2026-06-24'
-GROUP BY s.name, tf.tf, iv.dt
-ORDER BY iv.dt;
-
--- 2.3 Сигналы перекупленности/перепроданности (Stochastic)
-SELECT 
-    s.name AS security,
-    iv.dt,
-    MAX(CASE WHEN ivt.code = 'K' THEN iv.value END) AS k_line,
-    MAX(CASE WHEN ivt.code = 'D' THEN iv.value END) AS d_line,
-    CASE 
-        WHEN MAX(CASE WHEN ivt.code = 'K' THEN iv.value END) > 80 THEN 'OVERBOUGHT'
-        WHEN MAX(CASE WHEN ivt.code = 'K' THEN iv.value END) < 20 THEN 'OVERSOLD'
-        ELSE 'NEUTRAL'
-    END AS signal
-FROM indicator_values iv
-JOIN indicator_value_types ivt ON iv.indicator_value_type_id = ivt.id
-JOIN securities s ON iv.security_id = s.id
-WHERE iv.indicator_id = 6       -- STOCH
-  AND iv.security_id = 1        -- SBER
-  AND iv.timeframe_id = 4       -- M5
-  AND iv.dt >= '2026-06-24'
-GROUP BY s.name, iv.dt
-HAVING MAX(CASE WHEN ivt.code = 'K' THEN iv.value END) IS NOT NULL
-ORDER BY iv.dt;
-
--- 2.4 Все значения Bollinger Bands для Газпрома
-SELECT 
-    iv.dt,
-    MAX(CASE WHEN ivt.code = 'UPPER' THEN iv.value END) AS upper_band,
-    MAX(CASE WHEN ivt.code = 'MIDDLE' THEN iv.value END) AS middle_band,
-    MAX(CASE WHEN ivt.code = 'LOWER' THEN iv.value END) AS lower_band,
-    MAX(CASE WHEN ivt.code = 'BANDWIDTH' THEN iv.value END) AS bandwidth
-FROM indicator_values iv
-JOIN indicator_value_types ivt ON iv.indicator_value_type_id = ivt.id
-WHERE iv.indicator_id = 7       -- BB
-  AND iv.security_id = 3        -- GAZP
-  AND iv.timeframe_id = 15    -- D1
-  AND iv.dt >= '2026-06-01'
-GROUP BY iv.dt
-ORDER BY iv.dt;
-
--- 2.5 Сравнение двух индикаторов (RSI + MACD) — поиск дивергенций
-WITH rsi_vals AS (
-    SELECT iv.dt, iv.value AS rsi
-    FROM indicator_values iv
-    JOIN indicator_value_types ivt ON iv.indicator_value_type_id = ivt.id
-    WHERE iv.indicator_id = 4 AND ivt.code = 'RSI'
-      AND iv.security_id = 1 AND iv.timeframe_id = 15
-),
-macd_vals AS (
-    SELECT iv.dt, iv.value AS macd
-    FROM indicator_values iv
-    JOIN indicator_value_types ivt ON iv.indicator_value_type_id = ivt.id
-    WHERE iv.indicator_id = 5 AND ivt.code = 'MACD'
-      AND iv.security_id = 1 AND iv.timeframe_id = 15
-)
-SELECT 
-    r.dt,
-    r.rsi,
-    m.macd,
-    p.close_price,
-    CASE 
-        WHEN r.rsi > 70 AND m.macd < 0 THEN 'BEARISH_DIVERGENCE'
-        WHEN r.rsi < 30 AND m.macd > 0 THEN 'BULLISH_DIVERGENCE'
-        ELSE 'NO_DIVERGENCE'
-    END AS divergence_signal
-FROM rsi_vals r
-JOIN macd_vals m ON r.dt = m.dt
-JOIN prices p ON p.security_id = 1 AND p.timeframe_id = 15 AND p.dt = r.dt
-WHERE r.dt >= '2026-06-01'
-ORDER BY r.dt;
-
--- ============================================
--- 3. БУМАГИ И ПРЕФИКСЫ (securities + security_prefixes)
--- ============================================
-
--- 3.1 Все акции с их тикерами на ММВБ
-SELECT 
-    s.id,
-    s.name,
-    st.name AS type_name,
-    st.note AS type_ru,
-    sp.prefix AS ticker_moex
-FROM securities s
-JOIN security_types st ON s.security_type_id = st.id
-LEFT JOIN security_prefixes sp ON s.id = sp.security_id AND sp.exchange_id = 1
-WHERE st.name = 'Stock'
-ORDER BY s.name;
-
--- 3.2 Все фьючерсы с тикерами
-SELECT 
-    s.id,
-    s.name,
-    sp.prefix AS base_ticker,
-    st.note AS type_ru
-FROM securities s
-JOIN security_types st ON s.security_type_id = st.id
-LEFT JOIN security_prefixes sp ON s.id = sp.security_id AND sp.exchange_id = 1
-WHERE st.name = 'Futures'
-ORDER BY s.name;
-
--- 3.3 Найти бумагу по тикеру
-SELECT 
-    s.id,
-    s.name,
-    sp.prefix,
-    e.name AS exchange
-FROM securities s
-JOIN security_prefixes sp ON s.id = sp.security_id
-JOIN exchanges e ON sp.exchange_id = e.id
-WHERE sp.prefix = 'SBER';
-
--- ============================================
--- 4. ПАРАМЕТРЫ (parameter_types + parameter_sets + parameter_values)
--- ============================================
-
--- 4.1 Все типы параметров
-SELECT 
-    pt.id,
-    pt.name,
-    pt.short_name,
-    pt.value_type,
-    pt.is_control,
-    pt.default_value,
-    pt.min_value,
-    pt.max_value
-FROM parameter_types pt
-ORDER BY pt.is_control DESC, pt.name;
-
--- 4.2 Значения параметров в конкретном сете
-SELECT 
-    ps.name AS set_name,
-    pt.name AS param_name,
-    pt.short_name,
-    pv.value,
-    pv.record_date
-FROM parameter_values pv
-JOIN parameter_sets ps ON pv.parameter_set_id = ps.id
-JOIN parameter_types pt ON pv.parameter_type_id = pt.id
-WHERE ps.name = 'Default'
-ORDER BY pt.name;
-
--- 4.3 Управляющие параметры (is_control = TRUE)
-SELECT 
-    pt.name,
-    pt.short_name,
-    pt.description,
-    pt.default_value
-FROM parameter_types pt
-WHERE pt.is_control = TRUE
-ORDER BY pt.name;
-
--- ============================================
--- 5. БРОКЕРЫ И СЧЕТА (brokers + accounts)
--- ============================================
-
--- 5.1 Все брокеры и их счета
-SELECT 
-    b.code AS broker_code,
-    b.name AS broker_name,
-    a.account_code,
-    a.name AS account_name,
-    a.account_type,
-    a.is_efficient,
-    CASE WHEN a.token_encrypted IS NOT NULL THEN 'YES' ELSE 'NO' END AS has_token
-FROM brokers b
-LEFT JOIN accounts a ON b.id = a.broker_id
-ORDER BY b.code, a.account_code;
-
--- 5.2 Только активные счета с токенами
-SELECT 
-    b.name AS broker,
-    a.account_code,
-    a.name,
-    a.is_efficient,
-    a.created_at
-FROM accounts a
-JOIN brokers b ON a.broker_id = b.id
-WHERE a.is_active = TRUE
-  AND a.token_encrypted IS NOT NULL;
-
--- ============================================
--- 6. ЛОГИКИ (logics + logics_detail)
--- ============================================
-
--- 6.1 Все логики с деталями
-SELECT 
-    l.name AS logic_name,
-    ld.formula,
-    s.name AS side,
-    a.name AS action
-FROM logics l
-JOIN logics_detail ld ON l.name = ld.logic_name
-JOIN sides s ON ld.side_id = s.id
-JOIN actions a ON ld.action_id = a.id
-ORDER BY l.name;
-
--- 6.2 Логики на открытие лонга
-SELECT 
-    l.name,
-    ld.formula
-FROM logics l
-JOIN logics_detail ld ON l.name = ld.logic_name
-JOIN sides s ON ld.side_id = s.id
-JOIN actions a ON ld.action_id = a.id
-WHERE s.name = 'Open' AND a.name = 'Long';
-
--- ============================================
--- 7. КОМПЛЕКСНЫЕ ЗАПРОСЫ
--- ============================================
-
--- 7.1 Полная картина: цена + индикаторы для одной бумаги
-WITH price_data AS (
-    SELECT dt, close_price, volume
-    FROM prices
-    WHERE security_id = 1 AND timeframe_id = 4
-      AND dt >= '2026-06-24'
-),
-rsi_data AS (
-    SELECT iv.dt, iv.value AS rsi
-    FROM indicator_values iv
-    JOIN indicator_value_types ivt ON iv.indicator_value_type_id = ivt.id
-    WHERE iv.indicator_id = 4 AND ivt.code = 'RSI'
-      AND iv.security_id = 1 AND iv.timeframe_id = 4
-),
-macd_data AS (
-    SELECT iv.dt, iv.value AS macd
-    FROM indicator_values iv
-    JOIN indicator_value_types ivt ON iv.indicator_value_type_id = ivt.id
-    WHERE iv.indicator_id = 5 AND ivt.code = 'MACD'
-      AND iv.security_id = 1 AND iv.timeframe_id = 4
-)
-SELECT 
-    p.dt,
-    p.close_price,
-    p.volume,
-    r.rsi,
-    m.macd,
-    CASE 
-        WHEN r.rsi < 30 AND m.macd > 0 THEN 'STRONG_BUY'
-        WHEN r.rsi > 70 AND m.macd < 0 THEN 'STRONG_SELL'
-        WHEN r.rsi < 30 THEN 'BUY'
-        WHEN r.rsi > 70 THEN 'SELL'
-        ELSE 'HOLD'
-    END AS signal
-FROM price_data p
-LEFT JOIN rsi_data r ON p.dt = r.dt
-LEFT JOIN macd_data m ON p.dt = m.dt
-ORDER BY p.dt;
-
--- 7.2 Скринер: найти все бумаги где RSI < 30 (перепроданность)
-SELECT 
-    s.name AS security,
-    sp.prefix AS ticker,
-    tf.tf AS timeframe,
-    iv.dt,
-    iv.value AS rsi_value
-FROM indicator_values iv
-JOIN indicator_value_types ivt ON iv.indicator_value_type_id = ivt.id
-JOIN securities s ON iv.security_id = s.id
-JOIN security_prefixes sp ON s.id = sp.security_id AND sp.exchange_id = 1
-JOIN timeframes tf ON iv.timeframe_id = tf.id
-WHERE iv.indicator_id = 4
-  AND ivt.code = 'RSI'
-  AND iv.value < 30
-  AND iv.dt = (SELECT MAX(dt) FROM indicator_values WHERE indicator_id = 4 AND indicator_value_type_id = ivt.id)
-ORDER BY iv.value ASC;
-
--- 7.3 Сравнение таймфреймов: цена на M5 vs H1 vs D1
-SELECT 
-    tf.tf,
-    p.dt,
-    p.open_price,
-    p.high_price,
-    p.low_price,
-    p.close_price,
-    p.volume
-FROM prices p
-JOIN timeframes tf ON p.timeframe_id = tf.id
-WHERE p.security_id = 1  -- SBER
-  AND p.dt >= '2026-06-24'
-  AND tf.tf IN ('M5', 'H1', 'D1')
-ORDER BY p.dt, tf.sec;
-
--- 7.4 Объемный анализ: аномальные объемы (более 2σ от среднего)
-WITH volume_stats AS (
-    SELECT 
-        security_id,
-        timeframe_id,
-        AVG(volume) AS avg_vol,
-        STDDEV(volume) AS stddev_vol
-    FROM prices
-    WHERE dt >= '2026-06-01'
-    GROUP BY security_id, timeframe_id
-)
-SELECT 
-    s.name,
-    p.dt,
-    p.volume,
-    vs.avg_vol,
-    (p.volume - vs.avg_vol) / NULLIF(vs.stddev_vol, 0) AS z_score
-FROM prices p
-JOIN volume_stats vs ON p.security_id = vs.security_id AND p.timeframe_id = vs.timeframe_id
-JOIN securities s ON p.security_id = s.id
-WHERE p.timeframe_id = 4  -- M5
-  AND p.dt >= '2026-06-24'
-  AND p.volume > vs.avg_vol + 2 * vs.stddev_vol
-ORDER BY z_score DESC
-LIMIT 20;
-
--- ============================================
--- 8. АДМИНИСТРАТИВНЫЕ ЗАПРОСЫ
--- ============================================
-
--- 8.1 Статистика загрузки цен
-SELECT 
-    source,
-    COUNT(*) AS load_count,
-    SUM(records_loaded) AS total_records,
-    MIN(loaded_at) AS first_load,
-    MAX(loaded_at) AS last_load
-FROM price_load_log
-GROUP BY source
-ORDER BY source;
-
--- 8.2 Последние ошибки загрузки
-SELECT 
-    s.name AS security,
-    pll.date_from,
-    pll.date_to,
-    pll.source,
-    pll.error_message,
-    pll.loaded_at
-FROM price_load_log pll
-JOIN securities s ON pll.security_id = s.id
-WHERE pll.error_message IS NOT NULL
-ORDER BY pll.loaded_at DESC
-LIMIT 10;
-
--- 8.3 Количество свечей по бумагам и таймфреймам
-SELECT 
-    s.name,
-    tf.tf AS timeframe,
-    COUNT(*) AS candle_count,
-    MIN(p.dt) AS first_candle,
-    MAX(p.dt) AS last_candle
-FROM prices p
-JOIN securities s ON p.security_id = s.id
-JOIN timeframes tf ON p.timeframe_id = tf.id
-GROUP BY s.name, tf.tf
-ORDER BY s.name, tf.sec;
-
--- 8.4 Проверка целостности: дубли свечей (должно быть 0)
-SELECT 
-    security_id,
-    timeframe_id,
-    dt,
-    COUNT(*) AS duplicate_count
-FROM prices
-GROUP BY security_id, timeframe_id, dt
-HAVING COUNT(*) > 1;
-
--- 8.5 Размер таблиц
-SELECT 
-    schemaname,
-    tablename,
-    pg_size_pretty(pg_total_relation_size(schemaname||'.'||tablename)) AS size
-FROM pg_tables
-WHERE schemaname = 'public'
-ORDER BY pg_total_relation_size(schemaname||'.'||tablename) DESC;
+-- ===== КОНЕЦ ОПЦИОНАЛЬНОГО БЛОКА HTTP =====
