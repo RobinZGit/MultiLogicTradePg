@@ -4,12 +4,10 @@ import { firstValueFrom } from 'rxjs';
 
 export interface AppConfig {
   apiUrl: string;
-  finrespUrl: string;
 }
 
 const DEFAULT_CONFIG: AppConfig = {
   apiUrl: 'http://localhost:3000/api',
-  finrespUrl: 'https://robinzgit.github.io/MultiLogicTradeA/finresp',
 };
 
 @Injectable({ providedIn: 'root' })
@@ -31,10 +29,6 @@ export class AppConfigService {
 
   get apiUrl(): string {
     return this.config.apiUrl.replace(/\/$/, '');
-  }
-
-  get finrespUrl(): string {
-    return this.config.finrespUrl;
   }
 }
 

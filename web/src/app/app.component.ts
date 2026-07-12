@@ -1,7 +1,6 @@
 import { Component } from '@angular/core';
 import { RouterOutlet } from '@angular/router';
 import { DbSchemaPanelComponent } from './db-schema/db-schema-panel.component';
-import { AppConfigService } from './services/app-config.service';
 
 @Component({
   selector: 'app-root',
@@ -13,24 +12,21 @@ import { AppConfigService } from './services/app-config.service';
         <strong>MultiLogic Trade</strong>
         <span>PostgreSQL + Angular</span>
       </div>
-      <nav class="app-nav">
-        <a [href]="finrespUrl" target="_blank" rel="noopener" class="nav-link">FINRESP</a>
-        <button
-          type="button"
-          class="gear-btn"
-          title="Структура базы данных"
-          aria-label="Структура базы данных"
-          (click)="openSchema()"
-        >
-          <svg class="gear-icon" viewBox="0 0 24 24" width="32" height="32" aria-hidden="true">
-            <path
-              fill="#ffffff"
-              d="M19.14 12.94c.04-.31.06-.63.06-.94 0-.31-.02-.63-.06-.94l2.03-1.58a.49.49 0 0 0 .12-.61l-1.92-3.32a.488.488 0 0 0-.59-.22l-2.39.96a7.02 7.02 0 0 0-1.63-.94l-.36-2.54a.484.484 0 0 0-.48-.41h-3.84c-.24 0-.43.17-.47.41l-.36 2.54a7.02 7.02 0 0 0-1.63.94l-2.39-.96c-.22-.08-.47 0-.59.22L2.74 8.87c-.12.21-.08.47.12.61l2.03 1.58c-.04.31-.06.63-.06.94s.02.63.06.94l-2.03 1.58a.49.49 0 0 0-.12.61l1.92 3.32c.12.22.37.29.59.22l2.39-.96c.5.38 1.03.7 1.63.94l.36 2.54c.05.24.24.41.48.41h3.84c.24 0 .44-.17.47-.41l.36-2.54c.6-.24 1.13-.56 1.63-.94l2.39.96c.22.08.47 0 .59-.22l1.92-3.32c.12-.22.07-.47-.12-.61l-2.01-1.58zM12 15.6A3.6 3.6 0 1 1 12 8.4a3.6 3.6 0 0 1 0 7.2z"
-            />
-            <circle cx="12" cy="12" r="3.6" fill="#111827" />
-          </svg>
-        </button>
-      </nav>
+      <button
+        type="button"
+        class="gear-btn"
+        title="Структура базы данных"
+        aria-label="Структура базы данных"
+        (click)="openSchema()"
+      >
+        <svg class="gear-icon" viewBox="0 0 24 24" width="32" height="32" aria-hidden="true">
+          <path
+            fill="#ffffff"
+            d="M19.14 12.94c.04-.31.06-.63.06-.94 0-.31-.02-.63-.06-.94l2.03-1.58a.49.49 0 0 0 .12-.61l-1.92-3.32a.488.488 0 0 0-.59-.22l-2.39.96a7.02 7.02 0 0 0-1.63-.94l-.36-2.54a.484.484 0 0 0-.48-.41h-3.84c-.24 0-.43.17-.47.41l-.36 2.54a7.02 7.02 0 0 0-1.63.94l-2.39-.96c-.22-.08-.47 0-.59.22L2.74 8.87c-.12.21-.08.47.12.61l2.03 1.58c-.04.31-.06.63-.06.94s.02.63.06.94l-2.03 1.58a.49.49 0 0 0-.12.61l1.92 3.32c.12.22.37.29.59.22l2.39-.96c.5.38 1.03.7 1.63.94l.36 2.54c.05.24.24.41.48.41h3.84c.24 0 .44-.17.47-.41l.36-2.54c.6-.24 1.13-.56 1.63-.94l2.39.96c.22.08.47 0 .59-.22l1.92-3.32c.12-.22.07-.47-.12-.61l-2.01-1.58zM12 15.6A3.6 3.6 0 1 1 12 8.4a3.6 3.6 0 0 1 0 7.2z"
+          />
+          <circle cx="12" cy="12" r="3.6" fill="#111827" />
+        </svg>
+      </button>
     </header>
     <main>
       <router-outlet />
@@ -56,24 +52,6 @@ import { AppConfigService } from './services/app-config.service';
       .app-bar span {
         color: #9ca3af;
         font-size: 0.9rem;
-      }
-      .app-nav {
-        display: flex;
-        align-items: center;
-        gap: 0.75rem;
-      }
-      .nav-link {
-        color: #93c5fd;
-        text-decoration: none;
-        font-size: 0.85rem;
-        font-weight: 600;
-        padding: 0.35rem 0.65rem;
-        border-radius: 6px;
-        border: 1px solid #374151;
-      }
-      .nav-link:hover {
-        background: rgba(255, 255, 255, 0.08);
-        color: #fff;
       }
       .gear-btn {
         display: inline-flex;
@@ -102,12 +80,6 @@ import { AppConfigService } from './services/app-config.service';
 })
 export class AppComponent {
   schemaOpen = false;
-
-  constructor(private readonly appConfig: AppConfigService) {}
-
-  get finrespUrl(): string {
-    return this.appConfig.finrespUrl;
-  }
 
   openSchema(): void {
     this.schemaOpen = true;

@@ -44,7 +44,7 @@ psql -U postgres -d multilogictrade -f 02_multilogictrade_functions_and_procedur
 **GitHub Pages (только UI, без API):**  
 https://robinzgit.github.io/MultiLogicTradePg/  
 
-Рядом с [FINRESP](https://robinzgit.github.io/MultiLogicTradeA/finresp) — ссылка **FINRESP** в шапке приложения.
+Ссылка также на [странице документации OsEngine](https://robinzgit.github.io/OsEngine/).
 
 Если API недоступен (типично на GitHub Pages), на форме показывается сообщение о невозможности подключения к БД.  
 URL API настраивается в `web/src/assets/app-config.json`.
