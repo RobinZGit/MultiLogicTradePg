@@ -3,7 +3,20 @@
 .SYNOPSIS
   Выполнение SQL-скриптов MultiLogicTrade на локальном PostgreSQL 15.
 
+.DESCRIPTION
+  Последовательность развёртывания (см. также комментарии в SQL-файлах):
+
+    Шаг 0  00_create_database.sql              БД postgres
+    Шаг 1  01_multilogictrade_tables_and_data.sql   multilogictrade (расширения не нужны)
+    Шаг 2a install_pgsql_http.ps1              один раз, от администратора (перед HTTP-блоком)
+    Шаг 2b 02_multilogictrade_functions_and_procedures.sql
+    Шаг 3  03_multilogictrade_examples.sql     необязательно (-IncludeExamples)
+
+  Если шаг 2 упал на CREATE EXTENSION http — установите pgsql-http (шаг 2a)
+  и повторите:  .\scripts\run_multilogictrade.ps1 -Steps 2
+
 .EXAMPLE
+  $env:PGPASSWORD = '<пароль postgres>'
   .\scripts\run_multilogictrade.ps1
   .\scripts\run_multilogictrade.ps1 -Steps 0,1,2
   .\scripts\run_multilogictrade.ps1 -IncludeExamples

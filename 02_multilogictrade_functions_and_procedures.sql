@@ -3,12 +3,69 @@
 -- Версия: v12 (идемпотентный запуск)
 -- ============================================
 -- Подключение: база multilogictrade
--- Предварительно выполните: 01_multilogictrade_tables_and_data.sql
+-- Предварительно выполните: 00 → 01
 -- Можно выполнять многократно (CREATE OR REPLACE).
 --
--- Для HTTP-загрузки цен нужно расширение pgsql-http:
---   CREATE EXTENSION IF NOT EXISTS http;
--- Если расширение не установлено — закомментируйте блок «HTTP-ЗАГРУЗКА» в конце файла.
+-- ================================================================
+-- СТРУКТУРА ФАЙЛА
+-- ================================================================
+--
+-- Часть A (этот файл, начало → строка «HTTP-ЗАГРУЗКА»):
+--   parse_tbank_quotation, insert_candle, calculate_indicator,
+--   load_prices_from_tbank/moex (заглушки без HTTP) и др.
+--   Расширения НЕ требуются.
+--
+-- Часть B (блок «HTTP-ЗАГРУЗКА» в конце файла):
+--   CREATE EXTENSION http;
+--   load_prices_from_tbank_http, load_prices_from_moex_http,
+--   load_prices_http, load_prices_batch_http, load_all_timeframes_http
+--   Требует предварительной установки pgsql-http НА СЕРВЕРЕ PostgreSQL.
+--
+-- Если pgsql-http ещё не установлен:
+--   • выполните только часть A (остановитесь перед CREATE EXTENSION http), ИЛИ
+--   • установите расширение (ниже) и запустите весь файл целиком.
+--
+-- ================================================================
+-- УСТАНОВКА pgsql-http — WINDOWS (PostgreSQL 15, один раз на машине)
+-- ================================================================
+--
+-- 1. Скачать готовые бинарники для PG 15 x64:
+--      https://www.postgresonline.com/downloads/pg15http_w64.zip
+--
+-- 2. Распаковать в каталог проекта:
+--      _tmp_http_ext\pg15http_w64\
+--    (должны появиться lib\http.dll, share\extension\http*, bin\*.dll)
+--
+-- 3. Скопировать файлы в установку PostgreSQL (нужны права администратора):
+--      scripts\install_pgsql_http.ps1
+--    Запуск: PowerShell → правой кнопкой → «Запуск от имени администратора»
+--
+--    Скрипт install_pgsql_http.ps1 выполняет:
+--      Copy-Item ...\lib\http.dll          → C:\Program Files\PostgreSQL\15\lib\
+--      Copy-Item ...\share\extension\http* → C:\Program Files\PostgreSQL\15\share\extension\
+--      Copy-Item ...\bin\*.dll             → C:\Program Files\PostgreSQL\15\bin\
+--      Copy-Item ...\ssl\certs\*           → C:\Program Files\PostgreSQL\15\ssl\certs\
+--      Restart-Service postgresql-x64-15
+--
+-- 4. Проверка на диске:
+--      Test-Path "C:\Program Files\PostgreSQL\15\lib\http.dll"
+--      Test-Path "C:\Program Files\PostgreSQL\15\share\extension\http.control"
+--
+-- 5. Включить расширение в базе (выполняется ниже в блоке HTTP, или вручную):
+--      CREATE EXTENSION IF NOT EXISTS http;
+--
+-- 6. Проверка в multilogictrade:
+--      SELECT extname, extversion FROM pg_extension WHERE extname = 'http';
+--      SELECT status FROM http_get('https://httpbin.org/get');
+--    При ошибке SSL-сертификата:
+--      SELECT http_set_curlopt('CURLOPT_CAINFO',
+--        'C:/Program Files/PostgreSQL/15/ssl/certs/curl-ca-bundle.crt');
+--
+-- 7. Повторно выполнить этот файл (02), если часть B не создалась с первого раза:
+--      .\scripts\run_multilogictrade.ps1 -Steps 2
+--
+-- Linux / macOS: см. комментарии перед блоком «HTTP-ЗАГРУЗКА» (сборка из git).
+-- ================================================================
 -- ============================================
 
 -- ============================================
@@ -798,7 +855,7 @@ BEGIN
 
         -- Загружаем пороговые значения из indicator_value_types
         -- OVERBOUGHT (по умолчанию 70), OVERSOLD (по умолчанию 30), NEUTRAL (50)
-        FOR v_value_type_code IN ('RSI', 'OVERBOUGHT', 'OVERSOLD', 'NEUTRAL')
+        FOREACH v_value_type_code IN ARRAY ARRAY['RSI', 'OVERBOUGHT', 'OVERSOLD', 'NEUTRAL']::VARCHAR(20)[]
         LOOP
             SELECT id INTO v_value_type_id
             FROM indicator_value_types
@@ -1534,91 +1591,79 @@ COMMENT ON PROCEDURE calculate_indicators_batch(INTEGER[], INTEGER, DATE, DATE, 
 
 
 -- ============================================
--- ЧАСТЬ 2: УСТАНОВКА РАСШИРЕНИЯ pgsql-http
+-- ЧАСТЬ B: HTTP-ЗАГРУЗКА (pgsql-http)
 -- ============================================
 --
--- ВНИМАНИЕ: Для выполнения HTTP-запросов из PostgreSQL используется
--- расширение pgsql-http (обертка над libcurl).
+-- СТОП. Перед выполнением команд ниже (CREATE EXTENSION и процедуры *_http)
+-- расширение pgsql-http должно быть установлено на сервере PostgreSQL.
+-- Краткая инструкция — в заголовке этого файла (шаг 2, раздел WINDOWS).
 --
 -- ================================================================
--- ИНСТРУКЦИЯ ПО УСТАНОВКЕ pgsql-http (выполнить ОДИН РАЗ на сервере)
+-- WINDOWS — установка pgsql-http (PostgreSQL 15, один раз)
 -- ================================================================
 --
--- ШАГ 1: Установить системные зависимости
--- ---------------------------------------------------------------
+--   1) Скачать:  https://www.postgresonline.com/downloads/pg15http_w64.zip
+--   2) Распаковать в:  <репозиторий>\_tmp_http_ext\pg15http_w64\
+--   3) От администратора выполнить:
+--        .\scripts\install_pgsql_http.ps1
+--      (копирует http.dll, http--*.sql, зависимости libcurl, перезапускает службу)
+--   4) Проверить файлы:
+--        C:\Program Files\PostgreSQL\15\lib\http.dll
+--        C:\Program Files\PostgreSQL\15\share\extension\http.control
+--   5) Далее — команды CREATE EXTENSION и процедуры в этом блоке.
+--
+-- ================================================================
+-- LINUX / macOS — установка pgsql-http (сборка из исходников)
+-- ================================================================
+--
+-- ШАГ 1: системные зависимости
 --   Debian/Ubuntu:
 --     sudo apt-get update
---     sudo apt-get install -y libcurl4-openssl-dev
---     sudo apt-get install -y postgresql-server-dev-XX
---       (где XX -- версия PostgreSQL, например 15, 16)
---
+--     sudo apt-get install -y libcurl4-openssl-dev postgresql-server-dev-15
 --   CentOS/RHEL/Fedora:
---     sudo yum install libcurl-devel
---     sudo yum install postgresql-devel
---
+--     sudo yum install libcurl-devel postgresql-devel
 --   macOS (Homebrew):
---     brew install curl
---     brew install postgresql
+--     brew install curl postgresql
 --
--- ШАГ 2: Скачать и собрать расширение
--- ---------------------------------------------------------------
+-- ШАГ 2: сборка
 --   cd /tmp
 --   git clone https://github.com/pramsey/pgsql-http.git
 --   cd pgsql-http
---   make
---   sudo make install
+--   make PG_CONFIG=/usr/lib/postgresql/15/bin/pg_config
+--   sudo make install PG_CONFIG=/usr/lib/postgresql/15/bin/pg_config
 --
---   Если make не находит pg_config -- укажите путь явно:
---     make PG_CONFIG=/usr/lib/postgresql/16/bin/pg_config
---     sudo make install PG_CONFIG=/usr/lib/postgresql/16/bin/pg_config
---
--- ШАГ 3: Проверить установку
--- ---------------------------------------------------------------
+-- ШАГ 3: проверка на диске
 --   ls -la $(pg_config --sharedir)/extension/http*
---   Должны появиться файлы: http.control, http--*.sql
 --
--- ШАГ 4: Включить расширение в базе данных
--- ---------------------------------------------------------------
---   psql -d multilogictrade -c "CREATE EXTENSION IF NOT EXISTS http;"
---
---   Или внутри psql:
---     \c multilogictrade
---     CREATE EXTENSION IF NOT EXISTS http;
---
--- ШАГ 5: Проверить работу
--- ---------------------------------------------------------------
---   SELECT http_get('https://httpbin.org/get');
---   Должен вернуться JSON-ответ с заголовками и телом.
+-- ШАГ 4–5: CREATE EXTENSION и тест — см. команды ниже в этом блоке.
 --
 -- ================================================================
--- НАСТРОЙКА БЕЗОПАСНОСТИ (ОПЦИОНАЛЬНО)
+-- ПРОВЕРКА ПОСЛЕ CREATE EXTENSION http
 -- ================================================================
+--   SELECT extname, extversion FROM pg_extension WHERE extname = 'http';
+--   SELECT status FROM http_get('https://httpbin.org/get');
 --
--- По умолчанию pgsql-http может обращаться к ЛЮБЫМ URL.
--- Для ограничения списка разрешенных URL:
---
+-- ================================================================
+-- БЕЗОПАСНОСТЬ (опционально)
+-- ================================================================
 --   ALTER SYSTEM SET http.whitelist = 'invest-public-api.tinkoff.ru,iss.moex.com';
 --   SELECT pg_reload_conf();
 --
--- Для полного запрета исходящих запросов:
---   ALTER SYSTEM SET http.blacklist = '*';
---   SELECT pg_reload_conf();
---
 -- ================================================================
--- УДАЛЕНИЕ РАСШИРЕНИЯ (если нужно переустановить)
+-- ПЕРЕУСТАНОВКА
 -- ================================================================
---
 --   DROP EXTENSION http CASCADE;
---   -- Затем удалить файлы:
---   sudo rm $(pg_config --sharedir)/extension/http*
---   sudo rm $(pg_config --libdir)/http.so
+--   Windows: удалить http.dll и http* из lib/ и share/extension/, перезапустить службу
+--   Linux:   sudo rm $(pg_config --sharedir)/extension/http* $(pg_config --libdir)/http.so
 --
 -- ================================================================
--- ============================================
+-- Ниже: CREATE EXTENSION + процедуры load_*_http (часть B скрипта 02).
+-- Если расширение не установлено — выполнение остановится на CREATE EXTENSION.
+-- Закомментируйте блок до метки «КОНЕЦ ОПЦИОНАЛЬНОГО БЛОКА HTTP» или установите pgsql-http.
+-- ================================================================
 
 -- ============================================
--- ОПЦИОНАЛЬНЫЙ БЛОК: HTTP-ЗАГРУЗКА (pgsql-http)
--- Если расширение не установлено — пропустите блок до «КОНЕЦ HTTP».
+-- HTTP-ЗАГРУЗКА: включение расширения в базе multilogictrade
 -- ============================================
 CREATE EXTENSION IF NOT EXISTS http;
 
@@ -2142,4 +2187,5 @@ COMMENT ON PROCEDURE load_all_timeframes_http(INTEGER, DATE, DATE) IS
 
 -- ============================================
 
--- ===== КОНЕЦ ОПЦИОНАЛЬНОГО БЛОКА HTTP =====
+-- ===== КОНЕЦ ОПЦИОНАЛЬНОГО БЛОКА HTTP (часть B скрипта 02) =====
+-- Дальше — необязательная справочная часть; при развёртывании можно не выполнять.
