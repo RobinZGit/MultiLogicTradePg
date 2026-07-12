@@ -1,11 +1,12 @@
 # MultiLogicTradePg — контекст проекта
 
 > Живой файл контекста для продолжения работы с разных устройств и в Cursor.  
-> **Обновлять при каждой выкладке и в конце значимой сессии** (см. `.cursor/rules/project-context.mdc`).  
+> **Обновлять перед каждым push в репозиторий** — см. `.cursor/rules/project-context.mdc`.
 > Включать **запросы пользователя текстом** (секция «Запросы пользователя»).
 
 **Репозиторий:** https://github.com/RobinZGit/MultiLogicTradePg  
-**Последнее обновление:** 2026-07-12 (logic_securities UI + assign queue fix)
+**Последнее обновление:** 2026-07-12 (logic_securities, assign queue, hotfix logics build)  
+**HEAD:** `b2c3bec` — https://github.com/RobinZGit/MultiLogicTradePg
 
 ---
 
@@ -25,7 +26,7 @@
 | Файл | Назначение |
 |------|------------|
 | `00_create_database.sql` | **DROP + CREATE** базы `multilogictrade` (полное пересоздание) |
-| `01_multilogictrade_tables_and_data.sql` | Таблицы, индексы, справочники (идемпотентно) |
+| `01_multilogictrade_tables_and_data.sql` | Таблицы, индексы, справочники (идемпотентно, **v16**) |
 | `02_multilogictrade_functions_and_procedures.sql` | Функции и процедуры (идемпотентно) |
 | `03_multilogictrade_examples.sql` | Примеры SELECT (необязательно) |
 
@@ -114,6 +115,7 @@
 28. **Fix hang при drag индикатора:** единый `syncGen` для assign/range/poll; блок full sync во время `mergeOnly` assign; отложенный full sync после assign; расширенное `app_tech_log` (poll start/ok, superseded, deferred).
 29. **Fix multi-indicator assign:** очередь POST+mergeOnly по одному на бумагу; debounced flush после серии assign.
 30. **Logics — ценные бумаги:** таблица `logic_securities`, блок «Ценные бумаги» (+ Добавить, picker акции/фьючерсы с «выбрать все», bulk add); все три подблока логики свёрнуты по умолчанию.
+31. **Hotfix logics build:** у `ExchangeRow` нет `is_active` — MOEX по имени; удалён дубликат `toggleStopsBlock`.
 
 ### Автотесты
 
@@ -160,11 +162,12 @@
 
 ## Заметки для агента
 
-- Коммиты и push — **по запросу** пользователя (2026-07-12: push после PACC + zero line).
-- При **выкладке** — **обязательно** обновить `docs/PROJECT_CONTEXT.md` и закоммитить вместе с кодом (правило `.cursor/rules/project-context.mdc`). Не пушить код без актуального контекста.
+- Коммиты и push — **по запросу** пользователя.
+- **Перед каждым push** — обновить `docs/PROJECT_CONTEXT.md` и включить в выкладку (правило `.cursor/rules/project-context.mdc`). Не считать выкладку завершённой без актуального контекста в `origin`.
 - Sergey — **2–3 устройства**; в начале сессии читать этот файл + `git log`.
 - Язык: русский (English note — только если пользователь пишет по-английски).
 - Пароль локального postgres часто: `111`.
+- Объём репо (2026-07-12): ~22–26 тыс. строк исходного кода без `package-lock.json`; ~41 тыс. с lock-файлом.
 
 ---
 
@@ -172,6 +175,7 @@
 
 | Дата | Суть |
 |------|------|
+| 2026-07-12 | правило: контекст обязателен перед каждым push; hotfix logics build |
 | 2026-07-12 | logic_securities + UI блок «Ценные бумаги» на logics |
 | 2026-07-12 | assign queue + debounced flush; fix multi-indicator drag hang |
 | 2026-07-12 | fix assign indicator sync race; tech log poll/superseded |
@@ -237,3 +241,4 @@
 31. «Зависание при добавлении индикатора с логированием — исправить гонку sync (gen, defer full sync, лог poll); в репо».
 32. «Снова зависание при добавлении нескольких индикаторов на бумагу — разбор app_tech_log; очередь assign + debounced flush; в репо».
 33. «На logics третий блок «Ценные бумаги»: таблица logic_securities, picker акции/фьючерсы с галочками и «выбрать все», bulk add; все три блока свёрнуты по умолчанию; контекст; в репо».
+34. «Контекст обновляй при каждой выкладке; запиши в правила проекта, что перед push нужно обновлять PROJECT_CONTEXT.md».
