@@ -8,7 +8,7 @@ PostgreSQL-схема торговой системы MultiLogic Trade: спра
 
 | Шаг | Файл | Описание |
 |-----|------|----------|
-| 0 | `00_create_database.sql` | Создание БД (один раз, от `postgres`) |
+| 0 | `00_create_database.sql` | **Удаление и создание** БД заново (подключение к `postgres`) |
 | 1 | `01_multilogictrade_tables_and_data.sql` | Таблицы, индексы, справочники |
 | 2 | `02_multilogictrade_functions_and_procedures.sql` | Функции и процедуры |
 | 3 | `03_multilogictrade_examples.sql` | Примеры SELECT (необязательно) |
@@ -17,9 +17,11 @@ PostgreSQL-схема торговой системы MultiLogic Trade: спра
 
 ### pgAdmin / DBeaver
 
-1. Создайте БД `multilogictrade` (или выполните `00_create_database.sql` из БД `postgres`).
+1. Выполните `00_create_database.sql` из БД **`postgres`** (удалит старую `multilogictrade`, если была).
 2. Подключитесь к `multilogictrade`.
 3. Выполните `01_...sql`, затем `02_...sql`.
+
+Контекст проекта и история решений: [`docs/PROJECT_CONTEXT.md`](docs/PROJECT_CONTEXT.md).
 
 ### psql
 
