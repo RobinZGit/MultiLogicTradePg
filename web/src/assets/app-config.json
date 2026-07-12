@@ -1,0 +1,4 @@
+{
+  "apiUrl": "http://localhost:3000/api",
+  "finrespUrl": "https://robinzgit.github.io/MultiLogicTradeA/finresp"
+}

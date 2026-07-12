@@ -32,6 +32,23 @@ psql -U postgres -d multilogictrade -f 01_multilogictrade_tables_and_data.sql
 psql -U postgres -d multilogictrade -f 02_multilogictrade_functions_and_procedures.sql
 ```
 
+## Веб-интерфейс (Angular + Express)
+
+| Компонент | Папка | Назначение |
+|-----------|-------|------------|
+| API | `api/` | Express → PostgreSQL |
+| UI | `web/` | Angular (страница logics, структура БД) |
+
+**Локальный запуск:** `web\MultiLogic_Trade_Progress_Start.bat`
+
+**GitHub Pages (только UI, без API):**  
+https://robinzgit.github.io/MultiLogicTradePg/  
+
+Рядом с [FINRESP](https://robinzgit.github.io/MultiLogicTradeA/finresp) — ссылка **FINRESP** в шапке приложения.
+
+Если API недоступен (типично на GitHub Pages), на форме показывается сообщение о невозможности подключения к БД.  
+URL API настраивается в `web/src/assets/app-config.json`.
+
 ## HTTP-загрузка цен
 
 В конце файла `02_...sql` — опциональный блок **pgsql-http** (T-Bank / MOEX).

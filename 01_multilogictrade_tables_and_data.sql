@@ -558,11 +558,30 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_indicator_values_unique
 
 -- ============================================
 -- Таблицы торговой логики (заготовка)
+-- logics — основная сущность: одна строка = одна торговля (трейд)
 -- ============================================
 CREATE TABLE IF NOT EXISTS logics (
     id SERIAL PRIMARY KEY,
-    name VARCHAR(100) NOT NULL UNIQUE
+    name VARCHAR(100) NOT NULL UNIQUE,
+    account_id INTEGER NOT NULL REFERENCES accounts(id) ON DELETE RESTRICT
 );
+
+-- Миграция v12+: account_id для уже существующей таблицы logics
+ALTER TABLE logics ADD COLUMN IF NOT EXISTS account_id INTEGER REFERENCES accounts(id) ON DELETE RESTRICT;
+
+CREATE INDEX IF NOT EXISTS idx_logics_account_id ON logics(account_id);
+
+COMMENT ON TABLE logics IS 'Торговые логики: одна строка — одна торговля (трейд); главная таблица, от которой смотрятся связанные данные';
+COMMENT ON COLUMN logics.name IS 'Уникальное имя логики';
+COMMENT ON COLUMN logics.account_id IS 'Счёт (accounts), на котором выполняется эта торговля';
+
+-- Пример: одна демо-логика на фейковом счёте T-Bank
+INSERT INTO logics (name, account_id)
+SELECT 'Demo RSI SBER M5', a.id
+FROM accounts a
+JOIN brokers b ON b.id = a.broker_id
+WHERE b.code = 'T-BANK' AND a.account_code = 'FAKE-EFF-001'
+ON CONFLICT (name) DO NOTHING;
 
 CREATE TABLE IF NOT EXISTS sides (
     id SERIAL PRIMARY KEY,

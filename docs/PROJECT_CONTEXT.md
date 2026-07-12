@@ -54,7 +54,9 @@
 
 ### Торговая логика (заготовка)
 
-- `logics`, `logics_detail` (формула + Open/Close + Long/Short) — **движок формул ещё не реализован**.
+- `logics` — **главная таблица**: одна строка = одна торговля (трейд); поле `account_id` → `accounts`;
+- `logics_detail` (формула + Open/Close + Long/Short) — **движок формул ещё не реализован**;
+- UI: планируется Angular в подпапке репо, API через Express (см. обсуждение 2026-07-12).
 
 ---
 
@@ -67,6 +69,8 @@
 5. **Локальный ПК (PostgreSQL 15):** выполнены `00` → `01` → `02`; база `multilogictrade` создана (20 таблиц, 54 бумаги, 16 процедур + 25 функций).
 6. Установлено расширение **pgsql-http** (`http` v1.6) — бинарники из `pg15http_w64.zip`, скрипт `scripts/install_pgsql_http.ps1`.
 7. Исправлен синтаксис `FOREACH` в `calculate_indicator` (RSI value types).
+8. **`logics.account_id`** → `accounts`; демо-строка `Demo RSI SBER M5` на фейковом счёте.
+9. **UI v1:** `api/` (Express) + `web/` (Angular 17) — страница таблицы `logics`; запуск `web\MultiLogic_Trade_Progress_Start.bat`.
 
 ---
 
@@ -76,7 +80,7 @@
 - [ ] Протестировать `load_prices_http` (нужен токен T-Bank в `accounts.token_encrypted`).
 - [ ] Влить реструктуризацию параметров индикаторов (черновик в `Indicators_parameters_todo`, v12+).
 - [ ] Реализовать движок `logics_detail.formula`.
-- [ ] Angular UI поверх БД.
+- [ ] Angular UI поверх БД — **старт:** страница logics (`web/`, `api/`).
 
 ---
 
@@ -120,3 +124,9 @@
 
 6. **Создать БД на локальном PostgreSQL**  
    «Пароль postgres — 111. Запусти скрипты, создай базу, таблицы, функции/процедуры. Если нужно расширение http — установи.»
+
+7. **logics + Angular + Express**  
+   «В logics добавить поле счёта… Продумать связь Angular ↔ PostgreSQL через Express…»
+
+8. **Первый экран Angular**  
+   «Сделай Angular для локального доступа к БД: одна страница logics, одна демо-строка, bat для запуска в web/.»
