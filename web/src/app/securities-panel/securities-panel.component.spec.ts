@@ -311,6 +311,7 @@ describe('SecuritiesPanelComponent', () => {
     );
 
     tick(500);
+    tick(1200);
     discardPeriodicTasks();
   }));
 
@@ -714,5 +715,154 @@ describe('SecuritiesPanelComponent', () => {
     );
     expect(securities.syncIndicatorSeries).not.toHaveBeenCalled();
     expect(component['deferredRangeSync'].has(29)).toBeTrue();
+  }));
+
+  it('queues rapid assign drops and runs POST one at a time', fakeAsync(() => {
+    const paccInd = {
+      id: 33,
+      code: 'PACC',
+      name: 'PACC',
+      script: null,
+      formula: 'pp * (1; -2; 1)',
+      is_custom: true,
+      description: null,
+      category: null,
+      is_active: true,
+      sig_trend_def: 'VALUE > 0',
+      sig_ct_def: 'VALUE < 0',
+      value_types: [
+        {
+          id: 1,
+          code: 'VALUE',
+          name: 'VALUE',
+          value_type: 'float',
+          is_threshold: false,
+          threshold_value: null,
+          display_order: 1,
+        },
+      ],
+    };
+    const rsiInd = {
+      id: 4,
+      code: 'RSI',
+      name: 'RSI',
+      script: null,
+      formula: 'rsi',
+      is_custom: false,
+      description: null,
+      category: null,
+      is_active: true,
+      sig_trend_def: '',
+      sig_ct_def: '',
+      value_types: [
+        {
+          id: 2,
+          code: 'RSI',
+          name: 'RSI',
+          value_type: 'float',
+          is_threshold: false,
+          threshold_value: null,
+          display_order: 1,
+        },
+      ],
+    };
+    component['indicatorsById'].set(33, paccInd);
+    component['indicatorsById'].set(4, rsiInd);
+    component.expandedSecurities.add(29);
+    component.charts.set(29, {
+      candles: [
+        {
+          dt: '2026-01-02T10:00:00',
+          open_price: 1,
+          high_price: 1,
+          low_price: 1,
+          close_price: 1,
+          volume: 1,
+        },
+      ],
+      loading: false,
+      loadingOlder: false,
+      hasMore: false,
+      error: null,
+    });
+    securities.assignIndicatorSeries.and.returnValues(
+      of([
+        {
+          id: 100,
+          security_id: 29,
+          indicator_id: 33,
+          series_code: 'VALUE',
+          invoke_formula: 'sma*3',
+          indicator_code: 'PACC',
+          indicator_name: 'PACC',
+          point_count: 100,
+          display_order: 1,
+          is_active: true,
+        },
+      ]),
+      of([
+        {
+          id: 101,
+          security_id: 29,
+          indicator_id: 4,
+          series_code: 'RSI',
+          invoke_formula: 'rsi',
+          indicator_code: 'RSI',
+          indicator_name: 'RSI',
+          point_count: 100,
+          display_order: 1,
+          is_active: true,
+        },
+      ])
+    );
+    securities.syncIndicatorSeries.and.returnValue(of({ ok: true }));
+    securities.getIndicatorValues.and.returnValue(
+      of([
+        {
+          indicator_id: 33,
+          line_code: 'VALUE',
+          line_name: 'VALUE',
+          indicator_code: 'PACC',
+          display_order: 1,
+          dt: '2026-01-02T10:00:00',
+          value: 1,
+          is_threshold: false,
+        },
+      ])
+    );
+
+    component['assignIndicator'](sberRow, 33);
+    component['assignIndicator'](sberRow, 4);
+    expect(securities.assignIndicatorSeries).toHaveBeenCalledTimes(1);
+
+    tick(500);
+    expect(securities.assignIndicatorSeries).toHaveBeenCalledTimes(2);
+    expect(securities.syncIndicatorSeries).toHaveBeenCalled();
+
+    tick(500);
+    tick(1200);
+    discardPeriodicTasks();
+  }));
+
+  it('does not flush deferred range sync immediately after mergeOnly assign', fakeAsync(() => {
+    const flushSpy = spyOn(
+      component as unknown as { flushDeferredRangeSync: (id: number) => void },
+      'flushDeferredRangeSync'
+    ).and.callThrough();
+    component['mergeOnlySyncGens'].add('29:5');
+    component['deferredRangeSync'].set(29, {
+      startDt: '2026-01-02T10:00:00',
+      endDt: '2026-01-02T10:00:00',
+      count: 1,
+      viewStart: 0,
+    });
+    component['indicatorSyncGen'].set(29, 5);
+
+    component['finishIndicatorRecalc'](29, null, 5);
+    expect(flushSpy).not.toHaveBeenCalled();
+
+    tick(1200);
+    expect(flushSpy).toHaveBeenCalledTimes(1);
+    discardPeriodicTasks();
   }));
 });

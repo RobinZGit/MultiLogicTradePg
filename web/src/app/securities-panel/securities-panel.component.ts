@@ -97,6 +97,18 @@ export class SecuritiesPanelComponent implements OnInit {
   private syncTraceIds = new Map<string, string>();
   /** mergeOnly sync при drag индикатора — блокирует параллельный full sync. */
   private assignMergeSyncGen = new Map<number, number>();
+  /** Очередь drag-and-drop assign по бумаге (POST + mergeOnly sync по одному). */
+  private assignQueue = new Map<
+    number,
+    Array<{ row: SecurityRow; indicatorId: number }>
+  >();
+  /** POST assignIndicatorSeries в полёте. */
+  private assignPostInFlight = new Set<number>();
+  /** mergeOnly syncGen — не делать flushDeferred сразу после finish. */
+  private mergeOnlySyncGens = new Set<string>();
+  /** Debounced flush после серии assign. */
+  private deferredFlushTimers = new Map<number, ReturnType<typeof setTimeout>>();
+  private readonly assignDeferredFlushMs = 1200;
   /** Отложенный full sync, пока идёт assign. */
   private deferredRangeSync = new Map<number, ChartVisibleRange>();
   /** Каталог индикаторов для оптимистичного drop (сразу в таблицу). */
@@ -240,6 +252,14 @@ export class SecuritiesPanelComponent implements OnInit {
 
   /** Новое поколение sync: отменяет устаревшие poll и логирует superseded. */
   private bumpSyncGen(securityId: number, reason: string): number {
+    if (reason === 'assign') {
+      this.deferredRangeSync.delete(securityId);
+      const flushTimer = this.deferredFlushTimers.get(securityId);
+      if (flushTimer) {
+        clearTimeout(flushTimer);
+        this.deferredFlushTimers.delete(securityId);
+      }
+    }
     const prev = this.indicatorSyncGen.get(securityId) ?? 0;
     const syncGen = prev + 1;
     this.indicatorSyncGen.set(securityId, syncGen);
@@ -274,8 +294,34 @@ export class SecuritiesPanelComponent implements OnInit {
     return this.assignMergeSyncGen.has(securityId);
   }
 
+  private isAssignBusy(securityId: number): boolean {
+    return (
+      this.isAssignMergeSyncActive(securityId) ||
+      this.assignPostInFlight.has(securityId) ||
+      (this.assignQueue.get(securityId)?.length ?? 0) > 0
+    );
+  }
+
+  private scheduleDebouncedDeferredFlush(securityId: number): void {
+    const prev = this.deferredFlushTimers.get(securityId);
+    if (prev) {
+      clearTimeout(prev);
+    }
+    this.deferredFlushTimers.set(
+      securityId,
+      setTimeout(() => {
+        this.deferredFlushTimers.delete(securityId);
+        if (this.isAssignBusy(securityId) || this.isIndicatorRecalcActive(securityId)) {
+          this.scheduleDebouncedDeferredFlush(securityId);
+          return;
+        }
+        this.flushDeferredRangeSync(securityId);
+      }, this.assignDeferredFlushMs)
+    );
+  }
+
   private flushDeferredRangeSync(securityId: number): void {
-    if (this.isAssignMergeSyncActive(securityId)) {
+    if (this.isAssignBusy(securityId)) {
       return;
     }
     const range = this.deferredRangeSync.get(securityId);
@@ -399,8 +445,49 @@ export class SecuritiesPanelComponent implements OnInit {
     if (existing.some((x) => x.indicator_id === indicatorId && x.is_active)) {
       return;
     }
+    if (existing.some((x) => x.indicator_id === indicatorId && x.id < 0)) {
+      return;
+    }
+
+    const queue = this.assignQueue.get(row.id) ?? [];
+    if (queue.some((x) => x.indicatorId === indicatorId)) {
+      return;
+    }
+    queue.push({ row, indicatorId });
+    this.assignQueue.set(row.id, queue);
+    this.processAssignQueue(row.id);
+  }
+
+  /** Один assign из очереди: POST → mergeOnly sync. */
+  private processAssignQueue(securityId: number): void {
+    if (this.assignPostInFlight.has(securityId)) {
+      return;
+    }
+    if (this.isAssignMergeSyncActive(securityId)) {
+      return;
+    }
+    const queue = this.assignQueue.get(securityId);
+    if (!queue?.length) {
+      return;
+    }
+    const item = queue.shift()!;
+    if (queue.length === 0) {
+      this.assignQueue.delete(securityId);
+    } else {
+      this.assignQueue.set(securityId, queue);
+    }
+    this.executeAssignIndicator(item.row, item.indicatorId);
+  }
+
+  private executeAssignIndicator(row: SecurityRow, indicatorId: number): void {
+    const ind = this.indicatorsById.get(indicatorId);
+    if (!ind || !this.timeframeId) {
+      this.processAssignQueue(row.id);
+      return;
+    }
 
     const pending = this.buildPendingSeriesRows(row.id, ind);
+    const existing = this.securityIndicatorSeries.get(row.id) ?? [];
     this.securityIndicatorSeries.set(row.id, [...existing, ...pending]);
 
     if (!this.expandedSecurities.has(row.id)) {
@@ -422,11 +509,13 @@ export class SecuritiesPanelComponent implements OnInit {
       error: null,
     });
     this.indicatorCalcError.set(row.id, null);
+    this.assignPostInFlight.add(row.id);
 
     this.securities
       .assignIndicatorSeries(row.id, indicatorId, this.timeframeId)
       .subscribe({
         next: (created) => {
+          this.assignPostInFlight.delete(row.id);
           const pendingIds = new Set(pending.map((p) => p.id));
           const merged = (this.securityIndicatorSeries.get(row.id) ?? []).filter(
             (x) => !pendingIds.has(x.id)
@@ -445,6 +534,7 @@ export class SecuritiesPanelComponent implements OnInit {
           );
         },
         error: (err) => {
+          this.assignPostInFlight.delete(row.id);
           const pendingIds = new Set(pending.map((p) => p.id));
           const kept = (this.securityIndicatorSeries.get(row.id) ?? []).filter(
             (x) => !pendingIds.has(x.id)
@@ -454,13 +544,17 @@ export class SecuritiesPanelComponent implements OnInit {
             err?.name === 'TimeoutError'
               ? 'Таймаут при регистрации серии индикатора'
               : err?.error?.error || err?.message || 'Ошибка добавления индикатора';
-          this.indicatorRecalc.set(row.id, {
-            active: false,
-            message: null,
-            error: msg,
-          });
+          const hasQueued = (this.assignQueue.get(row.id)?.length ?? 0) > 0;
+          if (!hasQueued) {
+            this.indicatorRecalc.set(row.id, {
+              active: false,
+              message: null,
+              error: msg,
+            });
+          }
           this.indicatorCalcError.set(row.id, msg);
           console.error(err);
+          this.processAssignQueue(row.id);
         },
       });
   }
@@ -528,6 +622,7 @@ export class SecuritiesPanelComponent implements OnInit {
       opts.syncGen ?? this.bumpSyncGen(securityId, opts.mergeOnly ? 'assign' : 'fullSync');
     if (opts.mergeOnly) {
       this.assignMergeSyncGen.set(securityId, syncGen);
+      this.mergeOnlySyncGens.add(`${securityId}:${syncGen}`);
     }
 
     this.clearIndicatorPoll(securityId);
@@ -650,8 +745,16 @@ export class SecuritiesPanelComponent implements OnInit {
       this.assignMergeSyncGen.delete(securityId);
     }
     this.indicatorPollTimers.delete(securityId);
+    const wasMergeOnly = this.mergeOnlySyncGens.delete(`${securityId}:${syncGen}`);
     if (!error) {
-      this.flushDeferredRangeSync(securityId);
+      if (wasMergeOnly) {
+        this.scheduleDebouncedDeferredFlush(securityId);
+        this.processAssignQueue(securityId);
+      } else {
+        this.flushDeferredRangeSync(securityId);
+      }
+    } else if (wasMergeOnly) {
+      this.processAssignQueue(securityId);
     }
   }
 
@@ -704,7 +807,7 @@ export class SecuritiesPanelComponent implements OnInit {
     if (this.suppressIndicatorDraw.get(securityId)) {
       return;
     }
-    if (this.isAssignMergeSyncActive(securityId)) {
+    if (this.isAssignBusy(securityId)) {
       this.deferredRangeSync.set(securityId, range);
       return;
     }
@@ -720,7 +823,8 @@ export class SecuritiesPanelComponent implements OnInit {
         this.autoRangeTimers.delete(securityId);
         if (
           this.suppressIndicatorDraw.get(securityId) ||
-          this.isIndicatorRecalcActive(securityId)
+          this.isIndicatorRecalcActive(securityId) ||
+          this.isAssignBusy(securityId)
         ) {
           return;
         }
@@ -895,10 +999,10 @@ export class SecuritiesPanelComponent implements OnInit {
       return;
     }
 
-    if (this.isAssignMergeSyncActive(securityId)) {
+    if (this.isAssignBusy(securityId)) {
       this.setIndicatorSyncDebug(
         securityId,
-        `expand skip refresh: assign sync active`
+        `expand skip refresh: assign busy`
       );
       this.suppressIndicatorDraw.set(securityId, false);
       return;
@@ -1729,13 +1833,13 @@ export class SecuritiesPanelComponent implements OnInit {
       return;
     }
 
-    if (this.isAssignMergeSyncActive(securityId) && opts?.syncGen == null) {
+    if (this.isAssignBusy(securityId) && opts?.syncGen == null) {
       this.deferredRangeSync.set(securityId, range);
       this.logSyncEvent(
         securityId,
         this.assignMergeSyncGen.get(securityId),
         'indicator.sync.deferred',
-        'full sync during assign',
+        'full sync during assign queue',
         { startDt: range.startDt, endDt: range.endDt, count: range.count }
       );
       return;

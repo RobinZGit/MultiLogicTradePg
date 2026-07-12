@@ -5,7 +5,7 @@
 > Включать **запросы пользователя текстом** (секция «Запросы пользователя»).
 
 **Репозиторий:** https://github.com/RobinZGit/MultiLogicTradePg  
-**Последнее обновление:** 2026-07-12 (fix assign indicator sync race + tech log)
+**Последнее обновление:** 2026-07-12 (assign queue + debounced flush после mergeOnly)
 
 ---
 
@@ -111,6 +111,7 @@
 26. **Fix pan влево (SMAT3):** proactive `loadOlder`, `incremental=false` при сдвиге `end_dt` влево, защита poll от stale gen, debounce по `lastVisibleRange`.
 27. **Logics — стопы:** таблица `logic_stops`, UI блок под сигналами, форма добавления, inline-редактирование строк.
 28. **Fix hang при drag индикатора:** единый `syncGen` для assign/range/poll; блок full sync во время `mergeOnly` assign; отложенный full sync после assign; расширенное `app_tech_log` (poll start/ok, superseded, deferred).
+29. **Fix multi-indicator assign:** очередь POST+mergeOnly по одному на бумагу; блок повторного drop (pending с отрицательным id); после mergeOnly — debounced flush (1.2 с), не немедленный full sync; `isAssignBusy` блокирует auto/range sync на всю очередь; сброс deferred при новом assign.
 
 ### Автотесты
 
@@ -169,6 +170,7 @@
 
 | Дата | Суть |
 |------|------|
+| 2026-07-12 | assign queue + debounced flush; fix multi-indicator drag hang |
 | 2026-07-12 | fix assign indicator sync race; tech log poll/superseded |
 | 2026-07-12 | logic_stops scope: security (по бумаге) / portfolio (портфель) |
 | 2026-07-12 | logic_stops + UI стоп-лосс/тейк-профит; обновление PROJECT_CONTEXT |
@@ -230,3 +232,4 @@
 29. «Файлы контекста обновлять локально и выкладывать в репо каждый раз — правило проекта, не забывать».
 30. «Тип стопа: не «по логике», а **по бумаге** и **по всему портфелю логики**; исправить и в репо».
 31. «Зависание при добавлении индикатора с логированием — исправить гонку sync (gen, defer full sync, лог poll); в репо».
+32. «Снова зависание при добавлении нескольких индикаторов на бумагу — разбор app_tech_log; очередь assign + debounced flush; в репо».
