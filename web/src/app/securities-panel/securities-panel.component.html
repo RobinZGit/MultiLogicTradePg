@@ -134,6 +134,12 @@
 
                       <button type="button" class="btn-stop" (click)="stopLoadPrices(row, $event)">Стоп</button>
 
+                    } @else if (isIndicatorRecalcActive(row.id)) {
+
+                      <span class="spinner" [title]="indicatorRecalcState(row.id).message || 'Пересчёт…'" aria-hidden="true"></span>
+
+                      <span class="recalc-label">{{ indicatorRecalcState(row.id).message }}</span>
+
                     } @else {
 
                       <button type="button" class="btn-load" (click)="startLoadPrices(row, $event)">Загрузить цены</button>
@@ -151,6 +157,12 @@
                     {{ priceLoadState(row.id).error || priceLoadState(row.id).message }}
 
                   </p>
+
+                }
+
+                @if (indicatorRecalcState(row.id).error) {
+
+                  <p class="load-status load-error">{{ indicatorRecalcState(row.id).error }}</p>
 
                 }
 
@@ -304,6 +316,12 @@
 
                       <button type="button" class="btn-stop" (click)="stopLoadPrices(row, $event)">Стоп</button>
 
+                    } @else if (isIndicatorRecalcActive(row.id)) {
+
+                      <span class="spinner" [title]="indicatorRecalcState(row.id).message || 'Пересчёт…'" aria-hidden="true"></span>
+
+                      <span class="recalc-label">{{ indicatorRecalcState(row.id).message }}</span>
+
                     } @else {
 
                       <button type="button" class="btn-load" (click)="startLoadPrices(row, $event)">Загрузить цены</button>
@@ -321,6 +339,12 @@
                     {{ priceLoadState(row.id).error || priceLoadState(row.id).message }}
 
                   </p>
+
+                }
+
+                @if (indicatorRecalcState(row.id).error) {
+
+                  <p class="load-status load-error">{{ indicatorRecalcState(row.id).error }}</p>
 
                 }
 

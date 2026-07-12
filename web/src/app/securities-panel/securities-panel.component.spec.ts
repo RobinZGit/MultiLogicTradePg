@@ -145,7 +145,17 @@ describe('SecuritiesPanelComponent', () => {
   it('shows assigning status while indicator is being attached', () => {
     component.indicatorAssigning.add(29);
     expect(component.indicatorStatus(29)).toBe('Добавление индикатора…');
-    expect(component.isIndicatorsLoading(29)).toBeTrue();
+    expect(component.isIndicatorsLoading(29)).toBeFalse();
+  });
+
+  it('shows background recalc message in actions area', () => {
+    component.indicatorRecalc.set(29, {
+      active: true,
+      message: 'Пересчёт PACC…',
+      error: null,
+    });
+    expect(component.isIndicatorRecalcActive(29)).toBeTrue();
+    expect(component.indicatorStatus(29)).toBe('Пересчёт PACC…');
   });
 
   it('does not block chart loading overlay on indicator sync', () => {

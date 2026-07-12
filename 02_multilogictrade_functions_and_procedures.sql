@@ -2892,6 +2892,36 @@ BEGIN
 END;
 $$;
 
+-- Синхронизация всех серий одного индикатора на бумаге
+CREATE OR REPLACE PROCEDURE sync_security_indicator_series_for_indicator(
+    p_security_id INTEGER,
+    p_indicator_id INTEGER,
+    p_timeframe_id INTEGER,
+    p_end_dt TIMESTAMP DEFAULT NULL,
+    p_point_count INTEGER DEFAULT NULL,
+    p_incremental BOOLEAN DEFAULT TRUE
+)
+LANGUAGE plpgsql AS $$
+DECLARE
+    v_id INTEGER;
+BEGIN
+    FOR v_id IN
+        SELECT id FROM security_indicator_series
+        WHERE security_id = p_security_id
+          AND indicator_id = p_indicator_id
+          AND is_active = TRUE
+        ORDER BY display_order, id
+    LOOP
+        CALL sync_security_indicator_series(
+            v_id, p_timeframe_id, p_end_dt, p_point_count, p_incremental
+        );
+    END LOOP;
+END;
+$$;
+
+COMMENT ON PROCEDURE sync_security_indicator_series_for_indicator IS
+'Пересчёт только серий указанного индикатора на бумаге (фоновый sync после drag-and-drop).';
+
 -- Синхронизация всех серий бумаги
 CREATE OR REPLACE PROCEDURE sync_security_indicator_series_all(
     p_security_id INTEGER,

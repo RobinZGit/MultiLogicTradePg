@@ -78,6 +78,13 @@ export interface PriceLoadUiState {
   error: string | null;
 }
 
+/** Фоновый пересчёт индикатора после drag-and-drop */
+export interface IndicatorRecalcUiState {
+  active: boolean;
+  message: string | null;
+  error: string | null;
+}
+
 export interface SecurityIndicatorSeriesRow {
   id: number;
   security_id: number;

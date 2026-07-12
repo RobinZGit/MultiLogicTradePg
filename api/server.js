@@ -305,20 +305,45 @@ app.delete('/api/security-indicator-series/:id', async (req, res) => {
 app.post('/api/security-indicator-series/sync', async (req, res) => {
   const securityId = parseId(req.body?.security_id);
   const timeframeId = parseId(req.body?.timeframe_id);
+  const indicatorId = parseId(req.body?.indicator_id);
   const endDt = req.body?.end_dt ? String(req.body.end_dt) : null;
   const pointCount = parseId(req.body?.point_count);
   const incremental = req.body?.incremental !== false;
+  const runAsync = req.body?.async === true;
   if (!securityId || !timeframeId) {
     res.status(400).json({ error: 'Укажите security_id и timeframe_id' });
     return;
   }
+
+  if (runAsync) {
+    res.status(202).json({ ok: true, status: 'started' });
+    runIndicatorSyncBackground({
+      securityId,
+      timeframeId,
+      indicatorId,
+      endDt,
+      pointCount,
+      incremental,
+    }).catch((err) => {
+      console.error('POST /api/security-indicator-series/sync async', err);
+    });
+    return;
+  }
+
   const client = await pool.connect();
   try {
     await client.query(`SET statement_timeout = '120000'`);
-    await client.query(
-      'CALL sync_security_indicator_series_all($1, $2, $3::timestamp, $4, $5)',
-      [securityId, timeframeId, endDt, pointCount, incremental]
-    );
+    if (indicatorId) {
+      await client.query(
+        'CALL sync_security_indicator_series_for_indicator($1, $2, $3, $4::timestamp, $5, $6)',
+        [securityId, indicatorId, timeframeId, endDt, pointCount, incremental]
+      );
+    } else {
+      await client.query(
+        'CALL sync_security_indicator_series_all($1, $2, $3::timestamp, $4, $5)',
+        [securityId, timeframeId, endDt, pointCount, incremental]
+      );
+    }
     res.json({ ok: true });
   } catch (err) {
     console.error('POST /api/security-indicator-series/sync', err);
@@ -1505,6 +1530,40 @@ function parseIndicatorCreateBody(body) {
   if (category && category.length > 50) return { error: 'Категория не длиннее 50 символов' };
   if (!formula) return { error: 'Укажите формулу индикатора' };
   return { code, name, description, category, formula, is_active };
+}
+
+async function runIndicatorSyncBackground({
+  securityId,
+  timeframeId,
+  indicatorId,
+  endDt,
+  pointCount,
+  incremental,
+}) {
+  const client = await pool.connect();
+  try {
+    await client.query(`SET statement_timeout = '300000'`);
+    if (indicatorId) {
+      await client.query(
+        'CALL sync_security_indicator_series_for_indicator($1, $2, $3, $4::timestamp, $5, $6)',
+        [securityId, indicatorId, timeframeId, endDt, pointCount, incremental]
+      );
+    } else {
+      await client.query(
+        'CALL sync_security_indicator_series_all($1, $2, $3::timestamp, $4, $5)',
+        [securityId, timeframeId, endDt, pointCount, incremental]
+      );
+    }
+  } catch (err) {
+    console.error('background indicator sync failed', {
+      securityId,
+      timeframeId,
+      indicatorId,
+      error: err.message,
+    });
+  } finally {
+    client.release();
+  }
 }
 
 async function fetchIndicatorById(db, id) {

@@ -109,16 +109,19 @@ export class SecuritiesService {
   syncIndicatorSeries(body: {
     security_id: number;
     timeframe_id: number;
+    indicator_id?: number;
     end_dt?: string;
     point_count?: number;
     incremental?: boolean;
-  }): Observable<{ ok: boolean }> {
+    async?: boolean;
+  }): Observable<{ ok: boolean; status?: string }> {
+    const timeoutMs = body.async ? 10_000 : 120_000;
     return this.http
-      .post<{ ok: boolean }>(
+      .post<{ ok: boolean; status?: string }>(
         `${this.appConfig.apiUrl}/security-indicator-series/sync`,
         body
       )
-      .pipe(timeout(120_000));
+      .pipe(timeout(timeoutMs));
   }
 
   getIndicatorValues(

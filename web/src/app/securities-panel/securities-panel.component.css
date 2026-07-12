@@ -296,6 +296,15 @@
   color: #b45309;
 }
 
+.recalc-label {
+  font-size: 0.78rem;
+  color: #1d4ed8;
+  max-width: 11rem;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
 .sec-toggle:hover {
   background: #f9fafb;
 }
