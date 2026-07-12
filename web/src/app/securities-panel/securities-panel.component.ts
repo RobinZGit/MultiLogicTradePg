@@ -95,6 +95,10 @@ export class SecuritiesPanelComponent implements OnInit {
   private historyLoadForSyncGen = new Map<number, number>();
   /** trace_id для цепочки pan по security+gen. */
   private syncTraceIds = new Map<string, string>();
+  /** mergeOnly sync при drag индикатора — блокирует параллельный full sync. */
+  private assignMergeSyncGen = new Map<number, number>();
+  /** Отложенный full sync, пока идёт assign. */
+  private deferredRangeSync = new Map<number, ChartVisibleRange>();
   /** Каталог индикаторов для оптимистичного drop (сразу в таблицу). */
   private indicatorsById = new Map<number, IndicatorRow>();
 
@@ -232,6 +236,61 @@ export class SecuritiesPanelComponent implements OnInit {
       this.syncTraceIds.set(key, trace);
     }
     return trace;
+  }
+
+  /** Новое поколение sync: отменяет устаревшие poll и логирует superseded. */
+  private bumpSyncGen(securityId: number, reason: string): number {
+    const prev = this.indicatorSyncGen.get(securityId) ?? 0;
+    const syncGen = prev + 1;
+    this.indicatorSyncGen.set(securityId, syncGen);
+    this.syncTraceIds.set(
+      this.syncTraceKey(securityId, syncGen),
+      this.techLog.newTraceId(securityId, syncGen)
+    );
+    if (reason !== 'assign' && this.assignMergeSyncGen.has(securityId)) {
+      this.logSyncEvent(
+        securityId,
+        syncGen,
+        'indicator.assign.superseded',
+        reason,
+        { assignGen: this.assignMergeSyncGen.get(securityId) }
+      );
+      this.assignMergeSyncGen.delete(securityId);
+    }
+    if (prev > 0) {
+      this.logSyncEvent(
+        securityId,
+        syncGen,
+        'indicator.sync.superseded',
+        `${prev} → ${syncGen}`,
+        { reason, prevGen: prev }
+      );
+    }
+    this.clearIndicatorPoll(securityId);
+    return syncGen;
+  }
+
+  private isAssignMergeSyncActive(securityId: number): boolean {
+    return this.assignMergeSyncGen.has(securityId);
+  }
+
+  private flushDeferredRangeSync(securityId: number): void {
+    if (this.isAssignMergeSyncActive(securityId)) {
+      return;
+    }
+    const range = this.deferredRangeSync.get(securityId);
+    if (!range) {
+      return;
+    }
+    this.deferredRangeSync.delete(securityId);
+    this.logSyncEvent(
+      securityId,
+      this.indicatorSyncGen.get(securityId),
+      'indicator.sync.deferredFlush',
+      `${range.count} bars`,
+      { startDt: range.startDt, endDt: range.endDt }
+    );
+    this.syncIndicatorsForRange(securityId, range, { incremental: true });
   }
 
   private logSyncEvent(
@@ -465,6 +524,12 @@ export class SecuritiesPanelComponent implements OnInit {
   ): void {
     if (!this.timeframeId) return;
 
+    const syncGen =
+      opts.syncGen ?? this.bumpSyncGen(securityId, opts.mergeOnly ? 'assign' : 'fullSync');
+    if (opts.mergeOnly) {
+      this.assignMergeSyncGen.set(securityId, syncGen);
+    }
+
     this.clearIndicatorPoll(securityId);
     this.indicatorRecalc.set(securityId, {
       active: true,
@@ -484,33 +549,48 @@ export class SecuritiesPanelComponent implements OnInit {
       body.indicator_id = opts.indicatorId;
     }
 
-    const syncGen = opts.syncGen ?? null;
-    const spanId =
-      syncGen != null
-        ? this.techLog.start(
-            this.traceForSync(securityId, syncGen),
-            this.techLog.threadKey(securityId, syncGen, 'asyncSync'),
-            'indicator.asyncSync',
-            {
-              securityId,
-              timeframeId: this.timeframeId ?? undefined,
-              syncGen,
-              message: opts.message,
-              payload: {
-                end_dt: body.end_dt,
-                point_count: body.point_count,
-                incremental: body.incremental,
-                indicator_id: body.indicator_id ?? null,
-              },
-            }
-          )
-        : '';
+    const spanId = this.techLog.start(
+      this.traceForSync(securityId, syncGen),
+      this.techLog.threadKey(
+        securityId,
+        syncGen,
+        opts.mergeOnly ? 'assignSync' : 'asyncSync'
+      ),
+      'indicator.asyncSync',
+      {
+        securityId,
+        timeframeId: this.timeframeId ?? undefined,
+        syncGen,
+        message: opts.message,
+        payload: {
+          end_dt: body.end_dt,
+          point_count: body.point_count,
+          incremental: body.incremental,
+          indicator_id: body.indicator_id ?? null,
+          merge_only: opts.mergeOnly === true,
+        },
+      }
+    );
+
+    this.logSyncEvent(
+      securityId,
+      syncGen,
+      'indicator.asyncSync.start',
+      opts.message,
+      {
+        end_dt: body.end_dt,
+        point_count: body.point_count,
+        indicator_id: body.indicator_id ?? null,
+        merge_only: opts.mergeOnly === true,
+      }
+    );
 
     this.securities.syncIndicatorSeries(body).subscribe({
       next: () => {
         this.logSyncEvent(securityId, syncGen, 'indicator.asyncSync.accepted', 'POST 202', {
           end_dt: body.end_dt,
           point_count: body.point_count,
+          indicator_id: body.indicator_id ?? null,
         });
         this.pollIndicatorValuesAfterSync(
           securityId,
@@ -540,8 +620,19 @@ export class SecuritiesPanelComponent implements OnInit {
   private finishIndicatorRecalc(
     securityId: number,
     error: string | null,
-    syncGen?: number | null
+    syncGen: number
   ): void {
+    if (!this.isSyncGenerationCurrent(securityId, syncGen)) {
+      this.logSyncEvent(
+        securityId,
+        syncGen,
+        'indicator.recalc.stale',
+        'finish ignored',
+        {}
+      );
+      return;
+    }
+
     this.indicatorRecalc.set(securityId, {
       active: false,
       message: null,
@@ -550,26 +641,18 @@ export class SecuritiesPanelComponent implements OnInit {
     if (error) {
       this.indicatorCalcError.set(securityId, error);
       this.suppressIndicatorDraw.set(securityId, false);
-      this.logSyncEvent(
-        securityId,
-        syncGen,
-        'indicator.recalc.error',
-        error,
-        { syncGen: syncGen ?? null }
-      );
+      this.logSyncEvent(securityId, syncGen, 'indicator.recalc.error', error, {});
     } else {
       this.indicatorCalcError.set(securityId, null);
-      if (syncGen != null) {
-        this.logSyncEvent(
-          securityId,
-          syncGen,
-          'indicator.recalc.done',
-          'OK',
-          { syncGen }
-        );
-      }
+      this.logSyncEvent(securityId, syncGen, 'indicator.recalc.done', 'OK', {});
+    }
+    if (this.assignMergeSyncGen.get(securityId) === syncGen) {
+      this.assignMergeSyncGen.delete(securityId);
     }
     this.indicatorPollTimers.delete(securityId);
+    if (!error) {
+      this.flushDeferredRangeSync(securityId);
+    }
   }
 
   private isSyncGenerationCurrent(
@@ -577,7 +660,7 @@ export class SecuritiesPanelComponent implements OnInit {
     syncGen: number | null
   ): boolean {
     if (syncGen === null) {
-      return true;
+      return false;
     }
     return this.indicatorSyncGen.get(securityId) === syncGen;
   }
@@ -619,6 +702,10 @@ export class SecuritiesPanelComponent implements OnInit {
     range: ChartVisibleRange
   ): void {
     if (this.suppressIndicatorDraw.get(securityId)) {
+      return;
+    }
+    if (this.isAssignMergeSyncActive(securityId)) {
+      this.deferredRangeSync.set(securityId, range);
       return;
     }
     const assigned = this.securityIndicatorSeries.get(securityId) ?? [];
@@ -808,6 +895,15 @@ export class SecuritiesPanelComponent implements OnInit {
       return;
     }
 
+    if (this.isAssignMergeSyncActive(securityId)) {
+      this.setIndicatorSyncDebug(
+        securityId,
+        `expand skip refresh: assign sync active`
+      );
+      this.suppressIndicatorDraw.set(securityId, false);
+      return;
+    }
+
     this.suppressIndicatorDraw.set(securityId, false);
     this.refreshIndicatorChart(securityId);
   }
@@ -818,12 +914,19 @@ export class SecuritiesPanelComponent implements OnInit {
     seriesRows: SecurityIndicatorSeriesRow[],
     range: ChartVisibleRange | null,
     mergeOnly: boolean,
-    syncGen: number | null,
+    syncGen: number,
     attempt: number,
-    pollSpanId = ''
+    asyncSpanId = ''
   ): void {
     if (!this.isSyncGenerationCurrent(securityId, syncGen)) {
-      this.techLog.end(pollSpanId, { message: 'poll aborted: stale gen' });
+      this.logSyncEvent(
+        securityId,
+        syncGen,
+        'indicator.poll.stale',
+        `attempt=${attempt}`,
+        { phase: 'enter' }
+      );
+      this.techLog.end(asyncSpanId, { message: 'poll aborted: stale gen' });
       return;
     }
     const maxAttempts = 45;
@@ -832,7 +935,7 @@ export class SecuritiesPanelComponent implements OnInit {
         ? seriesRows[0]?.indicator_code ?? 'индикатора'
         : 'индикаторов';
     if (attempt >= maxAttempts) {
-      this.techLog.end(pollSpanId, {
+      this.techLog.end(asyncSpanId, {
         message: 'poll timeout',
         payload: { attempt, maxAttempts },
       });
@@ -848,15 +951,32 @@ export class SecuritiesPanelComponent implements OnInit {
       indicatorIds ??
       [...new Set(seriesRows.map((s) => s.indicator_id))].filter(Boolean);
     if (ids.length === 0) {
-      this.techLog.end(pollSpanId, { message: 'poll: no indicator ids' });
+      this.techLog.end(asyncSpanId, { message: 'poll: no indicator ids' });
       this.finishIndicatorRecalc(securityId, null, syncGen);
       return;
+    }
+
+    if (attempt === 0) {
+      this.logSyncEvent(
+        securityId,
+        syncGen,
+        'indicator.poll.start',
+        mergeOnly ? 'mergeOnly' : 'full',
+        { indicator_ids: ids, mergeOnly }
+      );
     }
 
     const waitMs = attempt === 0 ? 500 : attempt < 5 ? 800 : 2000;
     const timer = setTimeout(() => {
       if (!this.timeframeId || !this.isSyncGenerationCurrent(securityId, syncGen)) {
-        this.techLog.end(pollSpanId, { message: 'poll timer: stale gen' });
+        this.logSyncEvent(
+          securityId,
+          syncGen,
+          'indicator.poll.stale',
+          `timer attempt=${attempt + 1}`,
+          {}
+        );
+        this.techLog.end(asyncSpanId, { message: 'poll timer: stale gen' });
         return;
       }
       this.securities
@@ -870,7 +990,14 @@ export class SecuritiesPanelComponent implements OnInit {
         .subscribe({
           next: (values) => {
             if (!this.isSyncGenerationCurrent(securityId, syncGen)) {
-              this.techLog.end(pollSpanId, { message: 'poll response: stale gen' });
+              this.logSyncEvent(
+                securityId,
+                syncGen,
+                'indicator.poll.stale',
+                `response attempt=${attempt + 1}`,
+                { points: values.length }
+              );
+              this.techLog.end(asyncSpanId, { message: 'poll response: stale gen' });
               return;
             }
             if (values.length === 0) {
@@ -894,13 +1021,13 @@ export class SecuritiesPanelComponent implements OnInit {
                 mergeOnly,
                 syncGen,
                 attempt + 1,
-                pollSpanId
+                asyncSpanId
               );
               return;
             }
             if (
-              syncGen !== null &&
               range &&
+              !mergeOnly &&
               !this.indicatorValuesCoverRange(
                 values,
                 range,
@@ -923,12 +1050,11 @@ export class SecuritiesPanelComponent implements OnInit {
                 mergeOnly,
                 syncGen,
                 attempt + 1,
-                pollSpanId
+                asyncSpanId
               );
               return;
             }
             if (
-              syncGen !== null &&
               range &&
               values.length > 0 &&
               attempt >= this.indicatorCoverageMaxAttempts
@@ -946,17 +1072,21 @@ export class SecuritiesPanelComponent implements OnInit {
                 this.buildChartSeries(values, seriesRows)
               );
             }
-            if (
-              syncGen === null ||
-              this.isSyncGenerationCurrent(securityId, syncGen)
-            ) {
+            if (this.isSyncGenerationCurrent(securityId, syncGen)) {
               this.suppressIndicatorDraw.set(securityId, false);
             }
             this.setIndicatorSyncDebug(
               securityId,
-              `poll ok: points=${values.length}, gen=${syncGen ?? '—'}, merge=${mergeOnly}`
+              `poll ok: points=${values.length}, gen=${syncGen}, merge=${mergeOnly}`
             );
-            this.techLog.end(pollSpanId, {
+            this.logSyncEvent(
+              securityId,
+              syncGen,
+              'indicator.poll.ok',
+              `points=${values.length}`,
+              { attempt: attempt + 1, mergeOnly }
+            );
+            this.techLog.end(asyncSpanId, {
               message: 'poll ok',
               payload: { points: values.length, attempt: attempt + 1 },
             });
@@ -964,7 +1094,7 @@ export class SecuritiesPanelComponent implements OnInit {
           },
           error: () => {
             if (!this.isSyncGenerationCurrent(securityId, syncGen)) {
-              this.techLog.end(pollSpanId, { message: 'poll error: stale gen' });
+              this.techLog.end(asyncSpanId, { message: 'poll error: stale gen' });
               return;
             }
             this.logSyncEvent(
@@ -985,7 +1115,7 @@ export class SecuritiesPanelComponent implements OnInit {
               mergeOnly,
               syncGen,
               attempt + 1,
-              pollSpanId
+              asyncSpanId
             );
           },
         });
@@ -1175,14 +1305,8 @@ export class SecuritiesPanelComponent implements OnInit {
       return;
     }
 
-    const syncGen = (this.indicatorSyncGen.get(securityId) ?? 0) + 1;
-    this.indicatorSyncGen.set(securityId, syncGen);
-    this.syncTraceIds.set(
-      this.syncTraceKey(securityId, syncGen),
-      this.techLog.newTraceId(securityId, syncGen)
-    );
+    const syncGen = this.bumpSyncGen(securityId, 'userPan');
 
-    this.clearIndicatorPoll(securityId);
     const prev = this.visibleRangeTimers.get(securityId);
     if (prev) clearTimeout(prev);
     const autoPrev = this.autoRangeTimers.get(securityId);
@@ -1220,9 +1344,7 @@ export class SecuritiesPanelComponent implements OnInit {
     if (!range.startDt || !range.endDt || range.count <= 0) return;
 
     this.lastVisibleRange.set(securityId, range);
-    const syncGen = (this.indicatorSyncGen.get(securityId) ?? 0) + 1;
-    this.indicatorSyncGen.set(securityId, syncGen);
-    this.clearIndicatorPoll(securityId);
+    const syncGen = this.bumpSyncGen(securityId, 'manualRecalc');
     this.suppressIndicatorDraw.set(securityId, true);
     this.scheduleIndicatorRangeSync(securityId, range, syncGen);
   }
@@ -1607,6 +1729,18 @@ export class SecuritiesPanelComponent implements OnInit {
       return;
     }
 
+    if (this.isAssignMergeSyncActive(securityId) && opts?.syncGen == null) {
+      this.deferredRangeSync.set(securityId, range);
+      this.logSyncEvent(
+        securityId,
+        this.assignMergeSyncGen.get(securityId),
+        'indicator.sync.deferred',
+        'full sync during assign',
+        { startDt: range.startDt, endDt: range.endDt, count: range.count }
+      );
+      return;
+    }
+
     const pointCount = Math.min(
       Math.max(range.count, 1),
       this.maxIndicatorCandles
@@ -1614,15 +1748,14 @@ export class SecuritiesPanelComponent implements OnInit {
     const prevEnd = this.lastSyncedEndDt.get(securityId);
     const movedLeft = prevEnd != null && range.endDt < prevEnd;
     const incremental = opts?.incremental !== false && !movedLeft;
-    if (opts?.syncGen != null) {
-      this.logSyncEvent(
-        securityId,
-        opts.syncGen,
-        'indicator.sync.params',
-        movedLeft ? 'incremental=false (pan left)' : `incremental=${incremental}`,
-        { prevEnd: prevEnd ?? null, endDt: range.endDt, movedLeft }
-      );
-    }
+    const syncGen = opts?.syncGen ?? this.bumpSyncGen(securityId, 'rangeSync');
+    this.logSyncEvent(
+      securityId,
+      syncGen,
+      'indicator.sync.params',
+      movedLeft ? 'incremental=false (pan left)' : `incremental=${incremental}`,
+      { prevEnd: prevEnd ?? null, endDt: range.endDt, movedLeft }
+    );
 
     this.pendingSyncPointCount.set(securityId, pointCount);
     this.indicatorsLoading.delete(securityId);
@@ -1635,12 +1768,12 @@ export class SecuritiesPanelComponent implements OnInit {
       },
       incremental,
       mergeOnly: false,
-      syncGen: opts?.syncGen,
+      syncGen,
     });
     this.lastSyncedEndDt.set(securityId, range.endDt);
     this.setIndicatorSyncDebug(
       securityId,
-      `POST async sync: indicators=${assigned.length}, point_count=${pointCount}, gen=${opts?.syncGen ?? '—'}`
+      `POST async sync: indicators=${assigned.length}, point_count=${pointCount}, gen=${syncGen}`
     );
   }
 

@@ -5,7 +5,7 @@
 > Включать **запросы пользователя текстом** (секция «Запросы пользователя»).
 
 **Репозиторий:** https://github.com/RobinZGit/MultiLogicTradePg  
-**Последнее обновление:** 2026-07-12 (logic_stops: scope security|portfolio — по бумаге / портфель)
+**Последнее обновление:** 2026-07-12 (fix assign indicator sync race + tech log)
 
 ---
 
@@ -110,6 +110,7 @@
 25. **Технический журнал `app_tech_log`:** checkbox **«Логирование»** в шапке «Бумаги» (выкл. по умолчанию); start/end/event по `thread_key` (sec:N:gen:M); API `POST/GET /api/tech-log`.
 26. **Fix pan влево (SMAT3):** proactive `loadOlder`, `incremental=false` при сдвиге `end_dt` влево, защита poll от stale gen, debounce по `lastVisibleRange`.
 27. **Logics — стопы:** таблица `logic_stops`, UI блок под сигналами, форма добавления, inline-редактирование строк.
+28. **Fix hang при drag индикатора:** единый `syncGen` для assign/range/poll; блок full sync во время `mergeOnly` assign; отложенный full sync после assign; расширенное `app_tech_log` (poll start/ok, superseded, deferred).
 
 ### Автотесты
 
@@ -168,6 +169,7 @@
 
 | Дата | Суть |
 |------|------|
+| 2026-07-12 | fix assign indicator sync race; tech log poll/superseded |
 | 2026-07-12 | logic_stops scope: security (по бумаге) / portfolio (портфель) |
 | 2026-07-12 | logic_stops + UI стоп-лосс/тейк-профит; обновление PROJECT_CONTEXT |
 | 2026-07-12 | app_tech_log + UI «Логирование»; fix pan-left SMAT3 sync |
@@ -227,3 +229,4 @@
 28. «На странице logics под сигналами — блок стоп-лосс/тейк-профит; кнопки + стоп-лосс и + тейк-профит; таблица logic_stops; форма: вид, тип (по логике / портфель логики), значение, единица % или ATR; строки в списке; контекст; в репо».
 29. «Файлы контекста обновлять локально и выкладывать в репо каждый раз — правило проекта, не забывать».
 30. «Тип стопа: не «по логике», а **по бумаге** и **по всему портфелю логики**; исправить и в репо».
+31. «Зависание при добавлении индикатора с логированием — исправить гонку sync (gen, defer full sync, лог poll); в репо».

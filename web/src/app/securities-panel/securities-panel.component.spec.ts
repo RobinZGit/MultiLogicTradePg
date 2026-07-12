@@ -682,4 +682,37 @@ describe('SecuritiesPanelComponent', () => {
     tick(500);
     discardPeriodicTasks();
   }));
+
+  it('defers full sync while assign mergeOnly sync is active', fakeAsync(() => {
+    component['assignMergeSyncGen'].set(29, 2);
+    component.securityIndicatorSeries.set(29, stochSeries);
+    component.charts.set(29, {
+      candles: [
+        {
+          dt: '2026-01-02T10:00:00',
+          open_price: 1,
+          high_price: 1,
+          low_price: 1,
+          close_price: 1,
+          volume: 1,
+        },
+      ],
+      loading: false,
+      loadingOlder: false,
+      hasMore: false,
+      error: null,
+    });
+    component['syncIndicatorsForRange'](
+      29,
+      {
+        startDt: '2026-01-02T10:00:00',
+        endDt: '2026-01-02T10:00:00',
+        count: 1,
+        viewStart: 0,
+      },
+      { incremental: true }
+    );
+    expect(securities.syncIndicatorSeries).not.toHaveBeenCalled();
+    expect(component['deferredRangeSync'].has(29)).toBeTrue();
+  }));
 });
