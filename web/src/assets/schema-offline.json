@@ -543,14 +543,14 @@
           "type": "VARCHAR(100)  UNIQUE",
           "nullable": false,
           "default": null,
-          "comment": "name"
+          "comment": "Уникальное имя логики"
         },
         {
           "name": "account_id",
           "type": "INTEGER  REFERENCES accounts(id) ON DELETE RESTRICT",
           "nullable": false,
           "default": null,
-          "comment": "account_id"
+          "comment": "Счёт (accounts), на котором выполняется эта торговля"
         }
       ],
       "indexes": [
@@ -1069,14 +1069,14 @@
           "type": "VARCHAR(20)",
           "nullable": false,
           "default": "'stock'",
-          "comment": "instrument_market"
+          "comment": "Рынок: stock, futures, bonds, index — различает VTBR-акцию и VTBR-фьючерс"
         },
         {
           "name": "tbank_figi",
           "type": "VARCHAR(50)",
           "nullable": true,
           "default": null,
-          "comment": "tbank_figi"
+          "comment": "FIGI инструмента в T-Bank Invest API"
         },
         {
           "name": "note",
@@ -1195,7 +1195,7 @@
           "type": "BOOLEAN",
           "nullable": false,
           "default": "TRUE",
-          "comment": "is_active"
+          "comment": "Использовать при массовой загрузке load_all_timeframes*"
         }
       ],
       "indexes": [
