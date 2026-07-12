@@ -1,5 +1,5 @@
 export type LogicStopRuleKind = 'stop_loss' | 'take_profit';
-export type LogicStopScopeType = 'logic' | 'portfolio';
+export type LogicStopScopeType = 'security' | 'portfolio';
 export type LogicStopValueUnit = 'percent' | 'atr';
 
 export function ruleKindLabel(kind: LogicStopRuleKind): string {
@@ -7,12 +7,12 @@ export function ruleKindLabel(kind: LogicStopRuleKind): string {
 }
 
 export function scopeTypeLabel(scope: LogicStopScopeType): string {
-  return scope === 'logic' ? 'По логике' : 'Портфель логики';
+  return scope === 'security' ? 'По бумаге' : 'По всему портфелю логики';
 }
 
 export function valueUnitLabel(unit: LogicStopValueUnit): string {
   return unit === 'percent' ? '%' : 'ATR';
 }
 
-export const LOGIC_STOP_SCOPES: LogicStopScopeType[] = ['logic', 'portfolio'];
+export const LOGIC_STOP_SCOPES: LogicStopScopeType[] = ['security', 'portfolio'];
 export const LOGIC_STOP_UNITS: LogicStopValueUnit[] = ['percent', 'atr'];

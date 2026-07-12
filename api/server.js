@@ -1453,8 +1453,8 @@ app.post('/api/logic-stops', async (req, res) => {
     res.status(400).json({ error: 'rule_kind must be stop_loss or take_profit' });
     return;
   }
-  if (scopeType !== 'logic' && scopeType !== 'portfolio') {
-    res.status(400).json({ error: 'scope_type must be logic or portfolio' });
+  if (scopeType !== 'security' && scopeType !== 'portfolio') {
+    res.status(400).json({ error: 'scope_type must be security or portfolio' });
     return;
   }
   if (valueUnit !== 'percent' && valueUnit !== 'atr') {
@@ -1499,8 +1499,8 @@ app.put('/api/logic-stops/:id', async (req, res) => {
     res.status(400).json({ error: 'Invalid id' });
     return;
   }
-  if (scopeType && scopeType !== 'logic' && scopeType !== 'portfolio') {
-    res.status(400).json({ error: 'scope_type must be logic or portfolio' });
+  if (scopeType && scopeType !== 'security' && scopeType !== 'portfolio') {
+    res.status(400).json({ error: 'scope_type must be security or portfolio' });
     return;
   }
   if (valueUnit && valueUnit !== 'percent' && valueUnit !== 'atr') {

@@ -92,7 +92,7 @@ export class LogicsService {
   createLogicStop(body: {
     logic_id: number;
     rule_kind: 'stop_loss' | 'take_profit';
-    scope_type: 'logic' | 'portfolio';
+    scope_type: 'security' | 'portfolio';
     value: number;
     value_unit: 'percent' | 'atr';
   }): Observable<LogicStopRow> {
@@ -105,7 +105,7 @@ export class LogicsService {
   updateLogicStop(
     id: number,
     body: {
-      scope_type?: 'logic' | 'portfolio';
+      scope_type?: 'security' | 'portfolio';
       value?: number;
       value_unit?: 'percent' | 'atr';
       is_active?: boolean;
