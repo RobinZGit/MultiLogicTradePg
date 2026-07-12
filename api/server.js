@@ -1561,6 +1561,138 @@ app.delete('/api/logic-stops/:id', async (req, res) => {
   }
 });
 
+const LOGIC_SECURITY_SELECT = `
+  SELECT
+    ls.id,
+    ls.logic_id,
+    ls.security_id,
+    ls.display_order,
+    ls.is_active,
+    ls.created_at,
+    s.name AS security_name,
+    st.name AS security_type,
+    sp.prefix,
+    sp.instrument_market,
+    sp.exchange_id,
+    e.name AS exchange_name
+  FROM logic_securities ls
+  JOIN securities s ON s.id = ls.security_id
+  JOIN security_types st ON st.id = s.security_type_id
+  LEFT JOIN LATERAL (
+    SELECT prefix, instrument_market, exchange_id
+    FROM security_prefixes
+    WHERE security_id = s.id
+    ORDER BY exchange_id
+    LIMIT 1
+  ) sp ON TRUE
+  LEFT JOIN exchanges e ON e.id = sp.exchange_id
+`;
+
+app.get('/api/logic-securities', async (req, res) => {
+  const logicId = Number(req.query.logic_id);
+  if (!Number.isInteger(logicId) || logicId <= 0) {
+    res.status(400).json({ error: 'logic_id required' });
+    return;
+  }
+  try {
+    const { rows } = await pool.query(
+      `${LOGIC_SECURITY_SELECT}
+       WHERE ls.logic_id = $1
+       ORDER BY ls.display_order, ls.id`,
+      [logicId]
+    );
+    res.json(rows);
+  } catch (err) {
+    console.error('GET /api/logic-securities', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/api/logic-securities/bulk', async (req, res) => {
+  const logicId = Number(req.body?.logic_id);
+  const rawIds = req.body?.security_ids;
+  if (!Number.isInteger(logicId) || logicId <= 0) {
+    res.status(400).json({ error: 'logic_id required' });
+    return;
+  }
+  if (!Array.isArray(rawIds) || rawIds.length === 0) {
+    res.status(400).json({ error: 'security_ids array required' });
+    return;
+  }
+  const securityIds = [
+    ...new Set(
+      rawIds
+        .map((x) => Number(x))
+        .filter((id) => Number.isInteger(id) && id > 0)
+    ),
+  ];
+  if (securityIds.length === 0) {
+    res.status(400).json({ error: 'No valid security_ids' });
+    return;
+  }
+  try {
+    const { rows: logicRows } = await pool.query(
+      'SELECT id FROM logics WHERE id = $1',
+      [logicId]
+    );
+    if (logicRows.length === 0) {
+      res.status(404).json({ error: 'Logic not found' });
+      return;
+    }
+    const { rows: inserted } = await pool.query(
+      `
+      INSERT INTO logic_securities (logic_id, security_id, display_order)
+      SELECT
+        $1,
+        sid,
+        COALESCE(
+          (SELECT MAX(display_order) FROM logic_securities WHERE logic_id = $1),
+          0
+        ) + row_number() OVER ()
+      FROM unnest($2::int[]) AS sid
+      ON CONFLICT (logic_id, security_id) DO UPDATE SET is_active = TRUE
+      RETURNING id
+      `,
+      [logicId, securityIds]
+    );
+    const ids = inserted.map((r) => r.id);
+    if (ids.length === 0) {
+      res.json([]);
+      return;
+    }
+    const { rows } = await pool.query(
+      `${LOGIC_SECURITY_SELECT} WHERE ls.id = ANY($1::int[]) ORDER BY ls.display_order, ls.id`,
+      [ids]
+    );
+    res.status(201).json(rows);
+  } catch (err) {
+    console.error('POST /api/logic-securities/bulk', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.delete('/api/logic-securities/:id', async (req, res) => {
+  const id = Number(req.params.id);
+  if (!Number.isInteger(id) || id <= 0) {
+    res.status(400).json({ error: 'Invalid id' });
+    return;
+  }
+  try {
+    const { rowCount } = await pool.query(
+      'DELETE FROM logic_securities WHERE id = $1',
+      [id]
+    );
+    if (rowCount === 0) {
+      res.status(404).json({ error: 'Logic security not found' });
+      return;
+    }
+    res.json({ ok: true, id });
+  } catch (err) {
+    console.error('DELETE /api/logic-securities/:id', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
 app.post('/api/tech-log', async (req, res) => {
   const entries = Array.isArray(req.body?.entries) ? req.body.entries : [];
   if (entries.length === 0) {

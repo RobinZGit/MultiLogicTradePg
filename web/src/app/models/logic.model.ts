@@ -35,3 +35,18 @@ export interface LogicStopRow {
   is_active: boolean;
   created_at?: string;
 }
+
+export interface LogicSecurityRow {
+  id: number;
+  logic_id: number;
+  security_id: number;
+  display_order: number;
+  is_active: boolean;
+  created_at?: string;
+  security_name: string;
+  security_type: string;
+  prefix: string | null;
+  instrument_market: string | null;
+  exchange_id: number | null;
+  exchange_name: string | null;
+}

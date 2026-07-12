@@ -2,10 +2,13 @@ import { Component, OnDestroy, OnInit } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { FormsModule } from '@angular/forms';
 import { Subject, switchMap, takeUntil, timer } from 'rxjs';
+import { forkJoin } from 'rxjs';
 import { LogicsService } from '../services/logics.service';
 import { ReferencesService } from '../services/references.service';
-import { LogicIndicatorSignalRow, LogicRow, LogicStopRow } from '../models/logic.model';
+import { SecuritiesService } from '../services/securities.service';
+import { LogicIndicatorSignalRow, LogicRow, LogicSecurityRow, LogicStopRow } from '../models/logic.model';
 import { IndicatorRow } from '../models/lookup.model';
+import { SecurityRow } from '../models/market.model';
 import {
   AppConfigService,
   logicsLoadErrorMessage,
@@ -69,16 +72,27 @@ export class LogicsComponent implements OnInit, OnDestroy {
   expandedLogics = new Set<number>();
   expandedSignalsBlocks = new Set<number>();
   expandedStopsBlocks = new Set<number>();
+  expandedSecuritiesBlocks = new Set<number>();
   logicSignals = new Map<number, LogicIndicatorSignalRow[]>();
   logicStops = new Map<number, LogicStopRow[]>();
+  logicSecurities = new Map<number, LogicSecurityRow[]>();
   signalsLoading = new Set<number>();
   stopsLoading = new Set<number>();
+  securitiesLoading = new Set<number>();
 
   indicatorsCatalog: IndicatorRow[] = [];
   indicatorsLoaded = false;
 
   signalPicker: SignalPickerState = null;
   pickerSelectedIds = new Set<number>();
+
+  securityPickerLogicId: number | null = null;
+  pickerSelectedSecurityIds = new Set<number>();
+  stocksCatalog: SecurityRow[] = [];
+  futuresCatalog: SecurityRow[] = [];
+  securitiesCatalogLoaded = false;
+  securitiesCatalogLoading = false;
+  moexExchangeId: number | null = null;
 
   stopForm: StopFormState = null;
   stopFormDraft: StopFormDraft = {
@@ -99,11 +113,13 @@ export class LogicsComponent implements OnInit, OnDestroy {
   constructor(
     private readonly logicsService: LogicsService,
     private readonly refs: ReferencesService,
+    private readonly securitiesService: SecuritiesService,
     private readonly appConfig: AppConfigService
   ) {}
 
   ngOnInit(): void {
     this.loadIndicatorsCatalog();
+    this.loadMoexExchangeId();
     timer(0, POLL_INTERVAL_MS)
       .pipe(
         takeUntil(this.destroy$),
@@ -152,6 +168,10 @@ export class LogicsComponent implements OnInit, OnDestroy {
     return this.expandedStopsBlocks.has(id);
   }
 
+  isSecuritiesBlockExpanded(id: number): boolean {
+    return this.expandedSecuritiesBlocks.has(id);
+  }
+
   toggleLogicExpand(row: LogicRow, event: Event): void {
     const target = event.target as HTMLElement;
     if (
@@ -163,15 +183,13 @@ export class LogicsComponent implements OnInit, OnDestroy {
       this.expandedLogics.delete(row.id);
       this.expandedSignalsBlocks.delete(row.id);
       this.expandedStopsBlocks.delete(row.id);
+      this.expandedSecuritiesBlocks.delete(row.id);
       this.closeSignalPicker();
       this.closeStopForm();
+      this.closeSecurityPicker();
       return;
     }
     this.expandedLogics.add(row.id);
-    this.expandedSignalsBlocks.add(row.id);
-    this.expandedStopsBlocks.add(row.id);
-    this.loadSignalsForLogic(row.id);
-    this.loadStopsForLogic(row.id);
   }
 
   toggleSignalsBlock(logicId: number, event: Event): void {
@@ -196,6 +214,169 @@ export class LogicsComponent implements OnInit, OnDestroy {
       this.expandedStopsBlocks.add(logicId);
       this.loadStopsForLogic(logicId);
     }
+  }
+
+  toggleStopsBlock(logicId: number, event: Event): void {
+    event.preventDefault();
+    event.stopPropagation();
+    if (this.expandedStopsBlocks.has(logicId)) {
+      this.expandedStopsBlocks.delete(logicId);
+      this.closeStopForm();
+    } else {
+      this.expandedStopsBlocks.add(logicId);
+      this.loadStopsForLogic(logicId);
+    }
+  }
+
+  toggleSecuritiesBlock(logicId: number, event: Event): void {
+    event.preventDefault();
+    event.stopPropagation();
+    if (this.expandedSecuritiesBlocks.has(logicId)) {
+      this.expandedSecuritiesBlocks.delete(logicId);
+      this.closeSecurityPicker();
+    } else {
+      this.expandedSecuritiesBlocks.add(logicId);
+      this.loadSecuritiesForLogic(logicId);
+    }
+  }
+
+  securitiesFor(logicId: number): LogicSecurityRow[] {
+    return this.logicSecurities.get(logicId) ?? [];
+  }
+
+  isSecuritiesLoading(logicId: number): boolean {
+    return this.securitiesLoading.has(logicId);
+  }
+
+  securityKindLabel(row: LogicSecurityRow): string {
+    return row.instrument_market === 'futures' ? 'Фьючерс' : 'Акция';
+  }
+
+  openSecurityPicker(logicId: number, event: Event): void {
+    event.stopPropagation();
+    this.securityPickerLogicId = logicId;
+    this.pickerSelectedSecurityIds.clear();
+    if (!this.expandedLogics.has(logicId)) {
+      this.expandedLogics.add(logicId);
+    }
+    this.expandedSecuritiesBlocks.add(logicId);
+    this.loadSecuritiesForLogic(logicId);
+    this.ensureSecuritiesCatalogLoaded();
+  }
+
+  closeSecurityPicker(): void {
+    this.securityPickerLogicId = null;
+    this.pickerSelectedSecurityIds.clear();
+  }
+
+  isSecurityPickerOpen(logicId: number): boolean {
+    return this.securityPickerLogicId === logicId;
+  }
+
+  toggleSecurityPickerSelection(securityId: number): void {
+    if (this.pickerSelectedSecurityIds.has(securityId)) {
+      this.pickerSelectedSecurityIds.delete(securityId);
+    } else {
+      this.pickerSelectedSecurityIds.add(securityId);
+    }
+  }
+
+  isSecurityPickerSelected(securityId: number): boolean {
+    return this.pickerSelectedSecurityIds.has(securityId);
+  }
+
+  pickerStocksAvailable(logicId: number): SecurityRow[] {
+    const assigned = new Set(
+      this.securitiesFor(logicId).map((s) => s.security_id)
+    );
+    return this.stocksCatalog.filter((s) => !assigned.has(s.id));
+  }
+
+  pickerFuturesAvailable(logicId: number): SecurityRow[] {
+    const assigned = new Set(
+      this.securitiesFor(logicId).map((s) => s.security_id)
+    );
+    return this.futuresCatalog.filter((s) => !assigned.has(s.id));
+  }
+
+  allStocksPickerSelected(logicId: number): boolean {
+    const list = this.pickerStocksAvailable(logicId);
+    return list.length > 0 && list.every((s) => this.pickerSelectedSecurityIds.has(s.id));
+  }
+
+  someStocksPickerSelected(logicId: number): boolean {
+    const list = this.pickerStocksAvailable(logicId);
+    const n = list.filter((s) => this.pickerSelectedSecurityIds.has(s.id)).length;
+    return n > 0 && n < list.length;
+  }
+
+  allFuturesPickerSelected(logicId: number): boolean {
+    const list = this.pickerFuturesAvailable(logicId);
+    return list.length > 0 && list.every((s) => this.pickerSelectedSecurityIds.has(s.id));
+  }
+
+  someFuturesPickerSelected(logicId: number): boolean {
+    const list = this.pickerFuturesAvailable(logicId);
+    const n = list.filter((s) => this.pickerSelectedSecurityIds.has(s.id)).length;
+    return n > 0 && n < list.length;
+  }
+
+  toggleAllStocksPicker(logicId: number, checked: boolean): void {
+    for (const s of this.pickerStocksAvailable(logicId)) {
+      if (checked) {
+        this.pickerSelectedSecurityIds.add(s.id);
+      } else {
+        this.pickerSelectedSecurityIds.delete(s.id);
+      }
+    }
+  }
+
+  toggleAllFuturesPicker(logicId: number, checked: boolean): void {
+    for (const s of this.pickerFuturesAvailable(logicId)) {
+      if (checked) {
+        this.pickerSelectedSecurityIds.add(s.id);
+      } else {
+        this.pickerSelectedSecurityIds.delete(s.id);
+      }
+    }
+  }
+
+  addSelectedSecurities(): void {
+    if (this.securityPickerLogicId == null || this.pickerSelectedSecurityIds.size === 0) {
+      return;
+    }
+    const logicId = this.securityPickerLogicId;
+    const ids = [...this.pickerSelectedSecurityIds];
+    this.logicsService.addLogicSecuritiesBulk(logicId, ids).subscribe({
+      next: (created) => {
+        const list = [...this.securitiesFor(logicId)];
+        for (const row of created) {
+          const idx = list.findIndex((x) => x.id === row.id);
+          if (idx >= 0) {
+            list[idx] = row;
+          } else {
+            list.push(row);
+          }
+        }
+        this.logicSecurities.set(logicId, list);
+        this.closeSecurityPicker();
+      },
+      error: (err) => {
+        alert(err?.error?.error || 'Не удалось добавить бумаги');
+      },
+    });
+  }
+
+  deleteLogicSecurity(row: LogicSecurityRow, event: Event): void {
+    event.stopPropagation();
+    this.logicsService.deleteLogicSecurity(row.id).subscribe({
+      next: () => {
+        const list = (this.logicSecurities.get(row.logic_id) ?? []).filter(
+          (s) => s.id !== row.id
+        );
+        this.logicSecurities.set(row.logic_id, list);
+      },
+    });
   }
 
   stopsFor(logicId: number): LogicStopRow[] {
@@ -489,7 +670,9 @@ export class LogicsComponent implements OnInit, OnDestroy {
       next: () => {
         this.logicSignals.delete(row.id);
         this.logicStops.delete(row.id);
+        this.logicSecurities.delete(row.id);
         this.expandedLogics.delete(row.id);
+        this.expandedSecuritiesBlocks.delete(row.id);
         this.loadLogicsOnce();
       },
       error: (err) => {
@@ -564,6 +747,76 @@ export class LogicsComponent implements OnInit, OnDestroy {
       },
       error: () => {
         this.signalsLoading.delete(logicId);
+      },
+    });
+  }
+
+  private loadSecuritiesForLogic(logicId: number): void {
+    if (this.securitiesLoading.has(logicId)) return;
+    this.securitiesLoading.add(logicId);
+    this.logicsService.getLogicSecurities(logicId).subscribe({
+      next: (rows) => {
+        this.logicSecurities.set(logicId, rows);
+        this.securitiesLoading.delete(logicId);
+      },
+      error: () => {
+        this.securitiesLoading.delete(logicId);
+      },
+    });
+  }
+
+  private loadMoexExchangeId(): void {
+    this.refs.getExchanges().subscribe({
+      next: (rows) => {
+        const moex =
+          rows.find((e) => e.name === 'MOEX' && e.is_active) ??
+          rows.find((e) => e.is_active);
+        this.moexExchangeId = moex?.id ?? null;
+      },
+    });
+  }
+
+  private ensureSecuritiesCatalogLoaded(): void {
+    if (this.securitiesCatalogLoaded || this.securitiesCatalogLoading) {
+      return;
+    }
+    if (!this.moexExchangeId) {
+      this.refs.getExchanges().subscribe({
+        next: (rows) => {
+          const moex =
+            rows.find((e) => e.name === 'MOEX' && e.is_active) ??
+            rows.find((e) => e.is_active);
+          this.moexExchangeId = moex?.id ?? null;
+          if (this.moexExchangeId) {
+            this.fetchSecuritiesCatalog(this.moexExchangeId);
+          } else {
+            this.securitiesCatalogLoaded = true;
+          }
+        },
+        error: () => {
+          this.securitiesCatalogLoaded = true;
+        },
+      });
+      return;
+    }
+    this.fetchSecuritiesCatalog(this.moexExchangeId);
+  }
+
+  private fetchSecuritiesCatalog(exchangeId: number): void {
+    this.securitiesCatalogLoading = true;
+    forkJoin({
+      stocks: this.securitiesService.getSecurities(exchangeId, 'stock'),
+      futures: this.securitiesService.getSecurities(exchangeId, 'futures'),
+    }).subscribe({
+      next: ({ stocks, futures }) => {
+        this.stocksCatalog = stocks;
+        this.futuresCatalog = futures;
+        this.securitiesCatalogLoaded = true;
+        this.securitiesCatalogLoading = false;
+      },
+      error: () => {
+        this.securitiesCatalogLoaded = true;
+        this.securitiesCatalogLoading = false;
       },
     });
   }

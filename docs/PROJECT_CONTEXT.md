@@ -5,7 +5,7 @@
 > Включать **запросы пользователя текстом** (секция «Запросы пользователя»).
 
 **Репозиторий:** https://github.com/RobinZGit/MultiLogicTradePg  
-**Последнее обновление:** 2026-07-12 (assign queue + debounced flush после mergeOnly)
+**Последнее обновление:** 2026-07-12 (logic_securities UI + assign queue fix)
 
 ---
 
@@ -73,6 +73,7 @@
 - **`indicators.sig_trend_def`**, **`indicators.sig_ct_def`** — условия тренда/контртренда по умолчанию (на сериях: `VALUE > 50`, `pp > VALUE`, …);
 - **`logic_indicator_signals`** — сигналы индикаторов на логике (`logic_id`, `indicator_id`, `signal_kind` trend|counter, `formula`);
 - **`logic_stops`** — стоп-лосс и тейк-профит по логике (`rule_kind` stop_loss|take_profit, `scope_type` security|portfolio, `value`, `value_unit` percent|atr);
+- **`logic_securities`** — портфель бумаг логики (`logic_id`, `security_id`, `display_order`, `is_active`);
 - **`indicators.formula`** — многочлен для `calc_poly_formula_array`; **`is_custom`** — подсветка в списке;
 - **`sma`**, **`ema`**, **`ww()`** — от close; **`sma(period=20)`**, **`sma(period=20, series=VALUE)`** — параметры в ();
 - **`@CODE`**, `*`, `#`, ядра `(1;-2;1)` — единый парсер `poly_*` в `02`;
@@ -80,8 +81,8 @@
 - UI: **«+»** у «Индикаторы» → форма (код, название, описание, формула); **«И.»** — справка по синтаксису;
 - API: `GET/POST /api/indicators`, `PUT /api/indicators/:id` (formula для `is_custom`);
 - `logics` + `logics_detail` — движок формул **ещё не реализован**;
-- UI **Операции** (`/operations`): … **«Стоп-лосс и тейк-профит»** (+ стоп-лосс / + тейк-профит, тип **security** «По бумаге» | **portfolio** «По всему портфелю логики», значение, единица %|ATR);
-- API: `GET/POST/PUT/DELETE /api/logic-indicator-signals`; `GET/POST/PUT/DELETE /api/logic-stops`; парсер-заготовка `web/src/app/shared/signal-formula.ts`, подписи `web/src/app/shared/logic-stop.ts`;
+- UI **Операции** (`/operations`): … три сворачиваемых блока под строкой логики — **«Сигналы индикаторов»**, **«Стоп-лосс и тейк-профит»**, **«Ценные бумаги»** (по умолчанию свёрнуты; разворот строки логики не раскрывает блоки автоматически);
+- API: `GET/POST/PUT/DELETE /api/logic-indicator-signals`; `GET/POST/PUT/DELETE /api/logic-stops`; `GET /api/logic-securities`, `POST /api/logic-securities/bulk`, `DELETE /api/logic-securities/:id`;
 
 ### Правило схемы БД
 
@@ -111,7 +112,8 @@
 26. **Fix pan влево (SMAT3):** proactive `loadOlder`, `incremental=false` при сдвиге `end_dt` влево, защита poll от stale gen, debounce по `lastVisibleRange`.
 27. **Logics — стопы:** таблица `logic_stops`, UI блок под сигналами, форма добавления, inline-редактирование строк.
 28. **Fix hang при drag индикатора:** единый `syncGen` для assign/range/poll; блок full sync во время `mergeOnly` assign; отложенный full sync после assign; расширенное `app_tech_log` (poll start/ok, superseded, deferred).
-29. **Fix multi-indicator assign:** очередь POST+mergeOnly по одному на бумагу; блок повторного drop (pending с отрицательным id); после mergeOnly — debounced flush (1.2 с), не немедленный full sync; `isAssignBusy` блокирует auto/range sync на всю очередь; сброс deferred при новом assign.
+29. **Fix multi-indicator assign:** очередь POST+mergeOnly по одному на бумагу; debounced flush после серии assign.
+30. **Logics — ценные бумаги:** таблица `logic_securities`, блок «Ценные бумаги» (+ Добавить, picker акции/фьючерсы с «выбрать все», bulk add); все три подблока логики свёрнуты по умолчанию.
 
 ### Автотесты
 
@@ -170,6 +172,7 @@
 
 | Дата | Суть |
 |------|------|
+| 2026-07-12 | logic_securities + UI блок «Ценные бумаги» на logics |
 | 2026-07-12 | assign queue + debounced flush; fix multi-indicator drag hang |
 | 2026-07-12 | fix assign indicator sync race; tech log poll/superseded |
 | 2026-07-12 | logic_stops scope: security (по бумаге) / portfolio (портфель) |
@@ -233,3 +236,4 @@
 30. «Тип стопа: не «по логике», а **по бумаге** и **по всему портфелю логики**; исправить и в репо».
 31. «Зависание при добавлении индикатора с логированием — исправить гонку sync (gen, defer full sync, лог poll); в репо».
 32. «Снова зависание при добавлении нескольких индикаторов на бумагу — разбор app_tech_log; очередь assign + debounced flush; в репо».
+33. «На logics третий блок «Ценные бумаги»: таблица logic_securities, picker акции/фьючерсы с галочками и «выбрать все», bulk add; все три блока свёрнуты по умолчанию; контекст; в репо».

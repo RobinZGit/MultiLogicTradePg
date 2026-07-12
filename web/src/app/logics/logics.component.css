@@ -606,3 +606,69 @@ tbody tr:hover {
   background: #dcfce7;
   color: #15803d;
 }
+
+.securities-block {
+  margin-top: 0;
+}
+
+.btn-securities {
+  border-color: #a5b4fc;
+  color: #4338ca;
+  background: #eef2ff;
+}
+
+.securities-picker {
+  max-height: 320px;
+}
+
+.sec-picker-group {
+  border: 1px solid #e2e8f0;
+  border-radius: 6px;
+  margin-bottom: 0.5rem;
+  background: #fff;
+}
+
+.sec-picker-group summary {
+  list-style: none;
+  cursor: pointer;
+  padding: 0.35rem 0.5rem;
+}
+
+.sec-picker-group summary::-webkit-details-marker {
+  display: none;
+}
+
+.sec-picker-group-head {
+  display: flex;
+  align-items: center;
+}
+
+.sec-picker-all {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  cursor: pointer;
+  font-weight: 600;
+  font-size: 0.88rem;
+  width: 100%;
+}
+
+.sec-picker-group-title {
+  flex: 1;
+}
+
+.sec-picker-count {
+  color: #64748b;
+  font-weight: 400;
+  font-size: 0.82rem;
+}
+
+.sec-picker-group .picker-list {
+  padding: 0 0.35rem 0.35rem;
+  max-height: 140px;
+  overflow: auto;
+}
+
+.picker-empty-nested {
+  margin: 0.25rem 0.5rem 0.5rem;
+}

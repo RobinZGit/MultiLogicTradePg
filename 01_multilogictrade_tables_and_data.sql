@@ -1,6 +1,6 @@
 -- ============================================
 -- MultiLogicTrade — шаг 1: таблицы и справочники
--- Версия: v15 (идемпотентный запуск)
+-- Версия: v16 (идемпотентный запуск)
 -- ============================================
 -- Подключение: база multilogictrade
 -- Можно выполнять многократно: объекты и строки не дублируются.
@@ -25,6 +25,13 @@
 -- ============================================
 
 -- ============================================
+-- Блок миграции: обновление существующей схемы v15 → v16
+-- ============================================
+DO $$
+BEGIN
+    NULL;
+END $$;
+
 -- Блок миграции: обновление существующей схемы v14 → v15
 -- ============================================
 DO $$
@@ -923,6 +930,24 @@ COMMENT ON TABLE logic_stops IS
 COMMENT ON COLUMN logic_stops.rule_kind IS 'stop_loss | take_profit';
 COMMENT ON COLUMN logic_stops.scope_type IS 'security — по бумаге; portfolio — по всему портфелю логики';
 COMMENT ON COLUMN logic_stops.value_unit IS 'percent | atr';
+
+-- Ценные бумаги, привязанные к торговой логике (портфель логики)
+CREATE TABLE IF NOT EXISTS logic_securities (
+    id SERIAL PRIMARY KEY,
+    logic_id INTEGER NOT NULL REFERENCES logics(id) ON DELETE CASCADE,
+    security_id INTEGER NOT NULL REFERENCES securities(id) ON DELETE RESTRICT,
+    display_order INTEGER NOT NULL DEFAULT 0,
+    is_active BOOLEAN NOT NULL DEFAULT TRUE,
+    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE (logic_id, security_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_logic_securities_logic_id ON logic_securities(logic_id);
+CREATE INDEX IF NOT EXISTS idx_logic_securities_security_id ON logic_securities(security_id);
+
+COMMENT ON TABLE logic_securities IS
+'Портфель ценных бумаг торговой логики: одна строка — одна бумага в logics';
+COMMENT ON COLUMN logic_securities.display_order IS 'Порядок отображения в UI';
 
 -- ============================================
 -- Таблица: futures_expirations (контракты фьючерсов)

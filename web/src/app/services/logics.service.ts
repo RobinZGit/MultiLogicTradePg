@@ -2,7 +2,7 @@ import { Injectable } from '@angular/core';
 import { HttpClient } from '@angular/common/http';
 import { Observable } from 'rxjs';
 import { AppConfigService } from './app-config.service';
-import { LogicIndicatorSignalRow, LogicRow, LogicStopRow } from '../models/logic.model';
+import { LogicIndicatorSignalRow, LogicRow, LogicSecurityRow, LogicStopRow } from '../models/logic.model';
 import { LogicPayload } from '../models/lookup.model';
 
 @Injectable({ providedIn: 'root' })
@@ -120,6 +120,29 @@ export class LogicsService {
   deleteLogicStop(id: number): Observable<{ ok: boolean; id: number }> {
     return this.http.delete<{ ok: boolean; id: number }>(
       `${this.appConfig.apiUrl}/logic-stops/${id}`
+    );
+  }
+
+  getLogicSecurities(logicId: number): Observable<LogicSecurityRow[]> {
+    return this.http.get<LogicSecurityRow[]>(
+      `${this.appConfig.apiUrl}/logic-securities`,
+      { params: { logic_id: String(logicId) } }
+    );
+  }
+
+  addLogicSecuritiesBulk(
+    logicId: number,
+    securityIds: number[]
+  ): Observable<LogicSecurityRow[]> {
+    return this.http.post<LogicSecurityRow[]>(
+      `${this.appConfig.apiUrl}/logic-securities/bulk`,
+      { logic_id: logicId, security_ids: securityIds }
+    );
+  }
+
+  deleteLogicSecurity(id: number): Observable<{ ok: boolean; id: number }> {
+    return this.http.delete<{ ok: boolean; id: number }>(
+      `${this.appConfig.apiUrl}/logic-securities/${id}`
     );
   }
 }

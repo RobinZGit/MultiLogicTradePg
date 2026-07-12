@@ -742,6 +742,278 @@
 
                     </details>
 
+                    <details class="signals-block securities-block" [open]="isSecuritiesBlockExpanded(row.id)">
+
+                      <summary class="signals-summary">
+
+                        <span
+                          class="signals-summary-head"
+                          (click)="toggleSecuritiesBlock(row.id, $event)"
+                        >
+
+                          <span
+                            class="signals-chevron"
+                            [class.open]="isSecuritiesBlockExpanded(row.id)"
+                            aria-hidden="true"
+                          >▸</span>
+
+                          <span class="signals-title">Ценные бумаги</span>
+
+                          @if (isSecuritiesLoading(row.id)) {
+
+                            <span class="signals-loading">загрузка…</span>
+
+                          }
+
+                        </span>
+
+                        <span class="signals-summary-actions">
+
+                          <button
+                            type="button"
+                            class="btn btn-sm btn-securities"
+                            (click)="openSecurityPicker(row.id, $event)"
+                          >
+                            + Добавить
+                          </button>
+
+                        </span>
+
+                      </summary>
+
+                      <div class="signals-body">
+
+                        @if (isSecurityPickerOpen(row.id)) {
+
+                          <div class="indicator-picker securities-picker">
+
+                            <p class="picker-title">
+                              Выберите бумаги — галочки по строкам или «выбрать все» у группы
+                            </p>
+
+                            @if (securitiesCatalogLoading || !securitiesCatalogLoaded) {
+
+                              <p class="picker-empty">Загрузка списка бумаг…</p>
+
+                            } @else {
+
+                              <details class="sec-picker-group">
+
+                                <summary class="sec-picker-group-head">
+
+                                  <label class="sec-picker-all" (click)="$event.stopPropagation()">
+
+                                    <input
+                                      type="checkbox"
+                                      [checked]="allStocksPickerSelected(row.id)"
+                                      [disabled]="pickerStocksAvailable(row.id).length === 0"
+                                      (change)="toggleAllStocksPicker(row.id, $any($event.target).checked)"
+                                    />
+
+                                    <span class="sec-picker-group-title">Акции</span>
+
+                                    <span class="sec-picker-count">({{ pickerStocksAvailable(row.id).length }})</span>
+
+                                  </label>
+
+                                </summary>
+
+                                @if (pickerStocksAvailable(row.id).length === 0) {
+
+                                  <p class="picker-empty picker-empty-nested">Все акции уже добавлены</p>
+
+                                } @else {
+
+                                  <ul class="picker-list">
+
+                                    @for (sec of pickerStocksAvailable(row.id); track sec.id) {
+
+                                      <li
+                                        class="picker-item"
+                                        [class.selected]="isSecurityPickerSelected(sec.id)"
+                                      >
+
+                                        <label>
+
+                                          <input
+                                            type="checkbox"
+                                            [checked]="isSecurityPickerSelected(sec.id)"
+                                            (change)="toggleSecurityPickerSelection(sec.id)"
+                                          />
+
+                                          <span class="picker-code">{{ sec.prefix }}</span>
+
+                                          <span class="picker-name">{{ sec.name }}</span>
+
+                                        </label>
+
+                                      </li>
+
+                                    }
+
+                                  </ul>
+
+                                }
+
+                              </details>
+
+                              <details class="sec-picker-group">
+
+                                <summary class="sec-picker-group-head">
+
+                                  <label class="sec-picker-all" (click)="$event.stopPropagation()">
+
+                                    <input
+                                      type="checkbox"
+                                      [checked]="allFuturesPickerSelected(row.id)"
+                                      [disabled]="pickerFuturesAvailable(row.id).length === 0"
+                                      (change)="toggleAllFuturesPicker(row.id, $any($event.target).checked)"
+                                    />
+
+                                    <span class="sec-picker-group-title">Фьючерсы</span>
+
+                                    <span class="sec-picker-count">({{ pickerFuturesAvailable(row.id).length }})</span>
+
+                                  </label>
+
+                                </summary>
+
+                                @if (pickerFuturesAvailable(row.id).length === 0) {
+
+                                  <p class="picker-empty picker-empty-nested">Все фьючерсы уже добавлены</p>
+
+                                } @else {
+
+                                  <ul class="picker-list">
+
+                                    @for (sec of pickerFuturesAvailable(row.id); track sec.id) {
+
+                                      <li
+                                        class="picker-item"
+                                        [class.selected]="isSecurityPickerSelected(sec.id)"
+                                      >
+
+                                        <label>
+
+                                          <input
+                                            type="checkbox"
+                                            [checked]="isSecurityPickerSelected(sec.id)"
+                                            (change)="toggleSecurityPickerSelection(sec.id)"
+                                          />
+
+                                          <span class="picker-code">{{ sec.prefix }}</span>
+
+                                          <span class="picker-name">{{ sec.name }}</span>
+
+                                        </label>
+
+                                      </li>
+
+                                    }
+
+                                  </ul>
+
+                                }
+
+                              </details>
+
+                            }
+
+                            <div class="picker-actions">
+
+                              <button
+                                type="button"
+                                class="btn btn-sm btn-ok"
+                                [disabled]="pickerSelectedSecurityIds.size === 0"
+                                (click)="addSelectedSecurities()"
+                              >
+                                Добавить ({{ pickerSelectedSecurityIds.size }})
+                              </button>
+
+                              <button type="button" class="btn btn-sm btn-muted" (click)="closeSecurityPicker()">
+                                Отмена
+                              </button>
+
+                            </div>
+
+                          </div>
+
+                        }
+
+                        <table class="signals-table securities-table">
+
+                          <thead>
+
+                            <tr>
+
+                              <th>Тикер</th>
+
+                              <th>Название</th>
+
+                              <th>Тип</th>
+
+                              <th>Биржа</th>
+
+                              <th class="col-sig-actions"></th>
+
+                            </tr>
+
+                          </thead>
+
+                          <tbody>
+
+                            @for (sec of securitiesFor(row.id); track sec.id) {
+
+                              <tr [class.sig-inactive]="!sec.is_active">
+
+                                <td><strong>{{ sec.prefix || '—' }}</strong></td>
+
+                                <td>{{ sec.security_name }}</td>
+
+                                <td>{{ securityKindLabel(sec) }}</td>
+
+                                <td>{{ sec.exchange_name || '—' }}</td>
+
+                                <td class="col-sig-actions">
+
+                                  <button
+                                    type="button"
+                                    class="icon-btn icon-danger"
+                                    title="Удалить"
+                                    aria-label="Удалить"
+                                    (click)="deleteLogicSecurity(sec, $event)"
+                                  >
+                                    ✕
+                                  </button>
+
+                                </td>
+
+                              </tr>
+
+                            } @empty {
+
+                              <tr>
+
+                                <td colspan="5" class="empty">
+                                  Нет бумаг — нажмите «+ Добавить»
+                                </td>
+
+                              </tr>
+
+                            }
+
+                          </tbody>
+
+                        </table>
+
+                        <p class="signals-help">
+                          Портфель бумаг этой торговой логики. Сигналы и стопы применяются к выбранным инструментам.
+                        </p>
+
+                      </div>
+
+                    </details>
+
                   </div>
 
                 </td>
