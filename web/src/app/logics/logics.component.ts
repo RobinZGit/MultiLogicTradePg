@@ -4,7 +4,7 @@ import { FormsModule } from '@angular/forms';
 import { Subject, switchMap, takeUntil, timer } from 'rxjs';
 import { LogicsService } from '../services/logics.service';
 import { ReferencesService } from '../services/references.service';
-import { LogicIndicatorSignalRow, LogicRow } from '../models/logic.model';
+import { LogicIndicatorSignalRow, LogicRow, LogicStopRow } from '../models/logic.model';
 import { IndicatorRow } from '../models/lookup.model';
 import {
   AppConfigService,
@@ -20,6 +20,16 @@ import {
   signalKindLabel,
   SignalKind,
 } from '../shared/signal-formula';
+import {
+  LOGIC_STOP_SCOPES,
+  LOGIC_STOP_UNITS,
+  LogicStopRuleKind,
+  LogicStopScopeType,
+  LogicStopValueUnit,
+  ruleKindLabel,
+  scopeTypeLabel,
+  valueUnitLabel,
+} from '../shared/logic-stop';
 
 const POLL_INTERVAL_MS = 2000;
 
@@ -27,6 +37,17 @@ type SignalPickerState = {
   logicId: number;
   kind: SignalKind;
 } | null;
+
+type StopFormState = {
+  logicId: number;
+  ruleKind: LogicStopRuleKind;
+} | null;
+
+type StopFormDraft = {
+  scope_type: LogicStopScopeType;
+  value: string;
+  value_unit: LogicStopValueUnit;
+};
 
 @Component({
   selector: 'app-logics',
@@ -47,8 +68,11 @@ export class LogicsComponent implements OnInit, OnDestroy {
 
   expandedLogics = new Set<number>();
   expandedSignalsBlocks = new Set<number>();
+  expandedStopsBlocks = new Set<number>();
   logicSignals = new Map<number, LogicIndicatorSignalRow[]>();
+  logicStops = new Map<number, LogicStopRow[]>();
   signalsLoading = new Set<number>();
+  stopsLoading = new Set<number>();
 
   indicatorsCatalog: IndicatorRow[] = [];
   indicatorsLoaded = false;
@@ -56,10 +80,21 @@ export class LogicsComponent implements OnInit, OnDestroy {
   signalPicker: SignalPickerState = null;
   pickerSelectedIds = new Set<number>();
 
+  stopForm: StopFormState = null;
+  stopFormDraft: StopFormDraft = {
+    scope_type: 'logic',
+    value: '',
+    value_unit: 'percent',
+  };
+
+  readonly stopScopes = LOGIC_STOP_SCOPES;
+  readonly stopUnits = LOGIC_STOP_UNITS;
+
   private readonly destroy$ = new Subject<void>();
   private savingIds = new Set<number>();
   private formulaDrafts = new Map<number, string>();
   private savingFormulaIds = new Set<number>();
+  private savingStopIds = new Set<number>();
 
   constructor(
     private readonly logicsService: LogicsService,
@@ -101,6 +136,9 @@ export class LogicsComponent implements OnInit, OnDestroy {
   }
 
   signalKindLabel = signalKindLabel;
+  ruleKindLabel = ruleKindLabel;
+  scopeTypeLabel = scopeTypeLabel;
+  valueUnitLabel = valueUnitLabel;
 
   isLogicExpanded(id: number): boolean {
     return this.expandedLogics.has(id);
@@ -108,6 +146,10 @@ export class LogicsComponent implements OnInit, OnDestroy {
 
   isSignalsBlockExpanded(id: number): boolean {
     return this.expandedSignalsBlocks.has(id);
+  }
+
+  isStopsBlockExpanded(id: number): boolean {
+    return this.expandedStopsBlocks.has(id);
   }
 
   toggleLogicExpand(row: LogicRow, event: Event): void {
@@ -120,12 +162,16 @@ export class LogicsComponent implements OnInit, OnDestroy {
     if (this.expandedLogics.has(row.id)) {
       this.expandedLogics.delete(row.id);
       this.expandedSignalsBlocks.delete(row.id);
+      this.expandedStopsBlocks.delete(row.id);
       this.closeSignalPicker();
+      this.closeStopForm();
       return;
     }
     this.expandedLogics.add(row.id);
     this.expandedSignalsBlocks.add(row.id);
+    this.expandedStopsBlocks.add(row.id);
     this.loadSignalsForLogic(row.id);
+    this.loadStopsForLogic(row.id);
   }
 
   toggleSignalsBlock(logicId: number, event: Event): void {
@@ -138,6 +184,126 @@ export class LogicsComponent implements OnInit, OnDestroy {
       this.expandedSignalsBlocks.add(logicId);
       this.loadSignalsForLogic(logicId);
     }
+  }
+
+  toggleStopsBlock(logicId: number, event: Event): void {
+    event.preventDefault();
+    event.stopPropagation();
+    if (this.expandedStopsBlocks.has(logicId)) {
+      this.expandedStopsBlocks.delete(logicId);
+      this.closeStopForm();
+    } else {
+      this.expandedStopsBlocks.add(logicId);
+      this.loadStopsForLogic(logicId);
+    }
+  }
+
+  stopsFor(logicId: number): LogicStopRow[] {
+    return this.logicStops.get(logicId) ?? [];
+  }
+
+  isStopsLoading(logicId: number): boolean {
+    return this.stopsLoading.has(logicId);
+  }
+
+  openStopForm(logicId: number, ruleKind: LogicStopRuleKind, event: Event): void {
+    event.stopPropagation();
+    this.stopForm = { logicId, ruleKind };
+    this.stopFormDraft = {
+      scope_type: 'logic',
+      value: '',
+      value_unit: 'percent',
+    };
+    if (!this.expandedLogics.has(logicId)) {
+      this.expandedLogics.add(logicId);
+    }
+    this.expandedStopsBlocks.add(logicId);
+    this.loadStopsForLogic(logicId);
+  }
+
+  closeStopForm(): void {
+    this.stopForm = null;
+  }
+
+  isStopFormOpen(logicId: number, ruleKind: LogicStopRuleKind): boolean {
+    return (
+      this.stopForm?.logicId === logicId && this.stopForm.ruleKind === ruleKind
+    );
+  }
+
+  submitStopForm(): void {
+    if (!this.stopForm) return;
+    const value = Number(this.stopFormDraft.value.replace(',', '.'));
+    if (!Number.isFinite(value) || value <= 0) {
+      alert('Укажите положительное число в поле «Значение»');
+      return;
+    }
+    const { logicId, ruleKind } = this.stopForm;
+    this.logicsService
+      .createLogicStop({
+        logic_id: logicId,
+        rule_kind: ruleKind,
+        scope_type: this.stopFormDraft.scope_type,
+        value,
+        value_unit: this.stopFormDraft.value_unit,
+      })
+      .subscribe({
+        next: (created) => {
+          const list = [...(this.logicStops.get(logicId) ?? []), created];
+          this.logicStops.set(logicId, list);
+          this.closeStopForm();
+        },
+        error: (err) => {
+          alert(err?.error?.error || 'Не удалось добавить правило');
+        },
+      });
+  }
+
+  saveStopRow(
+    stop: LogicStopRow,
+    patch: {
+      scope_type?: LogicStopScopeType;
+      value?: number;
+      value_unit?: LogicStopValueUnit;
+    }
+  ): void {
+    if (this.savingStopIds.has(stop.id)) return;
+    this.savingStopIds.add(stop.id);
+    this.logicsService.updateLogicStop(stop.id, patch).subscribe({
+      next: (updated) => {
+        const list = this.logicStops.get(stop.logic_id) ?? [];
+        this.logicStops.set(
+          stop.logic_id,
+          list.map((s) => (s.id === updated.id ? updated : s))
+        );
+        this.savingStopIds.delete(stop.id);
+      },
+      error: () => this.savingStopIds.delete(stop.id),
+    });
+  }
+
+  onStopValueBlur(stop: LogicStopRow, raw: string): void {
+    const value = Number(raw.replace(',', '.'));
+    if (!Number.isFinite(value) || value <= 0 || value === stop.value) {
+      return;
+    }
+    this.saveStopRow(stop, { value });
+  }
+
+  deleteStop(stop: LogicStopRow, event: Event): void {
+    event.stopPropagation();
+    this.logicsService.deleteLogicStop(stop.id).subscribe({
+      next: () => {
+        const list = (this.logicStops.get(stop.logic_id) ?? []).filter(
+          (s) => s.id !== stop.id
+        );
+        this.logicStops.set(stop.logic_id, list);
+      },
+    });
+  }
+
+  isStopSaving(id: number): boolean {
+    return this.savingStopIds.has(id);
   }
 
   signalsFor(logicId: number): LogicIndicatorSignalRow[] {
@@ -322,6 +488,7 @@ export class LogicsComponent implements OnInit, OnDestroy {
     this.logicsService.deleteLogic(row.id).subscribe({
       next: () => {
         this.logicSignals.delete(row.id);
+        this.logicStops.delete(row.id);
         this.expandedLogics.delete(row.id);
         this.loadLogicsOnce();
       },
@@ -366,6 +533,20 @@ export class LogicsComponent implements OnInit, OnDestroy {
       },
       error: () => {
         this.indicatorsLoaded = true;
+      },
+    });
+  }
+
+  private loadStopsForLogic(logicId: number): void {
+    if (this.stopsLoading.has(logicId)) return;
+    this.stopsLoading.add(logicId);
+    this.logicsService.getLogicStops(logicId).subscribe({
+      next: (rows) => {
+        this.logicStops.set(logicId, rows);
+        this.stopsLoading.delete(logicId);
+      },
+      error: () => {
+        this.stopsLoading.delete(logicId);
       },
     });
   }

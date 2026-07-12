@@ -5,7 +5,7 @@
 > Включать **запросы пользователя текстом** (секция «Запросы пользователя»).
 
 **Репозиторий:** https://github.com/RobinZGit/MultiLogicTradePg  
-**Последнее обновление:** 2026-07-12 (app_tech_log, fix pan-left SMAT3 sync, checkbox «Логирование»)
+**Последнее обновление:** 2026-07-12 (logic_stops: стоп-лосс/тейк-профит на странице «Операции»)
 
 ---
 
@@ -72,6 +72,7 @@
 - справочник `indicators` (32 шт.: + **SMAT3**), классические + **PACC** + пользовательские через `formula`;
 - **`indicators.sig_trend_def`**, **`indicators.sig_ct_def`** — условия тренда/контртренда по умолчанию (на сериях: `VALUE > 50`, `pp > VALUE`, …);
 - **`logic_indicator_signals`** — сигналы индикаторов на логике (`logic_id`, `indicator_id`, `signal_kind` trend|counter, `formula`);
+- **`logic_stops`** — стоп-лосс и тейк-профит по логике (`rule_kind` stop_loss|take_profit, `scope_type` logic|portfolio, `value`, `value_unit` percent|atr);
 - **`indicators.formula`** — многочлен для `calc_poly_formula_array`; **`is_custom`** — подсветка в списке;
 - **`sma`**, **`ema`**, **`ww()`** — от close; **`sma(period=20)`**, **`sma(period=20, series=VALUE)`** — параметры в ();
 - **`@CODE`**, `*`, `#`, ядра `(1;-2;1)` — единый парсер `poly_*` в `02`;
@@ -79,8 +80,8 @@
 - UI: **«+»** у «Индикаторы» → форма (код, название, описание, формула); **«И.»** — справка по синтаксису;
 - API: `GET/POST /api/indicators`, `PUT /api/indicators/:id` (formula для `is_custom`);
 - `logics` + `logics_detail` — движок формул **ещё не реализован**;
-- UI **Операции** (`/operations`): разворот строки логики → **«Сигналы индикаторов»** (+ тренд / + контртренд, мультивыбор, inline-формула `@RSI(…) VALUE > 50`);
-- API: `GET/POST/PUT/DELETE /api/logic-indicator-signals`; парсер-заготовка `web/src/app/shared/signal-formula.ts`;
+- UI **Операции** (`/operations`): разворот строки логики → **«Сигналы индикаторов»** (+ тренд / + контртренд, мультивыбор, inline-формула `@RSI(…) VALUE > 50`); ниже — **«Стоп-лосс и тейк-профит»** (+ стоп-лосс / + тейк-профит, общая форма: тип logic|portfolio, значение, единица %|ATR);
+- API: `GET/POST/PUT/DELETE /api/logic-indicator-signals`; `GET/POST/PUT/DELETE /api/logic-stops`; парсер-заготовка `web/src/app/shared/signal-formula.ts`, подписи `web/src/app/shared/logic-stop.ts`;
 
 ### Правило схемы БД
 
@@ -108,6 +109,7 @@
 24. **Logics — сигналы индикаторов:** таблица `logic_indicator_signals`, дефолты `sig_*_def`, UI с inline-редактированием формулы.
 25. **Технический журнал `app_tech_log`:** checkbox **«Логирование»** в шапке «Бумаги» (выкл. по умолчанию); start/end/event по `thread_key` (sec:N:gen:M); API `POST/GET /api/tech-log`.
 26. **Fix pan влево (SMAT3):** proactive `loadOlder`, `incremental=false` при сдвиге `end_dt` влево, защита poll от stale gen, debounce по `lastVisibleRange`.
+27. **Logics — стопы:** таблица `logic_stops`, UI блок под сигналами, форма добавления, inline-редактирование строк.
 
 ### Автотесты
 
@@ -148,13 +150,14 @@
 - [ ] Реализовать движок `logics_detail.formula`.
 - [ ] Прогнать полный UI-тест загрузки для вечных (`USDRUBF` и др.).
 - [ ] Параметры индикаторов per-security (редактирование колонок `param_*` в UI).
+- [ ] Параметр периода ATR для `logic_stops.value_unit = atr` (сейчас только хранение единицы).
 
 ---
 
 ## Заметки для агента
 
 - Коммиты и push — **по запросу** пользователя (2026-07-12: push после PACC + zero line).
-- При **выкладке** — обязательно обновить этот файл (правило `.cursor/rules/project-context.mdc`).
+- При **выкладке** — **обязательно** обновить `docs/PROJECT_CONTEXT.md` и закоммитить вместе с кодом (правило `.cursor/rules/project-context.mdc`). Не пушить код без актуального контекста.
 - Sergey — **2–3 устройства**; в начале сессии читать этот файл + `git log`.
 - Язык: русский (English note — только если пользователь пишет по-английски).
 - Пароль локального postgres часто: `111`.
@@ -165,6 +168,7 @@
 
 | Дата | Суть |
 |------|------|
+| 2026-07-12 | logic_stops + UI стоп-лосс/тейк-профит; обновление PROJECT_CONTEXT |
 | 2026-07-12 | app_tech_log + UI «Логирование»; fix pan-left SMAT3 sync |
 | 2026-07-12 | SMAT3 локальная свёртка; chart sync без зависания; verify-chart-sync |
 | 2026-07-12 | logics: logic_indicator_signals, sig_*_def, UI сигналов, signal-formula |
@@ -219,3 +223,5 @@
 22. «После пересоздания БД теряется токен T-Bank — диалог ввода при загрузке цен, хранить в глобальных параметрах, отмена → MOEX; пересоздать БД; в репо».
 26. «Drag индикатора: сразу в таблицу, расчёт async; жёсткий verify-async-sync в prebuild».
 27. «SMAT3 при перемотке в одну сторону OK, в обратную — зависает; таблица tech log в БД; галочка Логирование (выкл.); логировать start/end по потокам; пересобрать БД; контекст; в репо».
+28. «На странице logics под сигналами — блок стоп-лосс/тейк-профит; кнопки + стоп-лосс и + тейк-профит; таблица logic_stops; форма: вид, тип (по логике / портфель логики), значение, единица % или ATR; строки в списке; контекст; в репо».
+29. «Файлы контекста обновлять локально и выкладывать в репо каждый раз — правило проекта, не забывать».

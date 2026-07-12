@@ -23,3 +23,15 @@ export interface LogicIndicatorSignalRow {
   indicator_code: string;
   indicator_name: string;
 }
+
+export interface LogicStopRow {
+  id: number;
+  logic_id: number;
+  rule_kind: 'stop_loss' | 'take_profit';
+  scope_type: 'logic' | 'portfolio';
+  value: number;
+  value_unit: 'percent' | 'atr';
+  display_order: number;
+  is_active: boolean;
+  created_at?: string;
+}

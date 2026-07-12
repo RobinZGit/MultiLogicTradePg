@@ -514,6 +514,234 @@
 
                     </details>
 
+                    <details class="signals-block stops-block" [open]="isStopsBlockExpanded(row.id)">
+
+                      <summary class="signals-summary">
+
+                        <span
+                          class="signals-summary-head"
+                          (click)="toggleStopsBlock(row.id, $event)"
+                        >
+
+                          <span
+                            class="signals-chevron"
+                            [class.open]="isStopsBlockExpanded(row.id)"
+                            aria-hidden="true"
+                          >▸</span>
+
+                          <span class="signals-title">Стоп-лосс и тейк-профит</span>
+
+                          @if (isStopsLoading(row.id)) {
+
+                            <span class="signals-loading">загрузка…</span>
+
+                          }
+
+                        </span>
+
+                        <span class="signals-summary-actions">
+
+                          <button
+                            type="button"
+                            class="btn btn-sm btn-stop-loss"
+                            (click)="openStopForm(row.id, 'stop_loss', $event)"
+                          >
+                            + Стоп-лосс
+                          </button>
+
+                          <button
+                            type="button"
+                            class="btn btn-sm btn-take-profit"
+                            (click)="openStopForm(row.id, 'take_profit', $event)"
+                          >
+                            + Тейк-профит
+                          </button>
+
+                        </span>
+
+                      </summary>
+
+                      <div class="signals-body">
+
+                        @if (stopForm && stopForm.logicId === row.id) {
+
+                          <div class="stop-form">
+
+                            <p class="stop-form-title">
+                              {{ ruleKindLabel(stopForm.ruleKind) }}
+                            </p>
+
+                            <div class="stop-form-grid">
+
+                              <label class="stop-field">
+                                <span>Тип</span>
+                                <select [(ngModel)]="stopFormDraft.scope_type">
+                                  @for (sc of stopScopes; track sc) {
+                                    <option [ngValue]="sc">{{ scopeTypeLabel(sc) }}</option>
+                                  }
+                                </select>
+                              </label>
+
+                              <label class="stop-field stop-field-value">
+                                <span>Значение</span>
+                                <input
+                                  type="text"
+                                  inputmode="decimal"
+                                  [(ngModel)]="stopFormDraft.value"
+                                  placeholder="0.00"
+                                />
+                              </label>
+
+                              <label class="stop-field stop-field-unit">
+                                <span>Единица</span>
+                                <select [(ngModel)]="stopFormDraft.value_unit">
+                                  @for (u of stopUnits; track u) {
+                                    <option [ngValue]="u">{{ valueUnitLabel(u) }}</option>
+                                  }
+                                </select>
+                              </label>
+
+                            </div>
+
+                            <div class="picker-actions">
+
+                              <button type="button" class="btn btn-sm btn-ok" (click)="submitStopForm()">
+                                Добавить
+                              </button>
+
+                              <button type="button" class="btn btn-sm btn-muted" (click)="closeStopForm()">
+                                Отмена
+                              </button>
+
+                            </div>
+
+                          </div>
+
+                        }
+
+                        <table class="signals-table stops-table">
+
+                          <thead>
+
+                            <tr>
+
+                              <th>Вид</th>
+
+                              <th>Тип</th>
+
+                              <th>Значение</th>
+
+                              <th>Единица</th>
+
+                              <th class="col-sig-actions"></th>
+
+                            </tr>
+
+                          </thead>
+
+                          <tbody>
+
+                            @for (stop of stopsFor(row.id); track stop.id) {
+
+                              <tr [class.sig-inactive]="!stop.is_active">
+
+                                <td>
+
+                                  <span
+                                    class="sig-badge"
+                                    [class.sig-stop-loss]="stop.rule_kind === 'stop_loss'"
+                                    [class.sig-take-profit]="stop.rule_kind === 'take_profit'"
+                                  >
+                                    {{ ruleKindLabel(stop.rule_kind) }}
+                                  </span>
+
+                                </td>
+
+                                <td>
+
+                                  <select
+                                    class="stop-inline-select"
+                                    [ngModel]="stop.scope_type"
+                                    [disabled]="isStopSaving(stop.id)"
+                                    (ngModelChange)="saveStopRow(stop, { scope_type: $event })"
+                                  >
+                                    @for (sc of stopScopes; track sc) {
+                                      <option [ngValue]="sc">{{ scopeTypeLabel(sc) }}</option>
+                                    }
+                                  </select>
+
+                                </td>
+
+                                <td>
+
+                                  <input
+                                    type="text"
+                                    class="stop-value-input"
+                                    [value]="stop.value"
+                                    [disabled]="isStopSaving(stop.id)"
+                                    (blur)="onStopValueBlur(stop, $any($event.target).value)"
+                                    (keydown.enter)="$any($event.target).blur()"
+                                  />
+
+                                </td>
+
+                                <td>
+
+                                  <select
+                                    class="stop-inline-select"
+                                    [ngModel]="stop.value_unit"
+                                    [disabled]="isStopSaving(stop.id)"
+                                    (ngModelChange)="saveStopRow(stop, { value_unit: $event })"
+                                  >
+                                    @for (u of stopUnits; track u) {
+                                      <option [ngValue]="u">{{ valueUnitLabel(u) }}</option>
+                                    }
+                                  </select>
+
+                                </td>
+
+                                <td class="col-sig-actions">
+
+                                  <button
+                                    type="button"
+                                    class="icon-btn icon-danger"
+                                    title="Удалить"
+                                    aria-label="Удалить"
+                                    (click)="deleteStop(stop, $event)"
+                                  >
+                                    ✕
+                                  </button>
+
+                                </td>
+
+                              </tr>
+
+                            } @empty {
+
+                              <tr>
+
+                                <td colspan="5" class="empty">
+                                  Нет правил — добавьте стоп-лосс или тейк-профит
+                                </td>
+
+                              </tr>
+
+                            }
+
+                          </tbody>
+
+                        </table>
+
+                        <p class="signals-help">
+                          Тип: <strong>По логике</strong> — на всю торговлю;
+                          <strong>Портфель логики</strong> — усиление портфеля.
+                          Единица: <strong>%</strong> или <strong>ATR</strong> (параметр ATR — позже).
+                        </p>
+
+                      </div>
+
+                    </details>
+
                   </div>
 
                 </td>

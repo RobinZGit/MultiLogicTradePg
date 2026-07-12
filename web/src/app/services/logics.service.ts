@@ -2,7 +2,7 @@ import { Injectable } from '@angular/core';
 import { HttpClient } from '@angular/common/http';
 import { Observable } from 'rxjs';
 import { AppConfigService } from './app-config.service';
-import { LogicIndicatorSignalRow, LogicRow } from '../models/logic.model';
+import { LogicIndicatorSignalRow, LogicRow, LogicStopRow } from '../models/logic.model';
 import { LogicPayload } from '../models/lookup.model';
 
 @Injectable({ providedIn: 'root' })
@@ -79,6 +79,47 @@ export class LogicsService {
   ): Observable<{ ok: boolean; id: number }> {
     return this.http.delete<{ ok: boolean; id: number }>(
       `${this.appConfig.apiUrl}/logic-indicator-signals/${id}`
+    );
+  }
+
+  getLogicStops(logicId: number): Observable<LogicStopRow[]> {
+    return this.http.get<LogicStopRow[]>(
+      `${this.appConfig.apiUrl}/logic-stops`,
+      { params: { logic_id: String(logicId) } }
+    );
+  }
+
+  createLogicStop(body: {
+    logic_id: number;
+    rule_kind: 'stop_loss' | 'take_profit';
+    scope_type: 'logic' | 'portfolio';
+    value: number;
+    value_unit: 'percent' | 'atr';
+  }): Observable<LogicStopRow> {
+    return this.http.post<LogicStopRow>(
+      `${this.appConfig.apiUrl}/logic-stops`,
+      body
+    );
+  }
+
+  updateLogicStop(
+    id: number,
+    body: {
+      scope_type?: 'logic' | 'portfolio';
+      value?: number;
+      value_unit?: 'percent' | 'atr';
+      is_active?: boolean;
+    }
+  ): Observable<LogicStopRow> {
+    return this.http.put<LogicStopRow>(
+      `${this.appConfig.apiUrl}/logic-stops/${id}`,
+      body
+    );
+  }
+
+  deleteLogicStop(id: number): Observable<{ ok: boolean; id: number }> {
+    return this.http.delete<{ ok: boolean; id: number }>(
+      `${this.appConfig.apiUrl}/logic-stops/${id}`
     );
   }
 }

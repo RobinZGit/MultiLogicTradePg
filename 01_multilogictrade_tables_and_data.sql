@@ -1,6 +1,6 @@
 -- ============================================
 -- MultiLogicTrade — шаг 1: таблицы и справочники
--- Версия: v13 (идемпотентный запуск)
+-- Версия: v14 (идемпотентный запуск)
 -- ============================================
 -- Подключение: база multilogictrade
 -- Можно выполнять многократно: объекты и строки не дублируются.
@@ -25,6 +25,13 @@
 -- ============================================
 
 -- ============================================
+-- Блок миграции: обновление существующей схемы v13 → v14
+-- ============================================
+DO $$
+BEGIN
+    NULL;
+END $$;
+
 -- Блок миграции: обновление существующей схемы v12 → v13
 -- ============================================
 DO $$
@@ -875,6 +882,28 @@ COMMENT ON TABLE logic_indicator_signals IS
 COMMENT ON COLUMN logic_indicator_signals.signal_kind IS 'trend | counter';
 COMMENT ON COLUMN logic_indicator_signals.formula IS
 'Редактируемая формула: @RSI(period=14,series=VALUE) VALUE > 50';
+
+-- Стоп-лосс и тейк-профит по торговой логике
+CREATE TABLE IF NOT EXISTS logic_stops (
+    id SERIAL PRIMARY KEY,
+    logic_id INTEGER NOT NULL REFERENCES logics(id) ON DELETE CASCADE,
+    rule_kind VARCHAR(20) NOT NULL CHECK (rule_kind IN ('stop_loss', 'take_profit')),
+    scope_type VARCHAR(20) NOT NULL CHECK (scope_type IN ('logic', 'portfolio')),
+    value NUMERIC(18, 6) NOT NULL CHECK (value > 0),
+    value_unit VARCHAR(10) NOT NULL CHECK (value_unit IN ('percent', 'atr')),
+    display_order INTEGER NOT NULL DEFAULT 0,
+    is_active BOOLEAN NOT NULL DEFAULT TRUE,
+    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS idx_logic_stops_logic_id ON logic_stops(logic_id);
+CREATE INDEX IF NOT EXISTS idx_logic_stops_rule_kind ON logic_stops(logic_id, rule_kind);
+
+COMMENT ON TABLE logic_stops IS
+'Стоп-лосс и тейк-профит для logics: область logic (по логике) или portfolio (портфель логики)';
+COMMENT ON COLUMN logic_stops.rule_kind IS 'stop_loss | take_profit';
+COMMENT ON COLUMN logic_stops.scope_type IS 'logic — по логике; portfolio — портфель логики';
+COMMENT ON COLUMN logic_stops.value_unit IS 'percent | atr';
 
 -- ============================================
 -- Таблица: futures_expirations (контракты фьючерсов)

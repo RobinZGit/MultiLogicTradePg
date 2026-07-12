@@ -1413,6 +1413,154 @@ app.delete('/api/logic-indicator-signals/:id', async (req, res) => {
   }
 });
 
+app.get('/api/logic-stops', async (req, res) => {
+  const logicId = Number(req.query.logic_id);
+  if (!Number.isInteger(logicId) || logicId <= 0) {
+    res.status(400).json({ error: 'logic_id required' });
+    return;
+  }
+  try {
+    const { rows } = await pool.query(
+      `
+      SELECT
+        id, logic_id, rule_kind, scope_type,
+        value::float8 AS value, value_unit,
+        display_order, is_active, created_at
+      FROM logic_stops
+      WHERE logic_id = $1
+      ORDER BY rule_kind, display_order, id
+      `,
+      [logicId]
+    );
+    res.json(rows);
+  } catch (err) {
+    console.error('GET /api/logic-stops', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/api/logic-stops', async (req, res) => {
+  const logicId = Number(req.body?.logic_id);
+  const ruleKind = btrimStr(req.body?.rule_kind);
+  const scopeType = btrimStr(req.body?.scope_type);
+  const valueUnit = btrimStr(req.body?.value_unit);
+  const value = Number(req.body?.value);
+  if (!Number.isInteger(logicId) || logicId <= 0) {
+    res.status(400).json({ error: 'logic_id required' });
+    return;
+  }
+  if (ruleKind !== 'stop_loss' && ruleKind !== 'take_profit') {
+    res.status(400).json({ error: 'rule_kind must be stop_loss or take_profit' });
+    return;
+  }
+  if (scopeType !== 'logic' && scopeType !== 'portfolio') {
+    res.status(400).json({ error: 'scope_type must be logic or portfolio' });
+    return;
+  }
+  if (valueUnit !== 'percent' && valueUnit !== 'atr') {
+    res.status(400).json({ error: 'value_unit must be percent or atr' });
+    return;
+  }
+  if (!Number.isFinite(value) || value <= 0) {
+    res.status(400).json({ error: 'value must be a positive number' });
+    return;
+  }
+  try {
+    const { rows: orderRows } = await pool.query(
+      `SELECT COALESCE(MAX(display_order), 0) + 1 AS next_order
+       FROM logic_stops WHERE logic_id = $1 AND rule_kind = $2`,
+      [logicId, ruleKind]
+    );
+    const displayOrder = orderRows[0]?.next_order ?? 1;
+    const { rows } = await pool.query(
+      `
+      INSERT INTO logic_stops
+        (logic_id, rule_kind, scope_type, value, value_unit, display_order)
+      VALUES ($1, $2, $3, $4, $5, $6)
+      RETURNING id, logic_id, rule_kind, scope_type,
+        value::float8 AS value, value_unit, display_order, is_active, created_at
+      `,
+      [logicId, ruleKind, scopeType, value, valueUnit, displayOrder]
+    );
+    res.status(201).json(rows[0]);
+  } catch (err) {
+    console.error('POST /api/logic-stops', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.put('/api/logic-stops/:id', async (req, res) => {
+  const id = Number(req.params.id);
+  const scopeType = req.body?.scope_type != null ? btrimStr(req.body.scope_type) : null;
+  const valueUnit = req.body?.value_unit != null ? btrimStr(req.body.value_unit) : null;
+  const value = req.body?.value != null ? Number(req.body.value) : null;
+  const isActive = req.body?.is_active;
+  if (!Number.isInteger(id) || id <= 0) {
+    res.status(400).json({ error: 'Invalid id' });
+    return;
+  }
+  if (scopeType && scopeType !== 'logic' && scopeType !== 'portfolio') {
+    res.status(400).json({ error: 'scope_type must be logic or portfolio' });
+    return;
+  }
+  if (valueUnit && valueUnit !== 'percent' && valueUnit !== 'atr') {
+    res.status(400).json({ error: 'value_unit must be percent or atr' });
+    return;
+  }
+  if (value != null && (!Number.isFinite(value) || value <= 0)) {
+    res.status(400).json({ error: 'value must be a positive number' });
+    return;
+  }
+  try {
+    const { rows } = await pool.query(
+      `
+      UPDATE logic_stops
+      SET scope_type = COALESCE($2, scope_type),
+          value = COALESCE($3, value),
+          value_unit = COALESCE($4, value_unit),
+          is_active = COALESCE($5::boolean, is_active)
+      WHERE id = $1
+      RETURNING id, logic_id, rule_kind, scope_type,
+        value::float8 AS value, value_unit, display_order, is_active, created_at
+      `,
+      [
+        id,
+        scopeType || null,
+        value != null ? value : null,
+        valueUnit || null,
+        isActive === undefined ? null : isActive,
+      ]
+    );
+    if (rows.length === 0) {
+      res.status(404).json({ error: 'Stop rule not found' });
+      return;
+    }
+    res.json(rows[0]);
+  } catch (err) {
+    console.error('PUT /api/logic-stops/:id', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.delete('/api/logic-stops/:id', async (req, res) => {
+  const id = Number(req.params.id);
+  if (!Number.isInteger(id) || id <= 0) {
+    res.status(400).json({ error: 'Invalid id' });
+    return;
+  }
+  try {
+    const { rowCount } = await pool.query('DELETE FROM logic_stops WHERE id = $1', [id]);
+    if (rowCount === 0) {
+      res.status(404).json({ error: 'Stop rule not found' });
+      return;
+    }
+    res.json({ ok: true, id });
+  } catch (err) {
+    console.error('DELETE /api/logic-stops/:id', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
 app.post('/api/tech-log', async (req, res) => {
   const entries = Array.isArray(req.body?.entries) ? req.body.entries : [];
   if (entries.length === 0) {
