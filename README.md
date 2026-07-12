@@ -21,7 +21,8 @@ PostgreSQL-схема торговой системы MultiLogic Trade: спра
 2. Подключитесь к `multilogictrade`.
 3. Выполните `01_...sql`, затем `02_...sql`.
 
-Контекст проекта и история решений: [`docs/PROJECT_CONTEXT.md`](docs/PROJECT_CONTEXT.md).
+Контекст проекта: [`docs/PROJECT_CONTEXT.md`](docs/PROJECT_CONTEXT.md).  
+**Локальный запуск (pgAdmin / DBeaver / PowerShell):** [`docs/LOCAL_SETUP.md`](docs/LOCAL_SETUP.md).
 
 ### psql
 
