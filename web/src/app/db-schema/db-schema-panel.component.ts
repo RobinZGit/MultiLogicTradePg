@@ -1,10 +1,6 @@
 import { Component, EventEmitter, Input, OnChanges, Output, SimpleChanges } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { SchemaService } from '../services/schema.service';
-import {
-  AppConfigService,
-  apiConnectionErrorMessage,
-} from '../services/app-config.service';
 import { DatabaseSchema, SchemaRoutine } from '../models/schema.model';
 
 @Component({
@@ -21,6 +17,7 @@ export class DbSchemaPanelComponent implements OnChanges {
   loading = false;
   error: string | null = null;
   schema: DatabaseSchema | null = null;
+  schemaMode: 'live' | 'offline' = 'live';
   expanded = new Set<string>();
   panelWide = false;
 
@@ -31,10 +28,7 @@ export class DbSchemaPanelComponent implements OnChanges {
     'root:ext',
   ];
 
-  constructor(
-    private readonly schemaService: SchemaService,
-    private readonly appConfig: AppConfigService
-  ) {}
+  constructor(private readonly schemaService: SchemaService) {}
 
   ngOnChanges(changes: SimpleChanges): void {
     if (changes['open']?.currentValue === true) {
@@ -48,14 +42,14 @@ export class DbSchemaPanelComponent implements OnChanges {
     this.schemaService.getSchema().subscribe({
       next: (data) => {
         this.schema = data;
+        this.schemaMode = data.sourceMode ?? this.schemaService.lastSourceMode;
         this.loading = false;
         this.expanded.clear();
         this.panelWide = false;
       },
-      error: (err) => {
+      error: () => {
         this.error =
-          err?.error?.error ||
-          apiConnectionErrorMessage(this.appConfig.apiUrl);
+          'Не удалось загрузить структуру БД ни из PostgreSQL, ни из SQL-скриптов репозитория.';
         this.loading = false;
       },
     });

@@ -6,6 +6,9 @@
         <h2>Структура базы данных</h2>
         @if (schema) {
           <p class="meta">{{ schema.database }} · схема {{ schema.schema }}</p>
+          @if (schemaMode === 'offline') {
+            <p class="offline-note">{{ schema.sourceNote }}</p>
+          }
         }
       </div>
       <div class="panel-actions">

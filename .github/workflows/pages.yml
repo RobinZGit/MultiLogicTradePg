@@ -5,6 +5,9 @@ on:
     branches: [main]
     paths:
       - 'web/**'
+      - '01_multilogictrade_tables_and_data.sql'
+      - '02_multilogictrade_functions_and_procedures.sql'
+      - 'scripts/generate-offline-schema.mjs'
       - '.github/workflows/pages.yml'
   workflow_dispatch:
 
@@ -30,6 +33,9 @@ jobs:
           node-version: '20'
           cache: npm
           cache-dependency-path: web/package-lock.json
+
+      - name: Generate offline schema from SQL scripts
+        run: node scripts/generate-offline-schema.mjs
 
       - name: Install dependencies
         working-directory: web

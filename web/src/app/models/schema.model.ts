@@ -32,6 +32,7 @@ export interface SchemaRoutine {
   arguments: string;
   result_type: string | null;
   description: string | null;
+  source?: string;
 }
 
 export interface SchemaExtension {
@@ -45,6 +46,9 @@ export interface DatabaseSchema {
   tables: SchemaTable[];
   routines: SchemaRoutine[];
   extensions: SchemaExtension[];
+  sourceMode?: 'live' | 'offline';
+  sourceNote?: string;
+  generatedFrom?: string[];
 }
 
 export interface RoutineSource {

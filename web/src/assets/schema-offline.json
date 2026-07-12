@@ -1,0 +1,1371 @@
+{
+  "schema": "public",
+  "database": "multilogictrade",
+  "sourceMode": "offline",
+  "sourceNote": "Структура из SQL-скриптов репозитория (01, 02). PostgreSQL не подключена.",
+  "generatedFrom": [
+    "01_multilogictrade_tables_and_data.sql",
+    "02_multilogictrade_functions_and_procedures.sql"
+  ],
+  "tables": [
+    {
+      "name": "accounts",
+      "comment": null,
+      "columns": [
+        {
+          "name": "id",
+          "type": "SERIAL PRIMARY KEY",
+          "nullable": true,
+          "default": null,
+          "comment": null
+        },
+        {
+          "name": "broker_id",
+          "type": "INTEGER  REFERENCES brokers(id) ON DELETE CASCADE",
+          "nullable": false,
+          "default": null,
+          "comment": null
+        },
+        {
+          "name": "account_code",
+          "type": "VARCHAR(100)",
+          "nullable": false,
+          "default": null,
+          "comment": null
+        },
+        {
+          "name": "name",
+          "type": "VARCHAR(100)",
+          "nullable": false,
+          "default": null,
+          "comment": null
+        },
+        {
+          "name": "account_type",
+          "type": "VARCHAR(20)  CHECK (account_type IN ('real', 'fake'))",
+          "nullable": false,
+          "default": null,
+          "comment": null
+        },
+        {
+          "name": "is_efficient",
+          "type": "BOOLEAN",
+          "nullable": false,
+          "default": "FALSE",
+          "comment": null
+        },
+        {
+          "name": "token_encrypted",
+          "type": "TEXT",
+          "nullable": true,
+          "default": null,
+          "comment": null
+        },
+        {
+          "name": "token_hash",
+          "type": "VARCHAR(64)",
+          "nullable": true,
+          "default": null,
+          "comment": null
+        },
+        {
+          "name": "is_active",
+          "type": "BOOLEAN",
+          "nullable": false,
+          "default": "TRUE",
+          "comment": null
+        },
+        {
+          "name": "created_at",
+          "type": "TIMESTAMP",
+          "nullable": false,
+          "default": "CURRENT_TIMESTAMP",
+          "comment": null
+        },
+        {
+          "name": "updated_at",
+          "type": "TIMESTAMP",
+          "nullable": false,
+          "default": "CURRENT_TIMESTAMP",
+          "comment": null
+        }
+      ],
+      "indexes": [
+        {
+          "name": "idx_accounts_broker_account_code",
+          "definition": "CREATE UNIQUE INDEX IF NOT EXISTS idx_accounts_broker_account_code ON accounts(broker_id, account_code)"
+        }
+      ],
+      "constraints": []
+    },
+    {
+      "name": "actions",
+      "comment": null,
+      "columns": [
+        {
+          "name": "id",
+          "type": "SERIAL PRIMARY KEY",
+          "nullable": true,
+          "default": null,
+          "comment": null
+        },
+        {
+          "name": "name",
+          "type": "VARCHAR(20)  UNIQUE",
+          "nullable": false,
+          "default": null,
+          "comment": null
+        }
+      ],
+      "indexes": [],
+      "constraints": []
+    },
+    {
+      "name": "brokers",
+      "comment": null,
+      "columns": [
+        {
+          "name": "id",
+          "type": "SERIAL PRIMARY KEY",
+          "nullable": true,
+          "default": null,
+          "comment": null
+        },
+        {
+          "name": "code",
+          "type": "VARCHAR(50)  UNIQUE",
+          "nullable": false,
+          "default": null,
+          "comment": null
+        },
+        {
+          "name": "name",
+          "type": "VARCHAR(100)",
+          "nullable": false,
+          "default": null,
+          "comment": null
+        },
+        {
+          "name": "api_url",
+          "type": "VARCHAR(255)",
+          "nullable": true,
+          "default": null,
+          "comment": null
+        },
+        {
+          "name": "is_active",
+          "type": "BOOLEAN",
+          "nullable": false,
+          "default": "TRUE",
+          "comment": null
+        },
+        {
+          "name": "created_at",
+          "type": "TIMESTAMP",
+          "nullable": false,
+          "default": "CURRENT_TIMESTAMP",
+          "comment": null
+        }
+      ],
+      "indexes": [
+        {
+          "name": "idx_brokers_code",
+          "definition": "CREATE INDEX IF NOT EXISTS idx_brokers_code ON brokers(code)"
+        }
+      ],
+      "constraints": []
+    },
+    {
+      "name": "exchanges",
+      "comment": "Таблица торговых площадок",
+      "columns": [
+        {
+          "name": "id",
+          "type": "SERIAL PRIMARY KEY",
+          "nullable": true,
+          "default": null,
+          "comment": null
+        },
+        {
+          "name": "name",
+          "type": "VARCHAR(50)  UNIQUE",
+          "nullable": false,
+          "default": null,
+          "comment": null
+        }
+      ],
+      "indexes": [
+        {
+          "name": "idx_exchanges_name",
+          "definition": "CREATE INDEX IF NOT EXISTS idx_exchanges_name ON exchanges(name)"
+        }
+      ],
+      "constraints": []
+    },
+    {
+      "name": "futures_expirations",
+      "comment": "Контракты фьючерсов; prefix — полный тикер MOEX (Si-3.26)",
+      "columns": [
+        {
+          "name": "id",
+          "type": "SERIAL PRIMARY KEY",
+          "nullable": true,
+          "default": null,
+          "comment": null
+        },
+        {
+          "name": "security_id",
+          "type": "INTEGER  REFERENCES securities(id) ON DELETE CASCADE",
+          "nullable": false,
+          "default": null,
+          "comment": null
+        },
+        {
+          "name": "prefix",
+          "type": "VARCHAR(50)",
+          "nullable": false,
+          "default": null,
+          "comment": null
+        },
+        {
+          "name": "expiration_date",
+          "type": "DATE",
+          "nullable": false,
+          "default": null,
+          "comment": null
+        },
+        {
+          "name": "tbank_figi",
+          "type": "VARCHAR(50)",
+          "nullable": true,
+          "default": null,
+          "comment": null
+        },
+        {
+          "name": "is_active",
+          "type": "BOOLEAN",
+          "nullable": false,
+          "default": "TRUE",
+          "comment": null
+        },
+        {
+          "name": "created_at",
+          "type": "TIMESTAMP",
+          "nullable": false,
+          "default": "CURRENT_TIMESTAMP",
+          "comment": null
+        }
+      ],
+      "indexes": [
+        {
+          "name": "idx_futures_exp_security_id",
+          "definition": "CREATE INDEX IF NOT EXISTS idx_futures_exp_security_id ON futures_expirations(security_id)"
+        },
+        {
+          "name": "idx_futures_exp_prefix",
+          "definition": "CREATE INDEX IF NOT EXISTS idx_futures_exp_prefix ON futures_expirations(prefix)"
+        },
+        {
+          "name": "idx_futures_exp_date",
+          "definition": "CREATE INDEX IF NOT EXISTS idx_futures_exp_date ON futures_expirations(expiration_date)"
+        },
+        {
+          "name": "idx_futures_exp_security_prefix",
+          "definition": "CREATE UNIQUE INDEX IF NOT EXISTS idx_futures_exp_security_prefix ON futures_expirations(security_id, prefix)"
+        }
+      ],
+      "constraints": []
+    },
+    {
+      "name": "indicator_value_types",
+      "comment": null,
+      "columns": [
+        {
+          "name": "id",
+          "type": "SERIAL PRIMARY KEY",
+          "nullable": true,
+          "default": null,
+          "comment": null
+        },
+        {
+          "name": "indicator_id",
+          "type": "INTEGER  REFERENCES indicators(id) ON DELETE CASCADE",
+          "nullable": false,
+          "default": null,
+          "comment": null
+        },
+        {
+          "name": "code",
+          "type": "VARCHAR(20)",
+          "nullable": false,
+          "default": null,
+          "comment": null
+        },
+        {
+          "name": "name",
+          "type": "VARCHAR(50)",
+          "nullable": false,
+          "default": null,
+          "comment": null
+        },
+        {
+          "name": "value_type",
+          "type": "VARCHAR(20)",
+          "nullable": false,
+          "default": "'float'",
+          "comment": null
+        },
+        {
+          "name": "is_threshold",
+          "type": "BOOLEAN",
+          "nullable": false,
+          "default": "FALSE",
+          "comment": null
+        },
+        {
+          "name": "threshold_value",
+          "type": "NUMERIC(18, 6)",
+          "nullable": true,
+          "default": null,
+          "comment": null
+        },
+        {
+          "name": "description",
+          "type": "TEXT",
+          "nullable": true,
+          "default": null,
+          "comment": null
+        },
+        {
+          "name": "display_order",
+          "type": "INTEGER",
+          "nullable": false,
+          "default": "0",
+          "comment": null
+        },
+        {
+          "name": "created_at",
+          "type": "TIMESTAMP",
+          "nullable": false,
+          "default": "CURRENT_TIMESTAMP",
+          "comment": null
+        }
+      ],
+      "indexes": [
+        {
+          "name": "idx_indicator_value_types_unique",
+          "definition": "CREATE UNIQUE INDEX IF NOT EXISTS idx_indicator_value_types_unique ON indicator_value_types(indicator_id, code)"
+        }
+      ],
+      "constraints": []
+    },
+    {
+      "name": "indicator_values",
+      "comment": null,
+      "columns": [
+        {
+          "name": "id",
+          "type": "BIGSERIAL PRIMARY KEY",
+          "nullable": true,
+          "default": null,
+          "comment": null
+        },
+        {
+          "name": "indicator_id",
+          "type": "INTEGER  REFERENCES indicators(id) ON DELETE CASCADE",
+          "nullable": false,
+          "default": null,
+          "comment": null
+        },
+        {
+          "name": "indicator_value_type_id",
+          "type": "INTEGER  REFERENCES indicator_value_types(id) ON DELETE CASCADE",
+          "nullable": false,
+          "default": null,
+          "comment": null
+        },
+        {
+          "name": "security_id",
+          "type": "INTEGER  REFERENCES securities(id) ON DELETE CASCADE",
+          "nullable": false,
+          "default": null,
+          "comment": null
+        },
+        {
+          "name": "timeframe_id",
+          "type": "INTEGER  REFERENCES timeframes(id) ON DELETE CASCADE",
+          "nullable": false,
+          "default": null,
+          "comment": null
+        },
+        {
+          "name": "dt",
+          "type": "TIMESTAMP",
+          "nullable": false,
+          "default": null,
+          "comment": null
+        },
+        {
+          "name": "value",
+          "type": "NUMERIC(18, 6)",
+          "nullable": true,
+          "default": null,
+          "comment": null
+        },
+        {
+          "name": "is_signal",
+          "type": "BOOLEAN",
+          "nullable": false,
+          "default": "FALSE",
+          "comment": null
+        },
+        {
+          "name": "signal_type",
+          "type": "VARCHAR(20)",
+          "nullable": true,
+          "default": null,
+          "comment": null
+        },
+        {
+          "name": "created_at",
+          "type": "TIMESTAMP",
+          "nullable": false,
+          "default": "CURRENT_TIMESTAMP",
+          "comment": null
+        }
+      ],
+      "indexes": [
+        {
+          "name": "idx_indicator_values_indicator_id",
+          "definition": "CREATE INDEX IF NOT EXISTS idx_indicator_values_indicator_id ON indicator_values(indicator_id)"
+        },
+        {
+          "name": "idx_indicator_values_security_id",
+          "definition": "CREATE INDEX IF NOT EXISTS idx_indicator_values_security_id ON indicator_values(security_id)"
+        },
+        {
+          "name": "idx_indicator_values_timeframe_id",
+          "definition": "CREATE INDEX IF NOT EXISTS idx_indicator_values_timeframe_id ON indicator_values(timeframe_id)"
+        },
+        {
+          "name": "idx_indicator_values_dt",
+          "definition": "CREATE INDEX IF NOT EXISTS idx_indicator_values_dt ON indicator_values(dt)"
+        },
+        {
+          "name": "idx_indicator_values_unique",
+          "definition": "CREATE UNIQUE INDEX IF NOT EXISTS idx_indicator_values_unique ON indicator_values(indicator_id, indicator_value_type_id, security_id, timeframe_id, dt)"
+        }
+      ],
+      "constraints": []
+    },
+    {
+      "name": "indicators",
+      "comment": null,
+      "columns": [
+        {
+          "name": "id",
+          "type": "SERIAL PRIMARY KEY",
+          "nullable": true,
+          "default": null,
+          "comment": null
+        },
+        {
+          "name": "code",
+          "type": "VARCHAR(20)  UNIQUE",
+          "nullable": false,
+          "default": null,
+          "comment": null
+        },
+        {
+          "name": "name",
+          "type": "VARCHAR(100)",
+          "nullable": false,
+          "default": null,
+          "comment": null
+        },
+        {
+          "name": "script",
+          "type": "TEXT",
+          "nullable": true,
+          "default": null,
+          "comment": null
+        },
+        {
+          "name": "description",
+          "type": "TEXT",
+          "nullable": true,
+          "default": null,
+          "comment": null
+        },
+        {
+          "name": "category",
+          "type": "VARCHAR(50)",
+          "nullable": true,
+          "default": null,
+          "comment": null
+        },
+        {
+          "name": "is_active",
+          "type": "BOOLEAN",
+          "nullable": false,
+          "default": "TRUE",
+          "comment": null
+        },
+        {
+          "name": "created_at",
+          "type": "TIMESTAMP",
+          "nullable": false,
+          "default": "CURRENT_TIMESTAMP",
+          "comment": null
+        }
+      ],
+      "indexes": [
+        {
+          "name": "idx_indicators_code",
+          "definition": "CREATE INDEX IF NOT EXISTS idx_indicators_code ON indicators(code)"
+        }
+      ],
+      "constraints": []
+    },
+    {
+      "name": "logics",
+      "comment": "Торговые логики: одна строка — одна торговля (трейд); главная таблица, от которой смотрятся связанные данные",
+      "columns": [
+        {
+          "name": "id",
+          "type": "SERIAL PRIMARY KEY",
+          "nullable": true,
+          "default": null,
+          "comment": null
+        },
+        {
+          "name": "name",
+          "type": "VARCHAR(100)  UNIQUE",
+          "nullable": false,
+          "default": null,
+          "comment": "name"
+        },
+        {
+          "name": "account_id",
+          "type": "INTEGER  REFERENCES accounts(id) ON DELETE RESTRICT",
+          "nullable": false,
+          "default": null,
+          "comment": "account_id"
+        }
+      ],
+      "indexes": [
+        {
+          "name": "idx_logics_account_id",
+          "definition": "CREATE INDEX IF NOT EXISTS idx_logics_account_id ON logics(account_id)"
+        }
+      ],
+      "constraints": []
+    },
+    {
+      "name": "logics_detail",
+      "comment": null,
+      "columns": [
+        {
+          "name": "id",
+          "type": "SERIAL PRIMARY KEY",
+          "nullable": true,
+          "default": null,
+          "comment": null
+        },
+        {
+          "name": "logic_name",
+          "type": "VARCHAR(100)  REFERENCES logics(name)",
+          "nullable": false,
+          "default": null,
+          "comment": null
+        },
+        {
+          "name": "formula",
+          "type": "TEXT",
+          "nullable": false,
+          "default": null,
+          "comment": null
+        },
+        {
+          "name": "side_id",
+          "type": "INTEGER  REFERENCES sides(id)",
+          "nullable": false,
+          "default": null,
+          "comment": null
+        },
+        {
+          "name": "action_id",
+          "type": "INTEGER  REFERENCES actions(id)",
+          "nullable": false,
+          "default": null,
+          "comment": null
+        }
+      ],
+      "indexes": [],
+      "constraints": []
+    },
+    {
+      "name": "parameter_sets",
+      "comment": null,
+      "columns": [
+        {
+          "name": "id",
+          "type": "SERIAL PRIMARY KEY",
+          "nullable": true,
+          "default": null,
+          "comment": null
+        },
+        {
+          "name": "name",
+          "type": "VARCHAR(100)",
+          "nullable": false,
+          "default": null,
+          "comment": null
+        },
+        {
+          "name": "description",
+          "type": "TEXT",
+          "nullable": true,
+          "default": null,
+          "comment": null
+        },
+        {
+          "name": "is_active",
+          "type": "BOOLEAN",
+          "nullable": false,
+          "default": "TRUE",
+          "comment": null
+        },
+        {
+          "name": "created_at",
+          "type": "TIMESTAMP",
+          "nullable": false,
+          "default": "CURRENT_TIMESTAMP",
+          "comment": null
+        }
+      ],
+      "indexes": [
+        {
+          "name": "idx_parameter_sets_name",
+          "definition": "CREATE UNIQUE INDEX IF NOT EXISTS idx_parameter_sets_name ON parameter_sets(name)"
+        }
+      ],
+      "constraints": []
+    },
+    {
+      "name": "parameter_types",
+      "comment": null,
+      "columns": [
+        {
+          "name": "id",
+          "type": "SERIAL PRIMARY KEY",
+          "nullable": true,
+          "default": null,
+          "comment": null
+        },
+        {
+          "name": "name",
+          "type": "VARCHAR(100)  UNIQUE",
+          "nullable": false,
+          "default": null,
+          "comment": null
+        },
+        {
+          "name": "short_name",
+          "type": "VARCHAR(20)  UNIQUE",
+          "nullable": false,
+          "default": null,
+          "comment": null
+        },
+        {
+          "name": "value_type",
+          "type": "VARCHAR(20)",
+          "nullable": false,
+          "default": null,
+          "comment": null
+        },
+        {
+          "name": "is_control",
+          "type": "BOOLEAN",
+          "nullable": false,
+          "default": "FALSE",
+          "comment": null
+        },
+        {
+          "name": "is_fake_only",
+          "type": "BOOLEAN",
+          "nullable": false,
+          "default": "FALSE",
+          "comment": null
+        },
+        {
+          "name": "description",
+          "type": "TEXT",
+          "nullable": true,
+          "default": null,
+          "comment": null
+        },
+        {
+          "name": "default_value",
+          "type": "TEXT",
+          "nullable": true,
+          "default": null,
+          "comment": null
+        },
+        {
+          "name": "min_value",
+          "type": "NUMERIC(18, 6)",
+          "nullable": true,
+          "default": null,
+          "comment": null
+        },
+        {
+          "name": "max_value",
+          "type": "NUMERIC(18, 6)",
+          "nullable": true,
+          "default": null,
+          "comment": null
+        },
+        {
+          "name": "created_at",
+          "type": "TIMESTAMP",
+          "nullable": false,
+          "default": "CURRENT_TIMESTAMP",
+          "comment": null
+        }
+      ],
+      "indexes": [
+        {
+          "name": "idx_parameter_types_short_name",
+          "definition": "CREATE UNIQUE INDEX IF NOT EXISTS idx_parameter_types_short_name ON parameter_types(short_name)"
+        }
+      ],
+      "constraints": []
+    },
+    {
+      "name": "parameter_values",
+      "comment": null,
+      "columns": [
+        {
+          "name": "id",
+          "type": "SERIAL PRIMARY KEY",
+          "nullable": true,
+          "default": null,
+          "comment": null
+        },
+        {
+          "name": "parameter_set_id",
+          "type": "INTEGER  REFERENCES parameter_sets(id) ON DELETE CASCADE",
+          "nullable": false,
+          "default": null,
+          "comment": null
+        },
+        {
+          "name": "parameter_type_id",
+          "type": "INTEGER  REFERENCES parameter_types(id) ON DELETE CASCADE",
+          "nullable": false,
+          "default": null,
+          "comment": null
+        },
+        {
+          "name": "value",
+          "type": "TEXT",
+          "nullable": false,
+          "default": null,
+          "comment": null
+        },
+        {
+          "name": "record_date",
+          "type": "TIMESTAMP",
+          "nullable": false,
+          "default": "CURRENT_TIMESTAMP",
+          "comment": null
+        },
+        {
+          "name": "created_at",
+          "type": "TIMESTAMP",
+          "nullable": false,
+          "default": "CURRENT_TIMESTAMP",
+          "comment": null
+        }
+      ],
+      "indexes": [
+        {
+          "name": "idx_parameter_values_unique",
+          "definition": "CREATE UNIQUE INDEX IF NOT EXISTS idx_parameter_values_unique ON parameter_values(parameter_set_id, parameter_type_id)"
+        }
+      ],
+      "constraints": []
+    },
+    {
+      "name": "price_load_log",
+      "comment": null,
+      "columns": [
+        {
+          "name": "id",
+          "type": "BIGSERIAL PRIMARY KEY",
+          "nullable": true,
+          "default": null,
+          "comment": null
+        },
+        {
+          "name": "security_id",
+          "type": "INTEGER  REFERENCES securities(id)",
+          "nullable": false,
+          "default": null,
+          "comment": null
+        },
+        {
+          "name": "timeframe_id",
+          "type": "INTEGER  REFERENCES timeframes(id)",
+          "nullable": false,
+          "default": null,
+          "comment": null
+        },
+        {
+          "name": "date_from",
+          "type": "DATE",
+          "nullable": false,
+          "default": null,
+          "comment": null
+        },
+        {
+          "name": "date_to",
+          "type": "DATE",
+          "nullable": false,
+          "default": null,
+          "comment": null
+        },
+        {
+          "name": "source",
+          "type": "VARCHAR(20)",
+          "nullable": false,
+          "default": null,
+          "comment": null
+        },
+        {
+          "name": "records_loaded",
+          "type": "INTEGER",
+          "nullable": true,
+          "default": "0",
+          "comment": null
+        },
+        {
+          "name": "error_message",
+          "type": "TEXT",
+          "nullable": true,
+          "default": null,
+          "comment": null
+        },
+        {
+          "name": "loaded_at",
+          "type": "TIMESTAMP",
+          "nullable": false,
+          "default": "CURRENT_TIMESTAMP",
+          "comment": null
+        }
+      ],
+      "indexes": [
+        {
+          "name": "idx_price_load_log_security",
+          "definition": "CREATE INDEX IF NOT EXISTS idx_price_load_log_security ON price_load_log(security_id, timeframe_id)"
+        },
+        {
+          "name": "idx_price_load_log_loaded_at",
+          "definition": "CREATE INDEX IF NOT EXISTS idx_price_load_log_loaded_at ON price_load_log(loaded_at)"
+        }
+      ],
+      "constraints": []
+    },
+    {
+      "name": "prices",
+      "comment": "Таблица цен (OHLCV)",
+      "columns": [
+        {
+          "name": "id",
+          "type": "BIGSERIAL PRIMARY KEY",
+          "nullable": true,
+          "default": null,
+          "comment": null
+        },
+        {
+          "name": "security_id",
+          "type": "INTEGER  REFERENCES securities(id) ON DELETE CASCADE",
+          "nullable": false,
+          "default": null,
+          "comment": null
+        },
+        {
+          "name": "timeframe_id",
+          "type": "INTEGER  REFERENCES timeframes(id) ON DELETE CASCADE",
+          "nullable": false,
+          "default": null,
+          "comment": null
+        },
+        {
+          "name": "dt",
+          "type": "TIMESTAMP",
+          "nullable": false,
+          "default": null,
+          "comment": null
+        },
+        {
+          "name": "open_price",
+          "type": "NUMERIC(18, 6)",
+          "nullable": false,
+          "default": null,
+          "comment": null
+        },
+        {
+          "name": "high_price",
+          "type": "NUMERIC(18, 6)",
+          "nullable": false,
+          "default": null,
+          "comment": null
+        },
+        {
+          "name": "low_price",
+          "type": "NUMERIC(18, 6)",
+          "nullable": false,
+          "default": null,
+          "comment": null
+        },
+        {
+          "name": "close_price",
+          "type": "NUMERIC(18, 6)",
+          "nullable": false,
+          "default": null,
+          "comment": null
+        },
+        {
+          "name": "volume",
+          "type": "NUMERIC(20, 2)",
+          "nullable": true,
+          "default": null,
+          "comment": null
+        },
+        {
+          "name": "value",
+          "type": "NUMERIC(20, 2)",
+          "nullable": true,
+          "default": null,
+          "comment": null
+        },
+        {
+          "name": "trades",
+          "type": "INTEGER",
+          "nullable": true,
+          "default": null,
+          "comment": null
+        },
+        {
+          "name": "created_at",
+          "type": "TIMESTAMP",
+          "nullable": false,
+          "default": "CURRENT_TIMESTAMP",
+          "comment": null
+        }
+      ],
+      "indexes": [
+        {
+          "name": "idx_prices_security_id",
+          "definition": "CREATE INDEX IF NOT EXISTS idx_prices_security_id ON prices(security_id)"
+        },
+        {
+          "name": "idx_prices_timeframe_id",
+          "definition": "CREATE INDEX IF NOT EXISTS idx_prices_timeframe_id ON prices(timeframe_id)"
+        },
+        {
+          "name": "idx_prices_dt",
+          "definition": "CREATE INDEX IF NOT EXISTS idx_prices_dt ON prices(dt)"
+        },
+        {
+          "name": "idx_prices_security_timeframe",
+          "definition": "CREATE INDEX IF NOT EXISTS idx_prices_security_timeframe ON prices(security_id, timeframe_id)"
+        },
+        {
+          "name": "idx_prices_security_timeframe_dt",
+          "definition": "CREATE INDEX IF NOT EXISTS idx_prices_security_timeframe_dt ON prices(security_id, timeframe_id, dt)"
+        },
+        {
+          "name": "idx_prices_unique_candle",
+          "definition": "CREATE UNIQUE INDEX IF NOT EXISTS idx_prices_unique_candle ON prices(security_id, timeframe_id, dt)"
+        }
+      ],
+      "constraints": []
+    },
+    {
+      "name": "securities",
+      "comment": "Таблица ценных бумаг",
+      "columns": [
+        {
+          "name": "id",
+          "type": "SERIAL PRIMARY KEY",
+          "nullable": true,
+          "default": null,
+          "comment": null
+        },
+        {
+          "name": "name",
+          "type": "VARCHAR(200)",
+          "nullable": false,
+          "default": null,
+          "comment": null
+        },
+        {
+          "name": "security_type_id",
+          "type": "INTEGER REFERENCES security_types(id)",
+          "nullable": true,
+          "default": null,
+          "comment": null
+        }
+      ],
+      "indexes": [
+        {
+          "name": "idx_securities_name_unique",
+          "definition": "CREATE UNIQUE INDEX IF NOT EXISTS idx_securities_name_unique ON securities(name)"
+        },
+        {
+          "name": "idx_securities_type_id",
+          "definition": "CREATE INDEX IF NOT EXISTS idx_securities_type_id ON securities(security_type_id)"
+        }
+      ],
+      "constraints": []
+    },
+    {
+      "name": "security_prefixes",
+      "comment": "Тикеры на торговых площадках; акция и фьючерс различаются security_id и instrument_market",
+      "columns": [
+        {
+          "name": "id",
+          "type": "SERIAL PRIMARY KEY",
+          "nullable": true,
+          "default": null,
+          "comment": null
+        },
+        {
+          "name": "security_id",
+          "type": "INTEGER  REFERENCES securities(id) ON DELETE CASCADE",
+          "nullable": false,
+          "default": null,
+          "comment": null
+        },
+        {
+          "name": "exchange_id",
+          "type": "INTEGER  REFERENCES exchanges(id) ON DELETE CASCADE",
+          "nullable": false,
+          "default": null,
+          "comment": null
+        },
+        {
+          "name": "prefix",
+          "type": "VARCHAR(50)",
+          "nullable": false,
+          "default": null,
+          "comment": null
+        },
+        {
+          "name": "instrument_market",
+          "type": "VARCHAR(20)",
+          "nullable": false,
+          "default": "'stock'",
+          "comment": "instrument_market"
+        },
+        {
+          "name": "tbank_figi",
+          "type": "VARCHAR(50)",
+          "nullable": true,
+          "default": null,
+          "comment": "tbank_figi"
+        },
+        {
+          "name": "note",
+          "type": "VARCHAR(200)",
+          "nullable": true,
+          "default": null,
+          "comment": null
+        }
+      ],
+      "indexes": [
+        {
+          "name": "idx_security_prefixes_security_exchange",
+          "definition": "CREATE UNIQUE INDEX IF NOT EXISTS idx_security_prefixes_security_exchange ON security_prefixes(security_id, exchange_id)"
+        },
+        {
+          "name": "idx_security_prefixes_prefix",
+          "definition": "CREATE INDEX IF NOT EXISTS idx_security_prefixes_prefix ON security_prefixes(exchange_id, prefix, instrument_market)"
+        },
+        {
+          "name": "idx_security_prefixes_security_id",
+          "definition": "CREATE INDEX IF NOT EXISTS idx_security_prefixes_security_id ON security_prefixes(security_id)"
+        }
+      ],
+      "constraints": []
+    },
+    {
+      "name": "security_types",
+      "comment": "Таблица типов ценных бумаг",
+      "columns": [
+        {
+          "name": "id",
+          "type": "SERIAL PRIMARY KEY",
+          "nullable": true,
+          "default": null,
+          "comment": null
+        },
+        {
+          "name": "name",
+          "type": "VARCHAR(50)  UNIQUE",
+          "nullable": false,
+          "default": null,
+          "comment": null
+        },
+        {
+          "name": "note",
+          "type": "VARCHAR(100)",
+          "nullable": true,
+          "default": null,
+          "comment": null
+        }
+      ],
+      "indexes": [
+        {
+          "name": "idx_security_types_name",
+          "definition": "CREATE INDEX IF NOT EXISTS idx_security_types_name ON security_types(name)"
+        }
+      ],
+      "constraints": []
+    },
+    {
+      "name": "sides",
+      "comment": null,
+      "columns": [
+        {
+          "name": "id",
+          "type": "SERIAL PRIMARY KEY",
+          "nullable": true,
+          "default": null,
+          "comment": null
+        },
+        {
+          "name": "name",
+          "type": "VARCHAR(20)  UNIQUE",
+          "nullable": false,
+          "default": null,
+          "comment": null
+        }
+      ],
+      "indexes": [],
+      "constraints": []
+    },
+    {
+      "name": "timeframes",
+      "comment": "Таблица таймфреймов",
+      "columns": [
+        {
+          "name": "id",
+          "type": "SERIAL PRIMARY KEY",
+          "nullable": true,
+          "default": null,
+          "comment": null
+        },
+        {
+          "name": "tf",
+          "type": "VARCHAR(20)  UNIQUE",
+          "nullable": false,
+          "default": null,
+          "comment": null
+        },
+        {
+          "name": "full_name",
+          "type": "VARCHAR(50)",
+          "nullable": false,
+          "default": null,
+          "comment": null
+        },
+        {
+          "name": "sec",
+          "type": "INTEGER  CHECK (sec > 0)",
+          "nullable": false,
+          "default": null,
+          "comment": null
+        },
+        {
+          "name": "is_active",
+          "type": "BOOLEAN",
+          "nullable": false,
+          "default": "TRUE",
+          "comment": "is_active"
+        }
+      ],
+      "indexes": [
+        {
+          "name": "idx_timeframes_tf",
+          "definition": "CREATE INDEX IF NOT EXISTS idx_timeframes_tf ON timeframes(tf)"
+        }
+      ],
+      "constraints": []
+    }
+  ],
+  "routines": [
+    {
+      "oid": 900004,
+      "name": "get_active_future_prefix",
+      "kind": "function",
+      "arguments": "p_security_id, p_date",
+      "result_type": "VARCHAR(50)",
+      "description": "Возвращает тикер активного фьючерса (с окончанием) на заданную дату",
+      "source": "CREATE OR REPLACE FUNCTION get_active_future_prefix(p_security_id INTEGER,\r\n    p_date DATE)\nRETURNS VARCHAR(50) AS $$\r\nDECLARE\r\n    v_prefix VARCHAR(50);\r\nBEGIN\r\n    SELECT fe.prefix INTO v_prefix\r\n    FROM futures_expirations fe\r\n    WHERE fe.security_id = p_security_id\r\n      AND fe.expiration_date > p_date\r\n      AND fe.is_active = TRUE\r\n    ORDER BY fe.expiration_date ASC\r\n    LIMIT 1;\r\n\r\n    RETURN v_prefix;\r\nEND;\r\n$$ LANGUAGE plpgsql;\r\n\r\nCOMMENT ON FUNCTION get_active_future_prefix(INTEGER, DATE) IS \r\n'Возвращает тикер активного фьючерса (с окончанием) на заданную дату';\r\n\r\n-- ============================================\r\n-- Функция: get_tbank_token\r\n-- Получает зашифрованный токен T-Bank из счета\r\n-- ============================================"
+    },
+    {
+      "oid": 900002,
+      "name": "get_moex_candle_interval",
+      "kind": "function",
+      "arguments": "p_tf",
+      "result_type": "INTEGER",
+      "description": "Возвращает параметр interval для MOEX ISS candles API",
+      "source": "CREATE OR REPLACE FUNCTION get_moex_candle_interval(p_tf VARCHAR)\nRETURNS INTEGER AS $$\r\nBEGIN\r\n    RETURN CASE p_tf\r\n        WHEN 'M1' THEN 1\r\n        WHEN 'M2' THEN 2\r\n        WHEN 'M3' THEN 3\r\n        WHEN 'M5' THEN 5\r\n        WHEN 'M10' THEN 10\r\n        WHEN 'M15' THEN 15\r\n        WHEN 'M20' THEN 20\r\n        WHEN 'M30' THEN 30\r\n        WHEN 'M60' THEN 60\r\n        WHEN 'H1' THEN 60\r\n        WHEN 'H2' THEN 120\r\n        WHEN 'H4' THEN 240\r\n        WHEN 'D1' THEN 24\r\n        WHEN 'W1' THEN 7\r\n        WHEN 'MN1' THEN 31\r\n        ELSE 1\r\n    END;\r\nEND;\r\n$$ LANGUAGE plpgsql IMMUTABLE;\r\n\r\nCOMMENT ON FUNCTION get_moex_candle_interval(VARCHAR) IS\r\n'Возвращает параметр interval для MOEX ISS candles API';\r\n\r\n-- ============================================\r\n-- Вспомогательная функция: get_tbank_candle_interval\r\n-- Интервал свечи для T-Bank Invest API\r\n-- ============================================"
+    },
+    {
+      "oid": 900003,
+      "name": "get_tbank_candle_interval",
+      "kind": "function",
+      "arguments": "p_tf",
+      "result_type": "TEXT",
+      "description": "Возвращает CANDLE_INTERVAL_* для T-Bank GetCandles API",
+      "source": "CREATE OR REPLACE FUNCTION get_tbank_candle_interval(p_tf VARCHAR)\nRETURNS TEXT AS $$\r\nBEGIN\r\n    RETURN CASE p_tf\r\n        WHEN 'M1' THEN 'CANDLE_INTERVAL_1_MIN'\r\n        WHEN 'M2' THEN 'CANDLE_INTERVAL_2_MIN'\r\n        WHEN 'M3' THEN 'CANDLE_INTERVAL_3_MIN'\r\n        WHEN 'M5' THEN 'CANDLE_INTERVAL_5_MIN'\r\n        WHEN 'M10' THEN 'CANDLE_INTERVAL_10_MIN'\r\n        WHEN 'M15' THEN 'CANDLE_INTERVAL_15_MIN'\r\n        WHEN 'M30' THEN 'CANDLE_INTERVAL_30_MIN'\r\n        WHEN 'H1' THEN 'CANDLE_INTERVAL_HOUR'\r\n        WHEN 'H2' THEN 'CANDLE_INTERVAL_2_HOUR'\r\n        WHEN 'H4' THEN 'CANDLE_INTERVAL_4_HOUR'\r\n        WHEN 'D1' THEN 'CANDLE_INTERVAL_DAY'\r\n        WHEN 'W1' THEN 'CANDLE_INTERVAL_WEEK'\r\n        WHEN 'MN1' THEN 'CANDLE_INTERVAL_MONTH'\r\n        ELSE 'CANDLE_INTERVAL_DAY'\r\n    END;\r\nEND;\r\n$$ LANGUAGE plpgsql IMMUTABLE;\r\n\r\nCOMMENT ON FUNCTION get_tbank_candle_interval(VARCHAR) IS\r\n'Возвращает CANDLE_INTERVAL_* для T-Bank GetCandles API';\r\n\r\n-- Функция: get_active_future_prefix\r\n-- Определяет активный фьючерс на заданную дату\r\n-- ============================================"
+    },
+    {
+      "oid": 900005,
+      "name": "get_tbank_token",
+      "kind": "function",
+      "arguments": "p_account_code",
+      "result_type": null,
+      "description": "Получает зашифрованный токен T-Bank из таблицы accounts",
+      "source": "CREATE OR REPLACE FUNCTION get_tbank_token(p_account_code VARCHAR(100)\nDEFAULT 'FAKE-EFF-001'\r\n)\r\nRETURNS TEXT AS $$\r\nDECLARE\r\n    v_token TEXT;\r\nBEGIN\r\n    SELECT token_encrypted INTO v_token\r\n    FROM accounts a\r\n    JOIN brokers b ON a.broker_id = b.id\r\n    WHERE b.code = 'T-BANK'\r\n      AND a.account_code = p_account_code\r\n      AND a.is_active = TRUE;\r\n\r\n    RETURN v_token;\r\nEND;\r\n$$ LANGUAGE plpgsql;\r\n\r\nCOMMENT ON FUNCTION get_tbank_token(VARCHAR) IS \r\n'Получает зашифрованный токен T-Bank из таблицы accounts';\r\n\r\n-- ============================================\r\n-- Процедура: insert_candle\r\n-- Вставляет/обновляет одну свечу (UPSERT)\r\n-- ============================================"
+    },
+    {
+      "oid": 900015,
+      "name": "insert_indicator_value",
+      "kind": "function",
+      "arguments": "p_indicator_id, p_value_type_id, p_security_id, p_timeframe_id, p_dt, p_value, 6",
+      "result_type": null,
+      "description": "Вспомогательная функция для вставки/обновления одного значения индикатора.\r\n\r\nПроверяет существование записи по уникальному индексу:\r\n(indicator_id, indicator_value_type_id, security_id, timeframe_id, dt)\r\n\r\nЕсли запись существует и p_overwrite=FALSE -- пропускает.\r\nЕсли запись существует и p_overwrite=TRUE -- удаляет старую и вставляет новую.\r\nЕсли записи нет -- просто вставляет новую.\r\n\r\nИспользуется внутри calculate_indicator для записи каждого значения.",
+      "source": "CREATE OR REPLACE FUNCTION insert_indicator_value(p_indicator_id INTEGER,\r\n    p_value_type_id INTEGER,\r\n    p_security_id INTEGER,\r\n    p_timeframe_id INTEGER,\r\n    p_dt TIMESTAMP,\r\n    p_value NUMERIC(18,6)\n,\r\n    p_is_signal BOOLEAN,\r\n    p_signal_type VARCHAR(20),\r\n    p_overwrite BOOLEAN\r\n)\r\nRETURNS VOID AS $$\r\nDECLARE\r\n    v_existing_count INTEGER;  -- Количество существующих записей (0 или 1)\r\nBEGIN\r\n    -- ============================================================\r\n    -- БЛОК 1: ПРОВЕРКА СУЩЕСТВОВАНИЯ ЗАПИСИ\r\n    -- ============================================================\r\n    -- Проверяем, есть ли уже запись для данной комбинации:\r\n    -- индикатор + тип значения + бумага + таймфрейм + дата\r\n    SELECT COUNT(*) INTO v_existing_count\r\n    FROM indicator_values\r\n    WHERE indicator_id = p_indicator_id\r\n      AND indicator_value_type_id = p_value_type_id\r\n      AND security_id = p_security_id\r\n      AND timeframe_id = p_timeframe_id\r\n      AND dt = p_dt;\r\n\r\n    -- ============================================================\r\n    -- БЛОК 2: ОБРАБОТКА В ЗАВИСИМОСТИ ОТ ФЛАГА OVERWRITE\r\n    -- ============================================================\r\n    IF v_existing_count > 0 AND NOT p_overwrite THEN\r\n        -- Запись есть и overwrite=FALSE -- пропускаем (ничего не делаем)\r\n        RETURN;\r\n    END IF;\r\n\r\n    -- Если запись есть и overwrite=TRUE -- удаляем старую\r\n    IF v_existing_count > 0 THEN\r\n        DELETE FROM indicator_values\r\n        WHERE indicator_id = p_indicator_id\r\n          AND indicator_value_type_id = p_value_type_id\r\n          AND security_id = p_security_id\r\n          AND timeframe_id = p_timeframe_id\r\n          AND dt = p_dt;\r\n    END IF;\r\n\r\n    -- ============================================================\r\n    -- БЛОК 3: ВСТАВКА НОВОГО ЗНАЧЕНИЯ\r\n    -- ============================================================\r\n    INSERT INTO indicator_values (\r\n        indicator_id,           -- Ссылка на индикатор\r\n        indicator_value_type_id,-- Ссылка на тип значения (линия/порог)\r\n        security_id,            -- Ссылка на бумагу\r\n        timeframe_id,           -- Ссылка на таймфрейм\r\n        dt,                     -- Дата/время свечи\r\n        value,                  -- Рассчитанное значение\r\n        is_signal,              -- Это сигнальное значение?\r\n        signal_type             -- Тип сигнала (buy, sell, overbought, oversold)\r\n    ) VALUES (\r\n        p_indicator_id,\r\n        p_value_type_id,\r\n        p_security_id,\r\n        p_timeframe_id,\r\n        p_dt,\r\n        p_value,\r\n        p_is_signal,\r\n        p_signal_type\r\n    );\r\nEND;\r\n$$ LANGUAGE plpgsql;\r\n\r\n-- ============================================\r\n-- КОММЕНТАРИЙ К ФУНКЦИИ insert_indicator_value\r\n-- ============================================\r\nCOMMENT ON FUNCTION insert_indicator_value(INTEGER, INTEGER, INTEGER, INTEGER, TIMESTAMP, NUMERIC, BOOLEAN, VARCHAR, BOOLEAN) IS \r\n'Вспомогательная функция для вставки/обновления одного значения индикатора.\r\n\r\nПроверяет существование записи по уникальному индексу:\r\n(indicator_id, indicator_value_type_id, security_id, timeframe_id, dt)\r\n\r\nЕсли запись существует и p_overwrite=FALSE -- пропускает.\r\nЕсли запись существует и p_overwrite=TRUE -- удаляет старую и вставляет новую.\r\nЕсли записи нет -- просто вставляет новую.\r\n\r\nИспользуется внутри calculate_indicator для записи каждого значения.';\r\n\r\n-- ============================================\r\n-- Процедура: calculate_all_indicators\r\n-- ============================================\r\n-- Параметры:\r\n--   p_security_id  - ID ценной бумаги\r\n--   p_timeframe_id - ID таймфрейма\r\n--   p_date_from    - Начальная дата периода\r\n--   p_date_to      - Конечная дата периода\r\n--   p_overwrite    - Перезаписывать существующие записи?\r\n-- ============================================\r\n-- Рассчитывает ВСЕ активные индикаторы из таблицы indicators\r\n-- для указанной бумаги, таймфрейма и периода.\r\n-- Ошибки в расчете отдельных индикаторов не прерывают общий процесс.\r\n-- ============================================"
+    },
+    {
+      "oid": 900001,
+      "name": "parse_tbank_quotation",
+      "kind": "function",
+      "arguments": "p_value",
+      "result_type": "NUMERIC(18,6)",
+      "description": "Преобразует Quotation T-Bank API (units+nano) или число в NUMERIC",
+      "source": "CREATE OR REPLACE FUNCTION parse_tbank_quotation(p_value JSONB)\nRETURNS NUMERIC(18,6) AS $$\r\nDECLARE\r\n    v_units BIGINT;\r\n    v_nano INTEGER;\r\nBEGIN\r\n    IF p_value IS NULL OR p_value = 'null'::JSONB THEN\r\n        RETURN NULL;\r\n    END IF;\r\n\r\n    IF jsonb_typeof(p_value) = 'number' THEN\r\n        RETURN p_value::TEXT::NUMERIC(18,6);\r\n    END IF;\r\n\r\n    IF jsonb_typeof(p_value) = 'string' THEN\r\n        RETURN (p_value #>> '{}')::NUMERIC(18,6);\r\n    END IF;\r\n\r\n    v_units := COALESCE((p_value->>'units')::BIGINT, 0);\r\n    v_nano := COALESCE((p_value->>'nano')::INTEGER, 0);\r\n    RETURN v_units + (v_nano / 1000000000.0);\r\nEND;\r\n$$ LANGUAGE plpgsql IMMUTABLE;\r\n\r\nCOMMENT ON FUNCTION parse_tbank_quotation(JSONB) IS\r\n'Преобразует Quotation T-Bank API (units+nano) или число в NUMERIC';\r\n\r\n-- ============================================\r\n-- Вспомогательная функция: get_moex_candle_interval\r\n-- Код интервала для MOEX ISS API\r\n-- ============================================"
+    },
+    {
+      "oid": 900016,
+      "name": "calculate_all_indicators",
+      "kind": "procedure",
+      "arguments": "p_security_id, p_timeframe_id, p_date_from, p_date_to, p_overwrite",
+      "result_type": null,
+      "description": "Рассчитывает все активные индикаторы (indicators.is_active = TRUE) \r\nдля указанной бумаги, таймфрейма и периода.\r\n\r\nПеребирает все записи из таблицы indicators где is_active=TRUE\r\nи вызывает для каждого calculate_indicator.\r\n\r\nОшибка в расчете одного индикатора НЕ прерывает расчет остальных.\r\n\r\nПРИМЕР:\r\n  CALL calculate_all_indicators(1, 4, '2026-06-17', '2026-06-24', TRUE);\r\n  -- Расчет ВСЕХ индикаторов для SBER на M5 за неделю",
+      "source": "CREATE OR REPLACE PROCEDURE calculate_all_indicators(p_security_id INTEGER,\r\n    p_timeframe_id INTEGER,\r\n    p_date_from DATE,\r\n    p_date_to DATE,\r\n    p_overwrite BOOLEAN DEFAULT FALSE)\nLANGUAGE plpgsql AS $$\r\nDECLARE\r\n    v_indicator RECORD;  -- Курсор по активным индикаторам\r\nBEGIN\r\n    -- ============================================================\r\n    -- БЛОК: ПЕРЕБОР ВСЕХ АКТИВНЫХ ИНДИКАТОРОВ\r\n    -- ============================================================\r\n    -- Выбираем все индикаторы где is_active = TRUE\r\n    -- и по очереди вызываем для каждого calculate_indicator\r\n    FOR v_indicator IN \r\n        SELECT id, code, name \r\n        FROM indicators \r\n        WHERE is_active = TRUE \r\n        ORDER BY id\r\n    LOOP\r\n        BEGIN\r\n            -- Вызываем расчет для текущего индикатора\r\n            CALL calculate_indicator(\r\n                p_security_id,    -- Бумага\r\n                p_timeframe_id,   -- Таймфрейм\r\n                v_indicator.id,   -- ID индикатора\r\n                p_date_from,      -- Начало периода\r\n                p_date_to,        -- Конец периода\r\n                p_overwrite       -- Флаг перезаписи\r\n            );\r\n            RAISE NOTICE 'Успешно рассчитан индикатор: % (%)', v_indicator.code, v_indicator.name;\r\n\r\n        EXCEPTION\r\n            WHEN OTHERS THEN\r\n                -- Ошибка в одном индикаторе не прерывает расчет остальных\r\n                RAISE NOTICE 'ОШИБКА расчета индикатора % (%): %', \r\n                    v_indicator.code, v_indicator.name, SQLERRM;\r\n        END;\r\n    END LOOP;\r\n\r\n    RAISE NOTICE '=== Расчет всех индикаторов завершен ===';\r\nEND;\r\n$$;\r\n\r\n-- ============================================\r\n-- КОММЕНТАРИЙ К ПРОЦЕДУРЕ calculate_all_indicators\r\n-- ============================================\r\nCOMMENT ON PROCEDURE calculate_all_indicators(INTEGER, INTEGER, DATE, DATE, BOOLEAN) IS \r\n'Рассчитывает все активные индикаторы (indicators.is_active = TRUE) \r\nдля указанной бумаги, таймфрейма и периода.\r\n\r\nПеребирает все записи из таблицы indicators где is_active=TRUE\r\nи вызывает для каждого calculate_indicator.\r\n\r\nОшибка в расчете одного индикатора НЕ прерывает расчет остальных.\r\n\r\nПРИМЕР:\r\n  CALL calculate_all_indicators(1, 4, ''2026-06-17'', ''2026-06-24'', TRUE);\r\n  -- Расчет ВСЕХ индикаторов для SBER на M5 за неделю';\r\n\r\n-- ============================================\r\n-- Процедура: calculate_indicators_batch\r\n-- ============================================\r\n-- Параметры:\r\n--   p_security_ids - Массив ID бумаг (INTEGER[])\r\n--   p_timeframe_id - ID таймфрейма\r\n--   p_date_from    - Начальная дата периода\r\n--   p_date_to      - Конечная дата периода\r\n--   p_overwrite    - Перезаписывать существующие записи?\r\n-- ============================================\r\n-- Рассчитывает все индикаторы для массива бумаг.\r\n-- Удобно для массового пересчета по портфелю.\r\n-- ============================================"
+    },
+    {
+      "oid": 900014,
+      "name": "calculate_indicator",
+      "kind": "procedure",
+      "arguments": "p_security_id, --",
+      "result_type": null,
+      "description": "Рассчитывает все активные индикаторы для массива бумаг.\r\n\r\nПараметр p_security_ids -- массив ID из таблицы securities.\r\n\r\nПРИМЕР:\r\n  CALL calculate_indicators_batch(ARRAY[1, 3, 4, 5], 4, '2026-06-17', '2026-06-24', FALSE);\r\n  -- Расчет всех индикаторов для SBER, GAZP, LKOH, ROSN на M5",
+      "source": "CREATE OR REPLACE PROCEDURE calculate_indicator(p_security_id INTEGER,           -- ID бумаги (ссылка на securities.id)\np_timeframe_id INTEGER,          -- ID таймфрейма (ссылка на timeframes.id)\r\n    p_indicator_id INTEGER,          -- ID индикатора (ссылка на indicators.id)\r\n    p_date_from DATE,                -- Начало периода расчета (YYYY-MM-DD)\r\n    p_date_to DATE,                  -- Конец периода расчета (YYYY-MM-DD)\r\n    p_overwrite BOOLEAN DEFAULT FALSE -- Перезаписывать существующие записи?\r\n)\r\nLANGUAGE plpgsql AS $$\r\nDECLARE\r\n    -- ============================================================\r\n    -- ПЕРЕМЕННЫЕ ИНФОРМАЦИИ ОБ ИНДИКАТОРЕ\r\n    -- ============================================================\r\n    v_indicator_code VARCHAR(20);    -- Код индикатора (RSI, MACD, BB и т.д.)\r\n    v_indicator_name VARCHAR(100);   -- Полное имя индикатора\r\n    v_indicator_category VARCHAR(50);-- Категория: trend, momentum, volatility, volume\r\n    v_script TEXT;                   -- SQL-скрипт из indicators.script (пока не используется)\r\n\r\n    -- ============================================================\r\n    -- ПАРАМЕТРЫ ИНДИКАТОРА (загружаются из parameter_values или берутся по умолчанию)\r\n    -- ============================================================\r\n    v_period INTEGER := 14;          -- Основной период (для RSI, SMA, EMA, ATR, STOCH)\r\n    v_fast_period INTEGER := 12;     -- Период быстрой линии (только для MACD)\r\n    v_slow_period INTEGER := 26;     -- Период медленной линии (только для MACD)\r\n    v_signal_period INTEGER := 9;    -- Период сигнальной линии (MACD, STOCH)\r\n    v_std_dev NUMERIC := 2.0;        -- Количество стандартных отклонений (только для BB)\r\n    v_k_period INTEGER := 14;        -- Период %K линии (только для Stochastic)\r\n    v_d_period INTEGER := 3;         -- Период %D линии (только для Stochastic)\r\n    v_smooth INTEGER := 3;           -- Период сглаживания (только для Stochastic)\r\n\r\n    -- ============================================================\r\n    -- ПЕРЕМЕННЫЕ ДЛЯ РАСЧЕТА RSI\r\n    -- ============================================================\r\n    v_gain NUMERIC(18,6) := 0;       -- Сумма положительных изменений цены\r\n    v_loss NUMERIC(18,6) := 0;       -- Сумма отрицательных изменений цены\r\n    v_avg_gain NUMERIC(18,6) := 0;   -- Средний прирост за период\r\n    v_avg_loss NUMERIC(18,6) := 0;   -- Средняя потеря за период\r\n    v_rsi NUMERIC(18,6);             -- Итоговое значение RSI (0-100)\r\n    v_rs NUMERIC(18,6);              -- Отношение avg_gain / avg_loss\r\n\r\n    -- ============================================================\r\n    -- ПЕРЕМЕННЫЕ ДЛЯ РАСЧЕТА SMA / EMA\r\n    -- ============================================================\r\n    v_sma NUMERIC(18,6);             -- Значение простого скользящего среднего\r\n    v_ema NUMERIC(18,6);             -- Значение экспоненциального скользящего среднего\r\n    v_ema_prev NUMERIC(18,6);        -- Предыдущее значение EMA (для рекурсии)\r\n    v_multiplier NUMERIC(18,6);    -- Множитель сглаживания EMA = 2/(period+1)\r\n    v_sum NUMERIC(18,6) := 0;        -- Аккумулятор суммы (для SMA)\r\n    v_count INTEGER := 0;            -- Счетчик итераций\r\n\r\n    -- ============================================================\r\n    -- ПЕРЕМЕННЫЕ ДЛЯ РАСЧЕТА BOLLINGER BANDS\r\n    -- ============================================================\r\n    v_bb_middle NUMERIC(18,6);       -- Средняя полоса (SMA)\r\n    v_bb_upper NUMERIC(18,6);        -- Верхняя полоса (SMA + k*σ)\r\n    v_bb_lower NUMERIC(18,6);        -- Нижняя полоса (SMA - k*σ)\r\n    v_bb_stddev NUMERIC(18,6);       -- Стандартное отклонение\r\n    v_bb_sum_sq NUMERIC(18,6) := 0;  -- Сумма квадратов отклонений (для σ)\r\n\r\n    -- ============================================================\r\n    -- ПЕРЕМЕННЫЕ ДЛЯ РАСЧЕТА MACD\r\n    -- ============================================================\r\n    v_ema_fast NUMERIC(18,6);        -- Быстрая EMA (период 12)\r\n    v_ema_slow NUMERIC(18,6);        -- Медленная EMA (период 26)\r\n    v_macd NUMERIC(18,6);            -- Линия MACD = EMA_fast - EMA_slow\r\n    v_macd_signal NUMERIC(18,6);     -- Сигнальная линия (EMA от MACD, период 9)\r\n    v_macd_histogram NUMERIC(18,6);  -- Гистограмма = MACD - Signal\r\n    v_mult_fast NUMERIC(18,6);       -- Множитель быстрой EMA = 2/(12+1)\r\n    v_mult_slow NUMERIC(18,6);       -- Множитель медленной EMA = 2/(26+1)\r\n    v_mult_signal NUMERIC(18,6);     -- Множитель сигнальной EMA = 2/(9+1)\r\n\r\n    -- ============================================================\r\n    -- ПЕРЕМЕННЫЕ ДЛЯ РАСЧЕТА STOCHASTIC\r\n    -- ============================================================\r\n    v_stoch_k NUMERIC(18,6);         -- %K линия = (Close - Low) / (High - Low) * 100\r\n    v_stoch_d NUMERIC(18,6);         -- %D линия = SMA(%K, 3)\r\n    v_stoch_j NUMERIC(18,6);         -- J линия = 3K - 2D (не используется)\r\n    v_lowest_low NUMERIC(18,6);      -- Минимум low за период %K\r\n    v_highest_high NUMERIC(18,6);    -- Максимум high за период %K\r\n    v_k_sum NUMERIC(18,6) := 0;      -- Аккумулятор для SMA %K\r\n    v_k_count INTEGER := 0;          -- Счетчик для SMA %K\r\n\r\n    -- ============================================================\r\n    -- ПЕРЕМЕННЫЕ ДЛЯ РАСЧЕТА ATR\r\n    -- ============================================================\r\n    v_atr NUMERIC(18,6);             -- Текущее значение ATR\r\n    v_atr_prev NUMERIC(18,6);        -- Предыдущее значение ATR (для Wilder's smoothing)\r\n    v_tr NUMERIC(18,6);              -- True Range = max(High-Low, |High-Close_prev|, |Low-Close_prev|)\r\n    v_tr_high NUMERIC(18,6);         -- High - Low (компонент TR)\r\n    v_tr_low NUMERIC(18,6);          -- |High - Close_prev| (компонент TR)\r\n    v_tr_close NUMERIC(18,6);        -- |Low - Close_prev| (компонент TR)\r\n\r\n    -- ============================================================\r\n    -- ПОРОГОВЫЕ ЗНАЧЕНИЯ (загружаются из indicator_value_types.threshold_value)\r\n    -- ============================================================\r\n    v_overbought NUMERIC(18,6) := 70;-- Порог перекупленности (RSI=70, STOCH=80)\r\n    v_oversold NUMERIC(18,6) := 30;  -- Порог перепроданности (RSI=30, STOCH=20)\r\n    v_neutral NUMERIC(18,6) := 50;  -- Нейтральный уровень\r\n\r\n    -- ============================================================\r\n    -- СЧЕТЧИКИ РЕЗУЛЬТАТОВ ОПЕРАЦИЙ\r\n    -- ============================================================\r\n    v_records_inserted INTEGER := 0; -- Количество вставленных новых записей\r\n    v_records_updated INTEGER := 0;  -- Количество обновленных записей (при overwrite=TRUE)\r\n    v_records_skipped INTEGER := 0;  -- Количество пропущенных записей (при overwrite=FALSE)\r\n    v_dt TIMESTAMP;                  -- Текущая дата/время свечи\r\n\r\n    -- ============================================================\r\n    -- КУРСОР ДЛЯ ЗАГРУЗКИ ЦЕНОВЫХ ДАННЫХ\r\n    -- ============================================================\r\n    -- Загружаем OHLCV из таблицы prices для указанной бумаги, таймфрейма и периода\r\n    cur_prices CURSOR(p_sec INTEGER, p_tf INTEGER, p_from TIMESTAMP, p_to TIMESTAMP) FOR\r\n        SELECT dt, open_price, high_price, low_price, close_price, volume\r\n        FROM prices\r\n        WHERE security_id = p_sec AND timeframe_id = p_tf\r\n          AND dt >= p_from AND dt <= p_to\r\n        ORDER BY dt;\r\n\r\n    -- ============================================================\r\n    -- МАССИВЫ ДЛЯ ХРАНЕНИЯ ЦЕНОВЫХ ДАННЫХ В ПАМЯТИ\r\n    -- ============================================================\r\n    -- Загружаем все цены в массивы для быстрого доступа по индексу\r\n    -- Это быстрее, чем многократные обращения к курсору\r\n    v_closes NUMERIC(18,6)[];      -- Массив цен закрытия\r\n    v_highs NUMERIC(18,6)[];       -- Массив максимальных цен\r\n    v_lows NUMERIC(18,6)[];        -- Массив минимальных цен\r\n    v_dts TIMESTAMP[];             -- Массив дат/времени свечей\r\n    v_idx INTEGER := 0;            -- Текущий индекс в массивах (количество свечей)\r\n\r\n    -- ============================================================\r\n    -- ПЕРЕМЕННЫЕ ДЛЯ РАБОТЫ С ТИПАМИ ЗНАЧЕНИЙ ИНДИКАТОРА\r\n    -- ============================================================\r\n    v_value_type_id INTEGER;       -- ID типа значения из indicator_value_types.id\r\n    v_value_type_code VARCHAR(20);   -- Код типа значения (RSI, K, D, UPPER и т.д.)\r\n\r\n    -- ============================================================\r\n    -- ПЕРЕМЕННАЯ ДЛЯ ПРОВЕРКИ СУЩЕСТВОВАНИЯ ЗАПИСИ\r\n    -- ============================================================\r\n    v_existing_count INTEGER;        -- Количество существующих записей (0 или 1)\r\n    v_price RECORD;                  -- Строка курсора цен\r\nBEGIN\r\n    -- ============================================================\r\n    -- БЛОК 1: ЗАГРУЗКА ИНФОРМАЦИИ ОБ ИНДИКАТОРЕ\r\n    -- ============================================================\r\n    -- Получаем код, имя, категорию и SQL-скрипт индикатора из таблицы indicators\r\n    -- Если индикатор не найден -- выбрасываем исключение\r\n    SELECT code, name, category, script\r\n    INTO v_indicator_code, v_indicator_name, v_indicator_category, v_script\r\n    FROM indicators\r\n    WHERE id = p_indicator_id;\r\n\r\n    IF v_indicator_code IS NULL THEN\r\n        RAISE EXCEPTION 'Индикатор с id=% не найден в таблице indicators', p_indicator_id;\r\n    END IF;\r\n\r\n    RAISE NOTICE '=== РАСЧЕТ ИНДИКАТОРА % ===', v_indicator_code;\r\n    RAISE NOTICE 'Бумага: %, Таймфрейм: %, Период: % - %', \r\n        p_security_id, p_timeframe_id, p_date_from, p_date_to;\r\n\r\n    -- ============================================================\r\n    -- БЛОК 2: ЗАГРУЗКА ПАРАМЕТРОВ ИНДИКАТОРА\r\n    -- ============================================================\r\n    -- Пытаемся загрузить период из таблицы parameter_values\r\n    -- Если параметр не найден -- используем значение по умолчанию\r\n    BEGIN\r\n        SELECT value::INTEGER INTO v_period\r\n        FROM parameter_values pv\r\n        JOIN parameter_types pt ON pv.parameter_type_id = pt.id\r\n        WHERE pt.short_name = v_indicator_code || '_PERIOD'\r\n        LIMIT 1;\r\n    EXCEPTION WHEN OTHERS THEN\r\n        -- Параметр не найден -- используем дефолтные значения по типу индикатора\r\n        v_period := CASE v_indicator_code\r\n            WHEN 'RSI' THEN 14\r\n            WHEN 'SMA' THEN 20\r\n            WHEN 'EMA' THEN 20\r\n            WHEN 'BB' THEN 20\r\n            WHEN 'ATR' THEN 14\r\n            WHEN 'STOCH' THEN 14\r\n            ELSE 14\r\n        END;\r\n    END;\r\n\r\n    -- ============================================================\r\n    -- БЛОК 3: УСТАНОВКА СПЕЦИФИЧНЫХ ПАРАМЕТРОВ ПО ТИПУ ИНДИКАТОРА\r\n    -- ============================================================\r\n    IF v_indicator_code = 'MACD' THEN\r\n        -- MACD: fast=12, slow=26, signal=9 (стандартные параметры)\r\n        v_fast_period := 12;\r\n        v_slow_period := 26;\r\n        v_signal_period := 9;\r\n    ELSIF v_indicator_code = 'BB' THEN\r\n        -- Bollinger Bands: std_dev = 2 (2 стандартных отклонения)\r\n        v_std_dev := 2.0;\r\n    ELSIF v_indicator_code = 'STOCH' THEN\r\n        -- Stochastic: %K=14, %D=3, сглаживание=3\r\n        v_k_period := 14;\r\n        v_d_period := 3;\r\n        v_smooth := 3;\r\n    END IF;\r\n\r\n    -- ============================================================\r\n    -- БЛОК 4: ЗАГРУЗКА ЦЕНОВЫХ ДАННЫХ В МАССИВЫ\r\n    -- ============================================================\r\n    -- Загружаем все свечи из таблицы prices в массивы для быстрой обработки\r\n    -- Это позволяет избежать многократных обращений к БД в циклах расчета\r\n    FOR v_price IN cur_prices(p_security_id, p_timeframe_id, p_date_from::TIMESTAMP, (p_date_to + INTERVAL '1 day')::TIMESTAMP)\r\n    LOOP\r\n        v_idx := v_idx + 1;\r\n        v_closes[v_idx] := v_price.close_price;   -- Цена закрытия\r\n        v_highs[v_idx] := v_price.high_price;     -- Максимальная цена\r\n        v_lows[v_idx] := v_price.low_price;       -- Минимальная цена\r\n        v_dts[v_idx] := v_price.dt;               -- Дата/время свечи\r\n    END LOOP;\r\n\r\n    -- ============================================================\r\n    -- БЛОК 5: ПРОВЕРКА ДОСТАТОЧНОСТИ ДАННЫХ\r\n    -- ============================================================\r\n    -- Если свечей меньше, чем период индикатора -- расчет невозможен\r\n    IF v_idx < v_period THEN\r\n        RAISE NOTICE 'Недостаточно данных: загружено % свечей, нужно минимум % для периода %', \r\n            v_idx, v_period, v_indicator_code;\r\n        RETURN;  -- Выходим из процедуры\r\n    END IF;\r\n\r\n    RAISE NOTICE 'Загружено % свечей для расчета индикатора %', v_idx, v_indicator_code;\r\n\r\n    -- ============================================================\r\n    -- БЛОК 6: РАСЧЕТ ИНДИКАТОРА (ветвление по типу)\r\n    -- ============================================================\r\n\r\n    -- ==========================================\r\n    -- 6.1 РАСЧЕТ RSI (Relative Strength Index)\r\n    -- ==========================================\r\n    -- Формула: RSI = 100 - (100 / (1 + RS))\r\n    -- Где RS = средний прирост / средняя потеря за период\r\n    -- Значение от 0 до 100. >70 = перекупленность, <30 = перепроданность\r\n    IF v_indicator_code = 'RSI' THEN\r\n\r\n        -- Загружаем пороговые значения из indicator_value_types\r\n        -- OVERBOUGHT (по умолчанию 70), OVERSOLD (по умолчанию 30), NEUTRAL (50)\r\n        FOREACH v_value_type_code IN ARRAY ARRAY['RSI', 'OVERBOUGHT', 'OVERSOLD', 'NEUTRAL']::VARCHAR(20)[]\r\n        LOOP\r\n            SELECT id INTO v_value_type_id\r\n            FROM indicator_value_types\r\n            WHERE indicator_id = p_indicator_id AND code = v_value_type_code;\r\n\r\n            IF v_value_type_id IS NULL THEN\r\n                RAISE NOTICE 'Тип значения % не найден для индикатора RSI', v_value_type_code;\r\n                CONTINUE;\r\n            END IF;\r\n\r\n            -- Сохраняем пороговые значения для последующей проверки сигналов\r\n            IF v_value_type_code = 'OVERBOUGHT' THEN\r\n                v_overbought := COALESCE((SELECT threshold_value FROM indicator_value_types WHERE id = v_value_type_id), 70);\r\n            ELSIF v_value_type_code = 'OVERSOLD' THEN\r\n                v_oversold := COALESCE((SELECT threshold_value FROM indicator_value_types WHERE id = v_value_type_id), 30);\r\n            ELSIF v_value_type_code = 'NEUTRAL' THEN\r\n                v_neutral := COALESCE((SELECT threshold_value FROM indicator_value_types WHERE id = v_value_type_id), 50);\r\n            END IF;\r\n        END LOOP;\r\n\r\n        -- Основной цикл расчета RSI для каждой свечи, начиная с (period+1)\r\n        FOR i IN v_period + 1 .. v_idx\r\n        LOOP\r\n            -- Сброс аккумуляторов прироста и потерь\r\n            v_gain := 0;\r\n            v_loss := 0;\r\n\r\n            -- Суммируем приросты и потери за период\r\n            FOR j IN i - v_period + 1 .. i\r\n            LOOP\r\n                IF v_closes[j] > v_closes[j - 1] THEN\r\n                    -- Цена выросла -- добавляем прирост\r\n                    v_gain := v_gain + (v_closes[j] - v_closes[j - 1]);\r\n                ELSE\r\n                    -- Цена упала -- добавляем потерю\r\n                    v_loss := v_loss + (v_closes[j - 1] - v_closes[j]);\r\n                END IF;\r\n            END LOOP;\r\n\r\n            -- Средние прирост и потеря\r\n            v_avg_gain := v_gain / v_period;\r\n            v_avg_loss := v_loss / v_period;\r\n\r\n            -- Расчет RS и RSI\r\n            IF v_avg_loss = 0 THEN\r\n                v_rsi := 100;  -- Если потерь нет -- RSI = 100 (максимум)\r\n            ELSE\r\n                v_rs := v_avg_gain / v_avg_loss;\r\n                v_rsi := 100 - (100 / (1 + v_rs));\r\n            END IF;\r\n\r\n            v_dt := v_dts[i];\r\n\r\n            -- ============================================================\r\n            -- БЛОК 6.1.1: ЗАПИСЬ ЗНАЧЕНИЯ RSI В БАЗУ\r\n            -- ============================================================\r\n            SELECT id INTO v_value_type_id\r\n            FROM indicator_value_types\r\n            WHERE indicator_id = p_indicator_id AND code = 'RSI';\r\n\r\n            IF v_value_type_id IS NOT NULL THEN\r\n                -- Проверяем, есть ли уже запись для этой свечи\r\n                SELECT COUNT(*) INTO v_existing_count\r\n                FROM indicator_values\r\n                WHERE indicator_id = p_indicator_id\r\n                  AND indicator_value_type_id = v_value_type_id\r\n                  AND security_id = p_security_id\r\n                  AND timeframe_id = p_timeframe_id\r\n                  AND dt = v_dt;\r\n\r\n                -- Если запись есть и overwrite=FALSE -- пропускаем\r\n                IF v_existing_count > 0 AND NOT p_overwrite THEN\r\n                    v_records_skipped := v_records_skipped + 1;\r\n                ELSE\r\n                    -- Удаляем старую запись, если overwrite=TRUE\r\n                    IF v_existing_count > 0 THEN\r\n                        DELETE FROM indicator_values\r\n                        WHERE indicator_id = p_indicator_id\r\n                          AND indicator_value_type_id = v_value_type_id\r\n                          AND security_id = p_security_id\r\n                          AND timeframe_id = p_timeframe_id\r\n                          AND dt = v_dt;\r\n                        v_records_updated := v_records_updated + 1;\r\n                    ELSE\r\n                        v_records_inserted := v_records_inserted + 1;\r\n                    END IF;\r\n\r\n                    -- Вставляем новое значение RSI\r\n                    INSERT INTO indicator_values (indicator_id, indicator_value_type_id, security_id, timeframe_id, dt, value, is_signal, signal_type)\r\n                    VALUES (p_indicator_id, v_value_type_id, p_security_id, p_timeframe_id, v_dt, v_rsi, FALSE, NULL);\r\n                END IF;\r\n            END IF;\r\n\r\n            -- ============================================================\r\n            -- БЛОК 6.1.2: ПРОВЕРКА ПОРОГОВЫХ ЗНАЧЕНИЙ И СИГНАЛОВ\r\n            -- ============================================================\r\n            -- Если RSI >= overbought -- создаем сигнал перекупленности\r\n            IF v_rsi >= v_overbought THEN\r\n                SELECT id INTO v_value_type_id FROM indicator_value_types WHERE indicator_id = p_indicator_id AND code = 'OVERBOUGHT';\r\n                IF v_value_type_id IS NOT NULL THEN\r\n                    PERFORM insert_indicator_value(p_indicator_id, v_value_type_id, p_security_id, p_timeframe_id, v_dt, v_overbought, TRUE, 'overbought', p_overwrite);\r\n                END IF;\r\n            -- Если RSI <= oversold -- создаем сигнал перепроданности\r\n            ELSIF v_rsi <= v_oversold THEN\r\n                SELECT id INTO v_value_type_id FROM indicator_value_types WHERE indicator_id = p_indicator_id AND code = 'OVERSOLD';\r\n                IF v_value_type_id IS NOT NULL THEN\r\n                    PERFORM insert_indicator_value(p_indicator_id, v_value_type_id, p_security_id, p_timeframe_id, v_dt, v_oversold, TRUE, 'oversold', p_overwrite);\r\n                END IF;\r\n            END IF;\r\n        END LOOP;\r\n\r\n    -- ==========================================\r\n    -- 6.2 РАСЧЕТ SMA (Simple Moving Average)\r\n    -- ==========================================\r\n    -- Формула: SMA = сумма(close, period) / period\r\n    -- Простое среднее арифметическое цен закрытия за период\r\n    ELSIF v_indicator_code = 'SMA' THEN\r\n        -- Цикл по всем свечам, начиная с периода\r\n        FOR i IN v_period .. v_idx\r\n        LOOP\r\n            -- Суммируем цены закрытия за период\r\n            v_sum := 0;\r\n            FOR j IN i - v_period + 1 .. i\r\n            LOOP\r\n                v_sum := v_sum + v_closes[j];\r\n            END LOOP;\r\n            v_sma := v_sum / v_period;  -- Делим на количество свечей\r\n            v_dt := v_dts[i];\r\n\r\n            -- Записываем значение SMA\r\n            SELECT id INTO v_value_type_id FROM indicator_value_types WHERE indicator_id = p_indicator_id AND code = 'VALUE';\r\n            IF v_value_type_id IS NOT NULL THEN\r\n                PERFORM insert_indicator_value(p_indicator_id, v_value_type_id, p_security_id, p_timeframe_id, v_dt, v_sma, FALSE, NULL, p_overwrite);\r\n                v_records_inserted := v_records_inserted + 1;\r\n            END IF;\r\n        END LOOP;\r\n\r\n    -- ==========================================\r\n    -- 6.3 РАСЧЕТ EMA (Exponential Moving Average)\r\n    -- ==========================================\r\n    -- Формула: EMA(today) = (Close(today) - EMA(yesterday)) * multiplier + EMA(yesterday)\r\n    -- Где multiplier = 2 / (period + 1)\r\n    -- Первое EMA = SMA за период\r\n    ELSIF v_indicator_code = 'EMA' THEN\r\n        -- Множитель сглаживания: 2/(N+1)\r\n        v_multiplier := 2.0 / (v_period + 1);\r\n\r\n        -- Расчет начального SMA (первое EMA = SMA)\r\n        v_sum := 0;\r\n        FOR j IN 1 .. v_period\r\n        LOOP\r\n            v_sum := v_sum + v_closes[j];\r\n        END LOOP;\r\n        v_ema := v_sum / v_period;\r\n\r\n        -- Основной цикл расчета EMA\r\n        FOR i IN v_period .. v_idx\r\n        LOOP\r\n            -- Если не первая точка -- применяем формулу EMA\r\n            IF i > v_period THEN\r\n                v_ema := (v_closes[i] - v_ema) * v_multiplier + v_ema;\r\n            END IF;\r\n            v_dt := v_dts[i];\r\n\r\n            -- Записываем значение EMA\r\n            SELECT id INTO v_value_type_id FROM indicator_value_types WHERE indicator_id = p_indicator_id AND code = 'VALUE';\r\n            IF v_value_type_id IS NOT NULL THEN\r\n                PERFORM insert_indicator_value(p_indicator_id, v_value_type_id, p_security_id, p_timeframe_id, v_dt, v_ema, FALSE, NULL, p_overwrite);\r\n                v_records_inserted := v_records_inserted + 1;\r\n            END IF;\r\n        END LOOP;\r\n\r\n    -- ==========================================\r\n    -- 6.4 РАСЧЕТ MACD\r\n    -- ==========================================\r\n    -- MACD Line = EMA(12) - EMA(26)\r\n    -- Signal Line = EMA(9) от MACD Line\r\n    -- Histogram = MACD Line - Signal Line\r\n    ELSIF v_indicator_code = 'MACD' THEN\r\n        -- Множители для EMA\r\n        v_mult_fast := 2.0 / (v_fast_period + 1);\r\n        v_mult_slow := 2.0 / (v_slow_period + 1);\r\n        v_mult_signal := 2.0 / (v_signal_period + 1);\r\n\r\n        -- Начальные EMA (первые значения = SMA)\r\n        v_sum := 0;\r\n        FOR j IN 1 .. v_fast_period LOOP v_sum := v_sum + v_closes[j]; END LOOP;\r\n        v_ema_fast := v_sum / v_fast_period;\r\n\r\n        v_sum := 0;\r\n        FOR j IN 1 .. v_slow_period LOOP v_sum := v_sum + v_closes[j]; END LOOP;\r\n        v_ema_slow := v_sum / v_slow_period;\r\n\r\n        v_macd_signal := 0;\r\n\r\n        -- Основной цикл расчета MACD\r\n        FOR i IN GREATEST(v_fast_period, v_slow_period) .. v_idx\r\n        LOOP\r\n            -- Обновляем быструю EMA (период 12)\r\n            IF i > v_fast_period THEN\r\n                v_ema_fast := (v_closes[i] - v_ema_fast) * v_mult_fast + v_ema_fast;\r\n            END IF;\r\n            -- Обновляем медленную EMA (период 26)\r\n            IF i > v_slow_period THEN\r\n                v_ema_slow := (v_closes[i] - v_ema_slow) * v_mult_slow + v_ema_slow;\r\n            END IF;\r\n\r\n            -- Линия MACD = разница EMA\r\n            v_macd := v_ema_fast - v_ema_slow;\r\n\r\n            -- Сигнальная линия = EMA(9) от MACD\r\n            IF i = GREATEST(v_fast_period, v_slow_period) THEN\r\n                v_macd_signal := v_macd;  -- Первое значение = MACD\r\n            ELSE\r\n                v_macd_signal := (v_macd - v_macd_signal) * v_mult_signal + v_macd_signal;\r\n            END IF;\r\n\r\n            -- Гистограмма = MACD - Signal\r\n            v_macd_histogram := v_macd - v_macd_signal;\r\n            v_dt := v_dts[i];\r\n\r\n            -- Записываем MACD line\r\n            SELECT id INTO v_value_type_id FROM indicator_value_types WHERE indicator_id = p_indicator_id AND code = 'MACD';\r\n            IF v_value_type_id IS NOT NULL THEN\r\n                PERFORM insert_indicator_value(p_indicator_id, v_value_type_id, p_security_id, p_timeframe_id, v_dt, v_macd, FALSE, NULL, p_overwrite);\r\n            END IF;\r\n\r\n            -- Записываем Signal line\r\n            SELECT id INTO v_value_type_id FROM indicator_value_types WHERE indicator_id = p_indicator_id AND code = 'SIGNAL';\r\n            IF v_value_type_id IS NOT NULL THEN\r\n                PERFORM insert_indicator_value(p_indicator_id, v_value_type_id, p_security_id, p_timeframe_id, v_dt, v_macd_signal, FALSE, NULL, p_overwrite);\r\n            END IF;\r\n\r\n            -- Записываем Histogram\r\n            SELECT id INTO v_value_type_id FROM indicator_value_types WHERE indicator_id = p_indicator_id AND code = 'HISTOGRAM';\r\n            IF v_value_type_id IS NOT NULL THEN\r\n                PERFORM insert_indicator_value(p_indicator_id, v_value_type_id, p_security_id, p_timeframe_id, v_dt, v_macd_histogram, FALSE, NULL, p_overwrite);\r\n            END IF;\r\n\r\n            -- Записываем нулевую линию (порог)\r\n            SELECT id INTO v_value_type_id FROM indicator_value_types WHERE indicator_id = p_indicator_id AND code = 'ZERO';\r\n            IF v_value_type_id IS NOT NULL THEN\r\n                PERFORM insert_indicator_value(p_indicator_id, v_value_type_id, p_security_id, p_timeframe_id, v_dt, 0, FALSE, NULL, p_overwrite);\r\n            END IF;\r\n\r\n            v_records_inserted := v_records_inserted + 3;\r\n        END LOOP;\r\n\r\n    -- ==========================================\r\n    -- 6.5 РАСЧЕТ BOLLINGER BANDS\r\n    -- ==========================================\r\n    -- Middle Band = SMA(period)\r\n    -- Upper Band = SMA + (std_dev * σ)\r\n    -- Lower Band = SMA - (std_dev * σ)\r\n    -- Bandwidth = (Upper - Lower) / Middle\r\n    ELSIF v_indicator_code = 'BB' THEN\r\n        FOR i IN v_period .. v_idx\r\n        LOOP\r\n            -- Средняя полоса = SMA\r\n            v_sum := 0;\r\n            FOR j IN i - v_period + 1 .. i\r\n            LOOP\r\n                v_sum := v_sum + v_closes[j];\r\n            END LOOP;\r\n            v_bb_middle := v_sum / v_period;\r\n\r\n            -- Стандартное отклонение\r\n            v_bb_sum_sq := 0;\r\n            FOR j IN i - v_period + 1 .. i\r\n            LOOP\r\n                v_bb_sum_sq := v_bb_sum_sq + POWER(v_closes[j] - v_bb_middle, 2);\r\n            END LOOP;\r\n            v_bb_stddev := SQRT(v_bb_sum_sq / v_period);\r\n\r\n            -- Верхняя и нижняя полосы\r\n            v_bb_upper := v_bb_middle + (v_std_dev * v_bb_stddev);\r\n            v_bb_lower := v_bb_middle - (v_std_dev * v_bb_stddev);\r\n            v_dt := v_dts[i];\r\n\r\n            -- Записываем Upper band\r\n            SELECT id INTO v_value_type_id FROM indicator_value_types WHERE indicator_id = p_indicator_id AND code = 'UPPER';\r\n            IF v_value_type_id IS NOT NULL THEN\r\n                PERFORM insert_indicator_value(p_indicator_id, v_value_type_id, p_security_id, p_timeframe_id, v_dt, v_bb_upper, FALSE, NULL, p_overwrite);\r\n            END IF;\r\n\r\n            -- Записываем Middle band\r\n            SELECT id INTO v_value_type_id FROM indicator_value_types WHERE indicator_id = p_indicator_id AND code = 'MIDDLE';\r\n            IF v_value_type_id IS NOT NULL THEN\r\n                PERFORM insert_indicator_value(p_indicator_id, v_value_type_id, p_security_id, p_timeframe_id, v_dt, v_bb_middle, FALSE, NULL, p_overwrite);\r\n            END IF;\r\n\r\n            -- Записываем Lower band\r\n            SELECT id INTO v_value_type_id FROM indicator_value_types WHERE indicator_id = p_indicator_id AND code = 'LOWER';\r\n            IF v_value_type_id IS NOT NULL THEN\r\n                PERFORM insert_indicator_value(p_indicator_id, v_value_type_id, p_security_id, p_timeframe_id, v_dt, v_bb_lower, FALSE, NULL, p_overwrite);\r\n            END IF;\r\n\r\n            -- Записываем Bandwidth\r\n            SELECT id INTO v_value_type_id FROM indicator_value_types WHERE indicator_id = p_indicator_id AND code = 'BANDWIDTH';\r\n            IF v_value_type_id IS NOT NULL THEN\r\n                PERFORM insert_indicator_value(p_indicator_id, v_value_type_id, p_security_id, p_timeframe_id, v_dt, \r\n                    (v_bb_upper - v_bb_lower) / v_bb_middle, FALSE, NULL, p_overwrite);\r\n            END IF;\r\n\r\n            v_records_inserted := v_records_inserted + 4;\r\n        END LOOP;\r\n\r\n    -- ==========================================\r\n    -- 6.6 РАСЧЕТ ATR (Average True Range)\r\n    -- ==========================================\r\n    -- TR = max(High - Low, |High - Close_prev|, |Low - Close_prev|)\r\n    -- ATR = SMA(TR, period) или EMA(TR, period) -- здесь используется Wilder's smoothing\r\n    ELSIF v_indicator_code = 'ATR' THEN\r\n        v_atr := 0;\r\n\r\n        FOR i IN 2 .. v_idx\r\n        LOOP\r\n            -- Вычисляем True Range\r\n            v_tr_high := v_highs[i] - v_lows[i];                          -- High - Low\r\n            v_tr_low := ABS(v_highs[i] - v_closes[i-1]);                  -- |High - Close_prev|\r\n            v_tr_close := ABS(v_lows[i] - v_closes[i-1]);                 -- |Low - Close_prev|\r\n            v_tr := GREATEST(v_tr_high, v_tr_low, v_tr_close);            -- Максимум из трех\r\n\r\n            -- Wilder's smoothing: ATR = (ATR_prev * (N-1) + TR) / N\r\n            IF i <= v_period THEN\r\n                -- Накопление для первого ATR (простое среднее)\r\n                v_atr := v_atr + v_tr;\r\n                IF i = v_period THEN\r\n                    v_atr := v_atr / v_period;  -- Первое значение = SMA\r\n                END IF;\r\n            ELSE\r\n                -- Последующие значения -- Wilder's smoothing\r\n                v_atr := (v_atr * (v_period - 1) + v_tr) / v_period;\r\n            END IF;\r\n\r\n            v_dt := v_dts[i];\r\n\r\n            -- Записываем ATR (начиная с периода)\r\n            IF i >= v_period THEN\r\n                SELECT id INTO v_value_type_id FROM indicator_value_types WHERE indicator_id = p_indicator_id AND code = 'ATR';\r\n                IF v_value_type_id IS NOT NULL THEN\r\n                    PERFORM insert_indicator_value(p_indicator_id, v_value_type_id, p_security_id, p_timeframe_id, v_dt, v_atr, FALSE, NULL, p_overwrite);\r\n                END IF;\r\n\r\n                -- Записываем ATR в процентах от цены\r\n                SELECT id INTO v_value_type_id FROM indicator_value_types WHERE indicator_id = p_indicator_id AND code = 'ATR_PCT';\r\n                IF v_value_type_id IS NOT NULL THEN\r\n                    PERFORM insert_indicator_value(p_indicator_id, v_value_type_id, p_security_id, p_timeframe_id, v_dt, \r\n                        (v_atr / v_closes[i]) * 100, FALSE, NULL, p_overwrite);\r\n                END IF;\r\n\r\n                v_records_inserted := v_records_inserted + 2;\r\n            END IF;\r\n        END LOOP;\r\n\r\n    -- ==========================================\r\n    -- 6.7 РАСЧЕТ STOCHASTIC OSCILLATOR\r\n    -- ==========================================\r\n    -- %K = (Close - LowestLow) / (HighestHigh - LowestLow) * 100\r\n    -- %D = SMA(%K, 3)\r\n    -- J = 3K - 2D (не используется здесь)\r\n    ELSIF v_indicator_code = 'STOCH' THEN\r\n        FOR i IN v_k_period .. v_idx\r\n        LOOP\r\n            -- Находим минимум low и максимум high за период %K\r\n            v_lowest_low := v_lows[i];\r\n            v_highest_high := v_highs[i];\r\n\r\n            FOR j IN i - v_k_period + 1 .. i\r\n            LOOP\r\n                IF v_lows[j] < v_lowest_low THEN v_lowest_low := v_lows[j]; END IF;\r\n                IF v_highs[j] > v_highest_high THEN v_highest_high := v_highs[j]; END IF;\r\n            END LOOP;\r\n\r\n            -- Расчет %K\r\n            IF v_highest_high - v_lowest_low = 0 THEN\r\n                v_stoch_k := 50;  -- Если диапазон 0 -- нейтральное значение\r\n            ELSE\r\n                v_stoch_k := ((v_closes[i] - v_lowest_low) / (v_highest_high - v_lowest_low)) * 100;\r\n            END IF;\r\n\r\n            v_dt := v_dts[i];\r\n\r\n            -- Записываем %K линию\r\n            SELECT id INTO v_value_type_id FROM indicator_value_types WHERE indicator_id = p_indicator_id AND code = 'K';\r\n            IF v_value_type_id IS NOT NULL THEN\r\n                PERFORM insert_indicator_value(p_indicator_id, v_value_type_id, p_security_id, p_timeframe_id, v_dt, v_stoch_k, FALSE, NULL, p_overwrite);\r\n            END IF;\r\n\r\n            -- Расчет %D (SMA от %K, период 3)\r\n            IF i >= v_k_period + v_d_period - 1 THEN\r\n                v_k_sum := 0;\r\n                FOR j IN i - v_d_period + 1 .. i\r\n                LOOP\r\n                    -- Пересчитываем %K для каждой точки окна %D\r\n                    v_lowest_low := v_lows[j];\r\n                    v_highest_high := v_highs[j];\r\n                    FOR m IN j - v_k_period + 1 .. j\r\n                    LOOP\r\n                        IF v_lows[m] < v_lowest_low THEN v_lowest_low := v_lows[m]; END IF;\r\n                        IF v_highs[m] > v_highest_high THEN v_highest_high := v_highs[m]; END IF;\r\n                    END LOOP;\r\n\r\n                    IF v_highest_high - v_lowest_low = 0 THEN\r\n                        v_k_sum := v_k_sum + 50;\r\n                    ELSE\r\n                        v_k_sum := v_k_sum + ((v_closes[j] - v_lowest_low) / (v_highest_high - v_lowest_low)) * 100;\r\n                    END IF;\r\n                END LOOP;\r\n                v_stoch_d := v_k_sum / v_d_period;\r\n\r\n                -- Записываем %D линию\r\n                SELECT id INTO v_value_type_id FROM indicator_value_types WHERE indicator_id = p_indicator_id AND code = 'D';\r\n                IF v_value_type_id IS NOT NULL THEN\r\n                    PERFORM insert_indicator_value(p_indicator_id, v_value_type_id, p_security_id, p_timeframe_id, v_dt, v_stoch_d, FALSE, NULL, p_overwrite);\r\n                END IF;\r\n\r\n                -- ============================================================\r\n                -- БЛОК 6.7.1: ПРОВЕРКА ПОРОГОВЫХ СИГНАЛОВ СТОХАСТИКА\r\n                -- ============================================================\r\n                IF v_stoch_k >= 80 THEN\r\n                    -- Перекупленность: %K >= 80\r\n                    SELECT id INTO v_value_type_id FROM indicator_value_types WHERE indicator_id = p_indicator_id AND code = 'OVERBOUGHT';\r\n                    IF v_value_type_id IS NOT NULL THEN\r\n                        PERFORM insert_indicator_value(p_indicator_id, v_value_type_id, p_security_id, p_timeframe_id, v_dt, 80, TRUE, 'overbought', p_overwrite);\r\n                    END IF;\r\n                ELSIF v_stoch_k <= 20 THEN\r\n                    -- Перепроданность: %K <= 20\r\n                    SELECT id INTO v_value_type_id FROM indicator_value_types WHERE indicator_id = p_indicator_id AND code = 'OVERSOLD';\r\n                    IF v_value_type_id IS NOT NULL THEN\r\n                        PERFORM insert_indicator_value(p_indicator_id, v_value_type_id, p_security_id, p_timeframe_id, v_dt, 20, TRUE, 'oversold', p_overwrite);\r\n                    END IF;\r\n                END IF;\r\n\r\n                v_records_inserted := v_records_inserted + 3;\r\n            ELSE\r\n                v_records_inserted := v_records_inserted + 1;\r\n            END IF;\r\n        END LOOP;\r\n\r\n    -- ==========================================\r\n    -- 6.8 НЕПОДДЕРЖИВАЕМЫЙ ИНДИКАТОР\r\n    -- ==========================================\r\n    ELSE\r\n        RAISE NOTICE 'Расчет для индикатора % пока не реализован в данной процедуре', v_indicator_code;\r\n    END IF;\r\n\r\n    -- ============================================================\r\n    -- БЛОК 7: ИТОГОВАЯ СТАТИСТИКА\r\n    -- ============================================================\r\n    RAISE NOTICE '=== РАСЧЕТ ЗАВЕРШЕН ===';\r\n    RAISE NOTICE 'Индикатор: %, Бумага: %, Таймфрейм: %', v_indicator_code, p_security_id, p_timeframe_id;\r\n    RAISE NOTICE 'Вставлено новых записей: %', v_records_inserted;\r\n    RAISE NOTICE 'Обновлено существующих записей: %', v_records_updated;\r\n    RAISE NOTICE 'Пропущено (уже существуют): %', v_records_skipped;\r\n\r\nEXCEPTION\r\n    WHEN OTHERS THEN\r\n        RAISE EXCEPTION 'Ошибка расчета индикатора % (id=%): %', v_indicator_code, p_indicator_id, SQLERRM;\r\nEND;\r\n$$;\r\n\r\n-- ============================================\r\n-- КОММЕНТАРИЙ К ПРОЦЕДУРЕ calculate_indicator\r\n-- ============================================\r\nCOMMENT ON PROCEDURE calculate_indicator(INTEGER, INTEGER, INTEGER, DATE, DATE, BOOLEAN) IS \r\n'Рассчитывает значения технического индикатора для указанной бумаги, таймфрейма и периода.\r\n\r\nПАРАМЕТРЫ:\r\n  p_security_id  - ID ценной бумаги (securities.id)\r\n  p_timeframe_id - ID таймфрейма (timeframes.id)\r\n  p_indicator_id - ID индикатора (indicators.id)\r\n  p_date_from    - Начальная дата периода (YYYY-MM-DD)\r\n  p_date_to      - Конечная дата периода (YYYY-MM-DD)\r\n  p_overwrite    - TRUE = перезаписать существующие, FALSE = пропустить\r\n\r\nПОДДЕРЖИВАЕМЫЕ ИНДИКАТОРЫ:\r\n  RSI   - Индекс относительной силы (период 14, пороги 70/30)\r\n  SMA   - Простое скользящее среднее (период 20)\r\n  EMA   - Экспоненциальное скользящее среднее (период 20)\r\n  MACD  - Схождение/расхождение (fast=12, slow=26, signal=9)\r\n  BB    - Полосы Боллинджера (период 20, std_dev=2.0)\r\n  ATR   - Средний истинный диапазон (период 14)\r\n  STOCH - Стохастик (%K=14, %D=3)\r\n\r\nПРИМЕРЫ ВЫЗОВА:\r\n  CALL calculate_indicator(1, 4, 4, ''2026-06-17'', ''2026-06-24'', TRUE);\r\n  -- RSI для SBER (id=1) на M5 (id=4) за неделю с перезаписью\r\n\r\n  CALL calculate_indicator(3, 15, 5, ''2026-06-01'', ''2026-06-24'', FALSE);\r\n  -- MACD для GAZP (id=3) на D1 (id=15), пропустить если есть\r\n';\r\n\r\n-- ============================================\r\n-- Вспомогательная функция: insert_indicator_value\r\n-- ============================================\r\n-- Параметры:\r\n--   p_indicator_id      - ID индикатора (indicators.id)\r\n--   p_value_type_id     - ID типа значения (indicator_value_types.id)\r\n--   p_security_id       - ID бумаги (securities.id)\r\n--   p_timeframe_id      - ID таймфрейма (timeframes.id)\r\n--   p_dt                - Дата/время свечи\r\n--   p_value             - Значение индикатора\r\n--   p_is_signal         - Это сигнальное значение? (TRUE/FALSE)\r\n--   p_signal_type       - Тип сигнала: buy, sell, overbought, oversold\r\n--   p_overwrite         - Перезаписать существующую запись?\r\n-- ============================================"
+    },
+    {
+      "oid": 900017,
+      "name": "calculate_indicators_batch",
+      "kind": "procedure",
+      "arguments": "p_security_ids, p_timeframe_id, p_date_from, p_date_to, p_overwrite",
+      "result_type": null,
+      "description": "Рассчитывает все активные индикаторы для массива бумаг.\r\n\r\nПараметр p_security_ids -- массив ID из таблицы securities.\r\n\r\nПРИМЕР:\r\n  CALL calculate_indicators_batch(ARRAY[1, 3, 4, 5], 4, '2026-06-17', '2026-06-24', FALSE);\r\n  -- Расчет всех индикаторов для SBER, GAZP, LKOH, ROSN на M5",
+      "source": "CREATE OR REPLACE PROCEDURE calculate_indicators_batch(p_security_ids INTEGER[],\r\n    p_timeframe_id INTEGER,\r\n    p_date_from DATE,\r\n    p_date_to DATE,\r\n    p_overwrite BOOLEAN DEFAULT FALSE)\nLANGUAGE plpgsql AS $$\r\nDECLARE\r\n    v_security_id INTEGER;  -- Текущая бумага из массива\r\nBEGIN\r\n    -- ============================================================\r\n    -- БЛОК: ПЕРЕБОР ВСЕХ БУМАГ В МАССИВЕ\r\n    -- ============================================================\r\n    FOREACH v_security_id IN ARRAY p_security_ids\r\n    LOOP\r\n        BEGIN\r\n            -- Вызываем расчет всех индикаторов для текущей бумаги\r\n            CALL calculate_all_indicators(\r\n                v_security_id,    -- Текущая бумага\r\n                p_timeframe_id,   -- Таймфрейм\r\n                p_date_from,      -- Начало периода\r\n                p_date_to,        -- Конец периода\r\n                p_overwrite       -- Флаг перезаписи\r\n            );\r\n            RAISE NOTICE 'Рассчитаны индикаторы для security_id=%', v_security_id;\r\n\r\n        EXCEPTION\r\n            WHEN OTHERS THEN\r\n                -- Ошибка по одной бумаге не прерывает расчет остальных\r\n                RAISE NOTICE 'ОШИБКА расчета для security_id=%: %', v_security_id, SQLERRM;\r\n        END;\r\n    END LOOP;\r\n\r\n    RAISE NOTICE '=== Массовый расчет индикаторов завершен ===';\r\nEND;\r\n$$;\r\n\r\n-- ============================================\r\n-- КОММЕНТАРИЙ К ПРОЦЕДУРЕ calculate_indicators_batch\r\n-- ============================================\r\nCOMMENT ON PROCEDURE calculate_indicators_batch(INTEGER[], INTEGER, DATE, DATE, BOOLEAN) IS \r\n'Рассчитывает все активные индикаторы для массива бумаг.\r\n\r\nПараметр p_security_ids -- массив ID из таблицы securities.\r\n\r\nПРИМЕР:\r\n  CALL calculate_indicators_batch(ARRAY[1, 3, 4, 5], 4, ''2026-06-17'', ''2026-06-24'', FALSE);\r\n  -- Расчет всех индикаторов для SBER, GAZP, LKOH, ROSN на M5';\r\n\r\n\r\n\r\n-- ============================================\r\n-- ЧАСТЬ B: HTTP-ЗАГРУЗКА (pgsql-http)\r\n-- ============================================\r\n--\r\n-- СТОП. Перед выполнением команд ниже (CREATE EXTENSION и процедуры *_http)\r\n-- расширение pgsql-http должно быть установлено на сервере PostgreSQL.\r\n-- Краткая инструкция — в заголовке этого файла (шаг 2, раздел WINDOWS).\r\n--\r\n-- ================================================================\r\n-- WINDOWS — установка pgsql-http (PostgreSQL 15, один раз)\r\n-- ================================================================\r\n--\r\n--   1) Скачать:  https://www.postgresonline.com/downloads/pg15http_w64.zip\r\n--   2) Распаковать в:  <репозиторий>\\_tmp_http_ext\\pg15http_w64\\\r\n--   3) От администратора выполнить:\r\n--        .\\scripts\\install_pgsql_http.ps1\r\n--      (копирует http.dll, http--*.sql, зависимости libcurl, перезапускает службу)\r\n--   4) Проверить файлы:\r\n--        C:\\Program Files\\PostgreSQL\\15\\lib\\http.dll\r\n--        C:\\Program Files\\PostgreSQL\\15\\share\\extension\\http.control\r\n--   5) Далее — команды CREATE EXTENSION и процедуры в этом блоке.\r\n--\r\n-- ================================================================\r\n-- LINUX / macOS — установка pgsql-http (сборка из исходников)\r\n-- ================================================================\r\n--\r\n-- ШАГ 1: системные зависимости\r\n--   Debian/Ubuntu:\r\n--     sudo apt-get update\r\n--     sudo apt-get install -y libcurl4-openssl-dev postgresql-server-dev-15\r\n--   CentOS/RHEL/Fedora:\r\n--     sudo yum install libcurl-devel postgresql-devel\r\n--   macOS (Homebrew):\r\n--     brew install curl postgresql\r\n--\r\n-- ШАГ 2: сборка\r\n--   cd /tmp\r\n--   git clone https://github.com/pramsey/pgsql-http.git\r\n--   cd pgsql-http\r\n--   make PG_CONFIG=/usr/lib/postgresql/15/bin/pg_config\r\n--   sudo make install PG_CONFIG=/usr/lib/postgresql/15/bin/pg_config\r\n--\r\n-- ШАГ 3: проверка на диске\r\n--   ls -la $(pg_config --sharedir)/extension/http*\r\n--\r\n-- ШАГ 4–5: CREATE EXTENSION и тест — см. команды ниже в этом блоке.\r\n--\r\n-- ================================================================\r\n-- ПРОВЕРКА ПОСЛЕ CREATE EXTENSION http\r\n-- ================================================================\r\n--   SELECT extname, extversion FROM pg_extension WHERE extname = 'http';\r\n--   SELECT status FROM http_get('https://httpbin.org/get');\r\n--\r\n-- ================================================================\r\n-- БЕЗОПАСНОСТЬ (опционально)\r\n-- ================================================================\r\n--   ALTER SYSTEM SET http.whitelist = 'invest-public-api.tinkoff.ru,iss.moex.com';\r\n--   SELECT pg_reload_conf();\r\n--\r\n-- ================================================================\r\n-- ПЕРЕУСТАНОВКА\r\n-- ================================================================\r\n--   DROP EXTENSION http CASCADE;\r\n--   Windows: удалить http.dll и http* из lib/ и share/extension/, перезапустить службу\r\n--   Linux:   sudo rm $(pg_config --sharedir)/extension/http* $(pg_config --libdir)/http.so\r\n--\r\n-- ================================================================\r\n-- Ниже: CREATE EXTENSION + процедуры load_*_http (часть B скрипта 02).\r\n-- Если расширение не установлено — выполнение остановится на CREATE EXTENSION.\r\n-- Закомментируйте блок до метки «КОНЕЦ ОПЦИОНАЛЬНОГО БЛОКА HTTP» или установите pgsql-http.\r\n-- ================================================================\r\n\r\n-- ============================================"
+    },
+    {
+      "oid": 900012,
+      "name": "cleanup_old_prices",
+      "kind": "procedure",
+      "arguments": "p_days_to_keep",
+      "result_type": null,
+      "description": "Удаляет цены старше указанного количества дней (по умолчанию 365).",
+      "source": "CREATE OR REPLACE PROCEDURE cleanup_old_prices(p_days_to_keep INTEGER DEFAULT 365)\nLANGUAGE plpgsql AS $$\r\nDECLARE\r\n    v_cutoff_date TIMESTAMP;\r\n    v_deleted_count INTEGER;\r\nBEGIN\r\n    v_cutoff_date := CURRENT_TIMESTAMP - (p_days_to_keep || ' days')::INTERVAL;\r\n\r\n    DELETE FROM prices\r\n    WHERE dt < v_cutoff_date;\r\n\r\n    GET DIAGNOSTICS v_deleted_count = ROW_COUNT;\r\n    RAISE NOTICE 'Удалено % старых свечей (старше % дней)', v_deleted_count, p_days_to_keep;\r\nEND;\r\n$$;\r\n\r\nCOMMENT ON PROCEDURE cleanup_old_prices(INTEGER) IS \r\n'Удаляет цены старше указанного количества дней (по умолчанию 365).';\r\n\r\n-- ============================================\r\n-- Процедура: refresh_indicator_values\r\n-- Пересчет индикаторов для свежих цен\r\n-- ============================================"
+    },
+    {
+      "oid": 900006,
+      "name": "insert_candle",
+      "kind": "procedure",
+      "arguments": "p_security_id, p_timeframe_id, p_dt, p_open, 6",
+      "result_type": null,
+      "description": "Вставляет/обновляет одну свечу в таблицу prices. Используется из внешнего скрипта загрузки.",
+      "source": "CREATE OR REPLACE PROCEDURE insert_candle(p_security_id INTEGER,\r\n    p_timeframe_id INTEGER,\r\n    p_dt TIMESTAMP,\r\n    p_open NUMERIC(18,6)\n,\r\n    p_high NUMERIC(18,6),\r\n    p_low NUMERIC(18,6),\r\n    p_close NUMERIC(18,6),\r\n    p_volume NUMERIC(20,2) DEFAULT NULL,\r\n    p_value NUMERIC(20,2) DEFAULT NULL,\r\n    p_trades INTEGER DEFAULT NULL\r\n)\r\nLANGUAGE plpgsql AS $$\r\nBEGIN\r\n    INSERT INTO prices (security_id, timeframe_id, dt, open_price, high_price, low_price, close_price, volume, value, trades)\r\n    VALUES (p_security_id, p_timeframe_id, p_dt, p_open, p_high, p_low, p_close, p_volume, p_value, p_trades)\r\n    ON CONFLICT (security_id, timeframe_id, dt) \r\n    DO UPDATE SET\r\n        open_price = EXCLUDED.open_price,\r\n        high_price = EXCLUDED.high_price,\r\n        low_price = EXCLUDED.low_price,\r\n        close_price = EXCLUDED.close_price,\r\n        volume = EXCLUDED.volume,\r\n        value = EXCLUDED.value,\r\n        trades = EXCLUDED.trades;\r\nEND;\r\n$$;\r\n\r\nCOMMENT ON PROCEDURE insert_candle(INTEGER, INTEGER, TIMESTAMP, NUMERIC, NUMERIC, NUMERIC, NUMERIC, NUMERIC, NUMERIC, INTEGER) IS \r\n'Вставляет/обновляет одну свечу в таблицу prices. Используется из внешнего скрипта загрузки.';\r\n\r\n-- ============================================\r\n-- Процедура: load_prices_from_tbank\r\n-- Загружает цены через API T-Bank (TData)\r\n-- ============================================"
+    },
+    {
+      "oid": 900011,
+      "name": "load_all_timeframes",
+      "kind": "procedure",
+      "arguments": "p_security_id, p_date_from, p_date_to",
+      "result_type": null,
+      "description": "Загружает все таймфреймы для одной бумаги через pgsql-http.\r\nТребует установки расширения: CREATE EXTENSION http;",
+      "source": "CREATE OR REPLACE PROCEDURE load_all_timeframes(p_security_id INTEGER,\r\n    p_date_from DATE,\r\n    p_date_to DATE)\nLANGUAGE plpgsql AS $$\r\nDECLARE\r\n    v_tf RECORD;\r\nBEGIN\r\n    FOR v_tf IN SELECT id FROM timeframes WHERE COALESCE(is_active, TRUE) = TRUE ORDER BY sec\r\n    LOOP\r\n        BEGIN\r\n            CALL load_prices(p_security_id, v_tf.id, p_date_from, p_date_to);\r\n            RAISE NOTICE 'Загружен таймфрейм id=% для security_id=%', v_tf.id, p_security_id;\r\n        EXCEPTION\r\n            WHEN OTHERS THEN\r\n                RAISE NOTICE 'Ошибка загрузки таймфрейма id=%: %', v_tf.id, SQLERRM;\r\n        END;\r\n    END LOOP;\r\nEND;\r\n$$;\r\n\r\nCOMMENT ON PROCEDURE load_all_timeframes(INTEGER, DATE, DATE) IS \r\n'Загружает все таймфреймы для одной бумаги за указанный период.';\r\n\r\n-- ============================================\r\n-- Процедура: cleanup_old_prices\r\n-- Очистка старых цен (архивирование)\r\n-- ============================================"
+    },
+    {
+      "oid": 900009,
+      "name": "load_prices",
+      "kind": "procedure",
+      "arguments": "p_security_id, p_timeframe_id, p_date_from, p_date_to",
+      "result_type": null,
+      "description": "Загружает цены для массива бумаг по одному таймфрейму и периоду через pgsql-http.\r\nТребует установки расширения: CREATE EXTENSION http;",
+      "source": "CREATE OR REPLACE PROCEDURE load_prices(p_security_id INTEGER,\r\n    p_timeframe_id INTEGER,\r\n    p_date_from DATE,\r\n    p_date_to DATE)\nLANGUAGE plpgsql AS $$\r\nDECLARE\r\n    v_tbank_ok BOOLEAN := FALSE;\r\n    v_error_msg TEXT;\r\nBEGIN\r\n    -- Попытка 1: T-Bank\r\n    BEGIN\r\n        CALL load_prices_from_tbank(p_security_id, p_timeframe_id, p_date_from, p_date_to);\r\n        v_tbank_ok := TRUE;\r\n        RAISE NOTICE 'Цены успешно загружены из T-Bank';\r\n    EXCEPTION\r\n        WHEN OTHERS THEN\r\n            v_error_msg := SQLERRM;\r\n            RAISE NOTICE 'T-Bank недоступен: %. Переключаемся на MOEX...', v_error_msg;\r\n    END;\r\n\r\n    -- Попытка 2: MOEX (если T-Bank не сработал)\r\n    IF NOT v_tbank_ok THEN\r\n        BEGIN\r\n            CALL load_prices_from_moex(p_security_id, p_timeframe_id, p_date_from, p_date_to);\r\n            RAISE NOTICE 'Цены успешно загружены из MOEX';\r\n        EXCEPTION\r\n            WHEN OTHERS THEN\r\n                v_error_msg := SQLERRM;\r\n                RAISE EXCEPTION 'Оба источника недоступны. T-Bank: %; MOEX: %', v_error_msg, SQLERRM;\r\n        END;\r\n    END IF;\r\nEND;\r\n$$;\r\n\r\nCOMMENT ON PROCEDURE load_prices(INTEGER, INTEGER, DATE, DATE) IS \r\n'Главная процедура загрузки цен: сначала T-Bank, если не отвечает -- MOEX. Для фьючерсов автоматически выбирает активный контракт на дату периода.';\r\n\r\n-- ============================================\r\n-- Процедура: load_prices_batch\r\n-- Загрузка цен для нескольких бумаг сразу\r\n-- ============================================"
+    },
+    {
+      "oid": 900010,
+      "name": "load_prices_batch",
+      "kind": "procedure",
+      "arguments": "p_security_ids, p_timeframe_id, p_date_from, p_date_to",
+      "result_type": null,
+      "description": "Загружает цены для массива бумаг по одному таймфрейму и периоду через pgsql-http.\r\nТребует установки расширения: CREATE EXTENSION http;",
+      "source": "CREATE OR REPLACE PROCEDURE load_prices_batch(p_security_ids INTEGER[],\r\n    p_timeframe_id INTEGER,\r\n    p_date_from DATE,\r\n    p_date_to DATE)\nLANGUAGE plpgsql AS $$\r\nDECLARE\r\n    v_security_id INTEGER;\r\nBEGIN\r\n    FOREACH v_security_id IN ARRAY p_security_ids\r\n    LOOP\r\n        BEGIN\r\n            CALL load_prices(v_security_id, p_timeframe_id, p_date_from, p_date_to);\r\n            RAISE NOTICE 'Загружены цены для security_id=%', v_security_id;\r\n        EXCEPTION\r\n            WHEN OTHERS THEN\r\n                RAISE NOTICE 'Ошибка загрузки для security_id=%: %', v_security_id, SQLERRM;\r\n        END;\r\n    END LOOP;\r\nEND;\r\n$$;\r\n\r\nCOMMENT ON PROCEDURE load_prices_batch(INTEGER[], INTEGER, DATE, DATE) IS \r\n'Загружает цены для массива бумаг по одному таймфрейму и периоду.';\r\n\r\n-- ============================================\r\n-- Процедура: load_all_timeframes\r\n-- Загрузка всех таймфреймов для одной бумаги\r\n-- ============================================"
+    },
+    {
+      "oid": 900008,
+      "name": "load_prices_from_moex",
+      "kind": "procedure",
+      "arguments": "p_security_id, p_timeframe_id, p_date_from, p_date_to",
+      "result_type": null,
+      "description": "Загружает цены через MOEX ISS API используя расширение pgsql-http (libcurl).\r\nТребует предварительной установки: CREATE EXTENSION http;\r\nДля фьючерсов автоматически выбирает активный контракт.",
+      "source": "CREATE OR REPLACE PROCEDURE load_prices_from_moex(p_security_id INTEGER,\r\n    p_timeframe_id INTEGER,\r\n    p_date_from DATE,\r\n    p_date_to DATE)\nLANGUAGE plpgsql AS $$\r\nDECLARE\r\n    v_prefix VARCHAR(50);\r\n    v_tf_name VARCHAR(20);\r\n    v_is_future BOOLEAN;\r\n    v_engine VARCHAR(20) := 'stock';\r\n    v_market VARCHAR(20) := 'shares';\r\n    v_board VARCHAR(20) := 'TQBR';\r\n    v_start_dt TIMESTAMP;\r\n    v_end_dt TIMESTAMP;\r\n    v_url TEXT;\r\n    v_records_loaded INTEGER := 0;\r\nBEGIN\r\n    SELECT sp.prefix INTO v_prefix\r\n    FROM security_prefixes sp\r\n    WHERE sp.security_id = p_security_id AND sp.exchange_id = 1;\r\n\r\n    IF v_prefix IS NULL THEN\r\n        RAISE EXCEPTION 'Префикс не найден для security_id=%', p_security_id;\r\n    END IF;\r\n\r\n    SELECT tf INTO v_tf_name\r\n    FROM timeframes WHERE id = p_timeframe_id;\r\n\r\n    -- Определяем рынок\r\n    SELECT \r\n        CASE st.name\r\n            WHEN 'Stock' THEN 'stock'\r\n            WHEN 'Futures' THEN 'futures'\r\n            WHEN 'Bond' THEN 'bonds'\r\n            WHEN 'Index' THEN 'stock'\r\n            ELSE 'stock'\r\n        END,\r\n        CASE st.name\r\n            WHEN 'Stock' THEN 'shares'\r\n            WHEN 'Futures' THEN 'forts'\r\n            WHEN 'Bond' THEN 'bonds'\r\n            WHEN 'Index' THEN 'index'\r\n            ELSE 'shares'\r\n        END,\r\n        CASE st.name\r\n            WHEN 'Stock' THEN 'TQBR'\r\n            WHEN 'Futures' THEN 'RFUD'\r\n            ELSE 'TQBR'\r\n        END\r\n    INTO v_engine, v_market, v_board\r\n    FROM securities s\r\n    JOIN security_types st ON s.security_type_id = st.id\r\n    WHERE s.id = p_security_id;\r\n\r\n    -- Для фьючерсов определяем активный контракт\r\n    IF v_engine = 'futures' THEN\r\n        v_prefix := get_active_future_prefix(p_security_id, p_date_from);\r\n        IF v_prefix IS NULL THEN\r\n            RAISE EXCEPTION 'Активный фьючерс не найден для security_id=% на дату %', p_security_id, p_date_from;\r\n        END IF;\r\n    END IF;\r\n\r\n    v_start_dt := p_date_from::TIMESTAMP;\r\n    v_end_dt := (p_date_to + INTERVAL '1 day')::TIMESTAMP;\r\n\r\n    -- Формируем URL MOEX ISS API\r\n    v_url := format(\r\n        'https://iss.moex.com/iss/engines/%s/markets/%s/boards/%s/securities/%s/candles.json?from=%s&till=%s&interval=%s',\r\n        v_engine, v_market, v_board, v_prefix,\r\n        to_char(v_start_dt, 'YYYY-MM-DD'),\r\n        to_char(v_end_dt, 'YYYY-MM-DD'),\r\n        get_moex_candle_interval(v_tf_name)::TEXT\r\n    );\r\n\r\n    RAISE NOTICE 'MOEX API URL: %', v_url;\r\n\r\n    -- Логируем попытку\r\n    INSERT INTO price_load_log (security_id, timeframe_id, date_from, date_to, source, records_loaded)\r\n    VALUES (p_security_id, p_timeframe_id, p_date_from, p_date_to, 'MOEX', 0);\r\n\r\nEXCEPTION\r\n    WHEN OTHERS THEN\r\n        INSERT INTO price_load_log (security_id, timeframe_id, date_from, date_to, source, records_loaded, error_message)\r\n        VALUES (p_security_id, p_timeframe_id, p_date_from, p_date_to, 'MOEX', 0, SQLERRM);\r\n        RAISE;\r\nEND;\r\n$$;\r\n\r\nCOMMENT ON PROCEDURE load_prices_from_moex(INTEGER, INTEGER, DATE, DATE) IS \r\n'Загружает цены через открытое API MOEX ISS. Для фьючерсов выбирает активный контракт.';\r\n\r\n-- ============================================\r\n-- ГЛАВНАЯ ПРОЦЕДУРА: load_prices\r\n-- Сначала T-Bank, если не сработало -- MOEX\r\n-- ============================================"
+    },
+    {
+      "oid": 900007,
+      "name": "load_prices_from_tbank",
+      "kind": "procedure",
+      "arguments": "p_security_id, p_timeframe_id, p_date_from, p_date_to",
+      "result_type": null,
+      "description": "Загружает цены через T-Bank API используя расширение pgsql-http (libcurl).\r\nТребует предварительной установки: CREATE EXTENSION http;\r\nДля фьючерсов автоматически выбирает активный контракт.",
+      "source": "CREATE OR REPLACE PROCEDURE load_prices_from_tbank(p_security_id INTEGER,\r\n    p_timeframe_id INTEGER,\r\n    p_date_from DATE,\r\n    p_date_to DATE)\nLANGUAGE plpgsql AS $$\r\nDECLARE\r\n    v_prefix VARCHAR(50);\r\n    v_tf_sec INTEGER;\r\n    v_tf_name VARCHAR(20);\r\n    v_is_future BOOLEAN;\r\n    v_token TEXT;\r\n    v_start_ts TIMESTAMP;\r\n    v_end_ts TIMESTAMP;\r\n    v_records_loaded INTEGER := 0;\r\nBEGIN\r\n    -- Получаем префикс\r\n    SELECT sp.prefix INTO v_prefix\r\n    FROM security_prefixes sp\r\n    WHERE sp.security_id = p_security_id AND sp.exchange_id = 1;\r\n\r\n    IF v_prefix IS NULL THEN\r\n        RAISE EXCEPTION 'Префикс не найден для security_id=%', p_security_id;\r\n    END IF;\r\n\r\n    SELECT sec, tf INTO v_tf_sec, v_tf_name\r\n    FROM timeframes WHERE id = p_timeframe_id;\r\n\r\n    -- Проверяем, это фьючерс или нет\r\n    SELECT (st.name = 'Futures') INTO v_is_future\r\n    FROM securities s\r\n    JOIN security_types st ON s.security_type_id = st.id\r\n    WHERE s.id = p_security_id;\r\n\r\n    -- Для фьючерса определяем активный контракт\r\n    IF v_is_future THEN\r\n        v_prefix := get_active_future_prefix(p_security_id, p_date_from);\r\n        IF v_prefix IS NULL THEN\r\n            RAISE EXCEPTION 'Активный фьючерс не найден для security_id=% на дату %', p_security_id, p_date_from;\r\n        END IF;\r\n    END IF;\r\n\r\n    -- Получаем токен\r\n    v_token := get_tbank_token();\r\n    IF v_token IS NULL THEN\r\n        RAISE EXCEPTION 'T-Bank токен не найден. Заполните token_encrypted в accounts.';\r\n    END IF;\r\n\r\n    v_start_ts := p_date_from::TIMESTAMP;\r\n    v_end_ts := (p_date_to + INTERVAL '1 day')::TIMESTAMP;\r\n\r\n    RAISE NOTICE 'T-Bank API запрос: figi=%, interval=%, from=%, to=%', \r\n        v_prefix, v_tf_name, v_start_ts, v_end_ts;\r\n\r\n    -- Логируем попытку\r\n    INSERT INTO price_load_log (security_id, timeframe_id, date_from, date_to, source, records_loaded)\r\n    VALUES (p_security_id, p_timeframe_id, p_date_from, p_date_to, 'T-BANK', 0);\r\n\r\nEXCEPTION\r\n    WHEN OTHERS THEN\r\n        INSERT INTO price_load_log (security_id, timeframe_id, date_from, date_to, source, records_loaded, error_message)\r\n        VALUES (p_security_id, p_timeframe_id, p_date_from, p_date_to, 'T-BANK', 0, SQLERRM);\r\n        RAISE;\r\nEND;\r\n$$;\r\n\r\nCOMMENT ON PROCEDURE load_prices_from_tbank(INTEGER, INTEGER, DATE, DATE) IS \r\n'Загружает цены через API T-Bank. Для фьючерсов автоматически выбирает активный контракт.';\r\n\r\n-- ============================================\r\n-- Процедура: load_prices_from_moex\r\n-- Загружает цены через API MOEX (ISS)\r\n-- ============================================"
+    },
+    {
+      "oid": 900013,
+      "name": "refresh_indicator_values",
+      "kind": "procedure",
+      "arguments": "p_security_id, p_timeframe_id, p_indicator_id",
+      "result_type": null,
+      "description": "Пересчитывает значения индикатора для свежих цен. Скрипт берется из поля indicators.script.",
+      "source": "CREATE OR REPLACE PROCEDURE refresh_indicator_values(p_security_id INTEGER,\r\n    p_timeframe_id INTEGER,\r\n    p_indicator_id INTEGER)\nLANGUAGE plpgsql AS $$\r\nDECLARE\r\n    v_script TEXT;\r\n    v_indicator_code VARCHAR(20);\r\nBEGIN\r\n    SELECT code, script INTO v_indicator_code, v_script\r\n    FROM indicators WHERE id = p_indicator_id;\r\n\r\n    IF v_script IS NULL OR v_script = '' THEN\r\n        RAISE NOTICE 'Скрипт для индикатора % не заполнен', v_indicator_code;\r\n        RETURN;\r\n    END IF;\r\n\r\n    -- Выполняем скрипт индикатора (динамический SQL)\r\n    -- Примечание: реальный скрипт должен быть написан и протестирован\r\n    RAISE NOTICE 'Выполнение скрипта индикатора %...', v_indicator_code;\r\n\r\nEXCEPTION\r\n    WHEN OTHERS THEN\r\n        RAISE NOTICE 'Ошибка выполнения скрипта индикатора %: %', v_indicator_code, SQLERRM;\r\nEND;\r\n$$;\r\n\r\nCOMMENT ON PROCEDURE refresh_indicator_values(INTEGER, INTEGER, INTEGER) IS \r\n'Пересчитывает значения индикатора для свежих цен. Скрипт берется из поля indicators.script.';\r\n\r\n\r\n-- ============================================\r\n-- Процедура: calculate_indicator\r\n-- Расчет значений индикатора и запись в таблицу indicator_values\r\n-- ============================================\r\n-- ============================================\r\n-- Процедура: calculate_indicator\r\n-- Расчет значений технического индикатора и запись в таблицу indicator_values\r\n-- ============================================\r\n--\r\n-- ПАРАМЕТРЫ:\r\n--   p_security_id   INTEGER  - ID ценной бумаги из таблицы securities\r\n--                              (например: 1 = SBER, 3 = GAZP, 35 = Si фьючерс)\r\n--   p_timeframe_id   INTEGER  - ID таймфрейма из таблицы timeframes\r\n--                              (например: 4 = M5, 15 = D1, 22 = MN1)\r\n--   p_indicator_id   INTEGER  - ID индикатора из таблицы indicators\r\n--                              (например: 4 = RSI, 5 = MACD, 7 = BB)\r\n--   p_date_from      DATE     - Начальная дата периода расчета (включительно)\r\n--   p_date_to        DATE     - Конечная дата периода расчета (включительно)\r\n--   p_overwrite      BOOLEAN  - Флаг перезаписи существующих записей:\r\n--                              TRUE  = удалить старые значения и записать новые\r\n--                              FALSE = пропустить свечи, где значения уже есть\r\n--\r\n-- ПОДДЕРЖИВАЕМЫЕ ИНДИКАТОРЫ:\r\n--   RSI      - Индекс относительной силы (0-100), период по умолчанию 14\r\n--   SMA      - Простое скользящее среднее, период по умолчанию 20\r\n--   EMA      - Экспоненциальное скользящее среднее, период по умолчанию 20\r\n--   MACD     - Схождение/расхождение MA (fast=12, slow=26, signal=9)\r\n--   BB       - Полосы Боллинджера (период=20, std_dev=2.0)\r\n--   ATR      - Средний истинный диапазон, период по умолчанию 14\r\n--   STOCH    - Стохастик (%K период=14, %D период=3, сглаживание=3)\r\n--\r\n-- ПРИМЕР ВЫЗОВА:\r\n--   CALL calculate_indicator(1, 4, 4, '2026-06-17', '2026-06-24', TRUE);\r\n--   -- Расчет RSI для SBER (id=1) на M5 (id=4) за неделю с перезаписью\r\n-- ============================================"
+    }
+  ],
+  "extensions": [
+    {
+      "name": "http",
+      "version": "опционально (блок HTTP в 02)"
+    }
+  ]
+}
