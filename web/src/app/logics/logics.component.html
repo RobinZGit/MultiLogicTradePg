@@ -233,49 +233,64 @@
 
                     <details class="signals-block" [open]="isSignalsBlockExpanded(row.id)">
 
-                      <summary (click)="toggleSignalsBlock(row.id, $event)">
+                      <summary class="signals-summary">
 
-                        Сигналы индикаторов
+                        <span
+                          class="signals-summary-head"
+                          (click)="toggleSignalsBlock(row.id, $event)"
+                        >
 
-                        @if (isSignalsLoading(row.id)) {
+                          <span
+                            class="signals-chevron"
+                            [class.open]="isSignalsBlockExpanded(row.id)"
+                            aria-hidden="true"
+                          >▸</span>
 
-                          <span class="signals-loading"> — загрузка…</span>
+                          <span class="signals-title">Сигналы индикаторов</span>
 
-                        }
+                          @if (isSignalsLoading(row.id)) {
+
+                            <span class="signals-loading">загрузка…</span>
+
+                          }
+
+                        </span>
+
+                        <span class="signals-summary-actions">
+
+                          <button
+
+                            type="button"
+
+                            class="btn btn-sm btn-trend"
+
+                            (click)="openSignalPicker(row.id, 'trend', $event)"
+
+                          >
+
+                            + Тренд
+
+                          </button>
+
+                          <button
+
+                            type="button"
+
+                            class="btn btn-sm btn-counter"
+
+                            (click)="openSignalPicker(row.id, 'counter', $event)"
+
+                          >
+
+                            + К-тренд
+
+                          </button>
+
+                        </span>
 
                       </summary>
 
-                      <div class="signals-toolbar">
-
-                        <button
-
-                          type="button"
-
-                          class="btn btn-sm btn-trend"
-
-                          (click)="openSignalPicker(row.id, 'trend', $event)"
-
-                        >
-
-                          + Трендовый сигнал
-
-                        </button>
-
-                        <button
-
-                          type="button"
-
-                          class="btn btn-sm btn-counter"
-
-                          (click)="openSignalPicker(row.id, 'counter', $event)"
-
-                        >
-
-                          + Контртрендовый сигнал
-
-                        </button>
-
-                      </div>
+                      <div class="signals-body">
 
                       @if (isPickerOpen(row.id, 'trend') || isPickerOpen(row.id, 'counter')) {
 
@@ -494,6 +509,8 @@
                         <code>sig_trend_def</code> / <code>sig_ct_def</code> справочника индикаторов.
 
                       </p>
+
+                      </div>
 
                     </details>
 

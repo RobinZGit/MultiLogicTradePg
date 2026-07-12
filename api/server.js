@@ -1413,6 +1413,119 @@ app.delete('/api/logic-indicator-signals/:id', async (req, res) => {
   }
 });
 
+app.post('/api/tech-log', async (req, res) => {
+  const entries = Array.isArray(req.body?.entries) ? req.body.entries : [];
+  if (entries.length === 0) {
+    res.status(400).json({ error: 'Укажите entries[]' });
+    return;
+  }
+  if (entries.length > 200) {
+    res.status(400).json({ error: 'Не более 200 записей за раз' });
+    return;
+  }
+
+  const client = await pool.connect();
+  try {
+    let inserted = 0;
+    for (const raw of entries) {
+      const traceId = btrimStr(raw.trace_id);
+      const spanId = btrimStr(raw.span_id);
+      const threadKey = btrimStr(raw.thread_key);
+      const operation = btrimStr(raw.operation);
+      const phase = btrimStr(raw.phase);
+      if (!traceId || !spanId || !threadKey || !operation || !phase) {
+        continue;
+      }
+      if (!['start', 'end', 'event'].includes(phase)) {
+        continue;
+      }
+      await client.query(
+        `
+        INSERT INTO app_tech_log (
+          trace_id, span_id, parent_span_id, thread_key, source, operation, phase,
+          started_at, finished_at, duration_ms,
+          security_id, timeframe_id, sync_gen, message, payload
+        ) VALUES (
+          $1::uuid, $2, $3, $4, COALESCE(NULLIF($5, ''), 'web'), $6, $7,
+          COALESCE($8::timestamptz, CURRENT_TIMESTAMP),
+          $9::timestamptz, $10,
+          $11, $12, $13, $14, $15::jsonb
+        )
+        `,
+        [
+          traceId,
+          spanId,
+          raw.parent_span_id ? btrimStr(raw.parent_span_id) : null,
+          threadKey,
+          raw.source ? btrimStr(raw.source) : 'web',
+          operation,
+          phase,
+          raw.started_at ? String(raw.started_at) : null,
+          raw.finished_at ? String(raw.finished_at) : null,
+          raw.duration_ms != null ? Number(raw.duration_ms) : null,
+          parseId(raw.security_id) || null,
+          parseId(raw.timeframe_id) || null,
+          parseId(raw.sync_gen) || null,
+          raw.message != null ? String(raw.message) : null,
+          raw.payload != null ? JSON.stringify(raw.payload) : null,
+        ]
+      );
+      inserted += 1;
+    }
+    res.json({ ok: true, inserted });
+  } catch (err) {
+    console.error('POST /api/tech-log', err);
+    res.status(500).json({ error: err.message });
+  } finally {
+    client.release();
+  }
+});
+
+app.get('/api/tech-log', async (req, res) => {
+  const limit = Math.min(parseId(req.query.limit) || 100, 500);
+  const securityId = parseId(req.query.security_id);
+  const traceId = req.query.trace_id ? String(req.query.trace_id).trim() : null;
+  const since = req.query.since ? String(req.query.since).trim() : null;
+
+  const where = [];
+  const params = [];
+  let idx = 1;
+  if (securityId) {
+    where.push(`security_id = $${idx++}`);
+    params.push(securityId);
+  }
+  if (traceId) {
+    where.push(`trace_id::text = $${idx++}`);
+    params.push(traceId);
+  }
+  if (since) {
+    where.push(`created_at >= $${idx++}::timestamptz`);
+    params.push(since);
+  }
+  params.push(limit);
+  const whereSql = where.length > 0 ? `WHERE ${where.join(' AND ')}` : '';
+
+  try {
+    const { rows } = await pool.query(
+      `
+      SELECT
+        id, trace_id::text AS trace_id, span_id, parent_span_id, thread_key, source,
+        operation, phase, started_at, finished_at, duration_ms,
+        security_id, timeframe_id, sync_gen, message, payload, created_at
+      FROM app_tech_log
+      ${whereSql}
+      ORDER BY id DESC
+      LIMIT $${idx}
+      `,
+      params
+    );
+    res.json({ rows });
+  } catch (err) {
+    console.error('GET /api/tech-log', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
 function btrimStr(v) {
   if (v == null) return '';
   return String(v).trim();

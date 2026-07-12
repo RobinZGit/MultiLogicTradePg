@@ -1,6 +1,6 @@
 -- ============================================
 -- MultiLogicTrade — шаг 1: таблицы и справочники
--- Версия: v12 (идемпотентный запуск)
+-- Версия: v13 (идемпотентный запуск)
 -- ============================================
 -- Подключение: база multilogictrade
 -- Можно выполнять многократно: объекты и строки не дублируются.
@@ -25,6 +25,13 @@
 -- ============================================
 
 -- ============================================
+-- Блок миграции: обновление существующей схемы v12 → v13
+-- ============================================
+DO $$
+BEGIN
+    NULL;
+END $$;
+
 -- Блок миграции: обновление существующей схемы v11 → v12
 -- ============================================
 DO $$
@@ -913,6 +920,40 @@ ALTER TABLE price_load_log ADD COLUMN IF NOT EXISTS contract_prefix VARCHAR(50);
 
 CREATE INDEX IF NOT EXISTS idx_price_load_log_security ON price_load_log(security_id, timeframe_id);
 CREATE INDEX IF NOT EXISTS idx_price_load_log_loaded_at ON price_load_log(loaded_at);
+
+-- ============================================
+-- Таблица: app_tech_log (технический журнал UI/API)
+-- ============================================
+CREATE TABLE IF NOT EXISTS app_tech_log (
+    id BIGSERIAL PRIMARY KEY,
+    trace_id UUID NOT NULL DEFAULT gen_random_uuid(),
+    span_id VARCHAR(64) NOT NULL,
+    parent_span_id VARCHAR(64),
+    thread_key VARCHAR(128) NOT NULL,
+    source VARCHAR(32) NOT NULL DEFAULT 'web',
+    operation VARCHAR(128) NOT NULL,
+    phase VARCHAR(16) NOT NULL CHECK (phase IN ('start', 'end', 'event')),
+    started_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    finished_at TIMESTAMPTZ,
+    duration_ms INTEGER,
+    security_id INTEGER REFERENCES securities(id) ON DELETE SET NULL,
+    timeframe_id INTEGER REFERENCES timeframes(id) ON DELETE SET NULL,
+    sync_gen INTEGER,
+    message TEXT,
+    payload JSONB,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS idx_app_tech_log_created_at ON app_tech_log(created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_app_tech_log_trace_id ON app_tech_log(trace_id);
+CREATE INDEX IF NOT EXISTS idx_app_tech_log_thread_key ON app_tech_log(thread_key);
+CREATE INDEX IF NOT EXISTS idx_app_tech_log_security ON app_tech_log(security_id, created_at DESC);
+
+COMMENT ON TABLE app_tech_log IS
+'Технический журнал: операции sync графика, загрузка свечей, poll индикаторов (многопоточно по thread_key)';
+COMMENT ON COLUMN app_tech_log.trace_id IS 'Цепочка одного жеста пользователя (pan/zoom)';
+COMMENT ON COLUMN app_tech_log.thread_key IS 'Поток: sec:29:gen:3, sec:29:loadOlder и т.п.';
+COMMENT ON COLUMN app_tech_log.phase IS 'start | end | event';
 
 -- ============================================
 -- Дополнительные индексы

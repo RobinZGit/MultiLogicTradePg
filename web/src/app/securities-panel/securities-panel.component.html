@@ -54,6 +54,15 @@
 
       </label>
 
+      <label class="toolbar-field tech-log-toggle">
+        <input
+          type="checkbox"
+          [(ngModel)]="techLoggingEnabled"
+          (ngModelChange)="onTechLoggingChange($event)"
+        />
+        <span>Логирование</span>
+      </label>
+
     </div>
 
   </header>

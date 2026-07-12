@@ -6,6 +6,7 @@ import { SecuritiesService } from '../services/securities.service';
 import { ReferencesService } from '../services/references.service';
 import { AppConfigService } from '../services/app-config.service';
 import { SettingsService } from '../services/settings.service';
+import { TechLogService } from '../services/tech-log.service';
 import {
   SecurityIndicatorSeriesRow,
   SecurityRow,
@@ -89,12 +90,29 @@ describe('SecuritiesPanelComponent', () => {
     ]);
     settings.getTbankTokenStatus.and.returnValue(of({ has_token: true }));
 
+    const techLog = jasmine.createSpyObj('TechLogService', [
+      'setEnabled',
+      'newTraceId',
+      'threadKey',
+      'start',
+      'end',
+      'event',
+      'fetchRecent',
+    ]);
+    techLog.enabled = false;
+    techLog.newTraceId.and.returnValue('trace-test');
+    techLog.threadKey.and.callFake((_s: number, g?: number, suffix?: string) =>
+      suffix ? `sec:main:${suffix}` : `sec:main:gen:${g ?? 0}`
+    );
+    techLog.start.and.returnValue('span-test');
+
     await TestBed.configureTestingModule({
       imports: [SecuritiesPanelComponent],
       providers: [
         { provide: SecuritiesService, useValue: securities },
         { provide: ReferencesService, useValue: refs },
         { provide: SettingsService, useValue: settings },
+        { provide: TechLogService, useValue: techLog },
         { provide: AppConfigService, useValue: { apiUrl: 'http://localhost:3000/api' } },
       ],
       schemas: [NO_ERRORS_SCHEMA],

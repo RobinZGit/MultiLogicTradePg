@@ -5,7 +5,7 @@
 > Включать **запросы пользователя текстом** (секция «Запросы пользователя»).
 
 **Репозиторий:** https://github.com/RobinZGit/MultiLogicTradePg  
-**Последнее обновление:** 2026-07-12 (TBANK токен в параметрах, диалог при загрузке цен)
+**Последнее обновление:** 2026-07-12 (app_tech_log, fix pan-left SMAT3 sync, checkbox «Логирование»)
 
 ---
 
@@ -106,6 +106,8 @@
 22. **T-Bank токен:** `parameter_types.TBANK_API_TOKEN` → `parameter_values`; `get_tbank_token` / `set_tbank_token`; диалог при «Загрузить цены»; API `GET/PUT /api/settings/tbank-token`.
 23. **SMAT3 / график:** локальная свёртка по `period`; sync без зависания при scroll/fullscreen/expand (`verify-chart-sync.mjs`, `userInitiated`, suppress до готовности).
 24. **Logics — сигналы индикаторов:** таблица `logic_indicator_signals`, дефолты `sig_*_def`, UI с inline-редактированием формулы.
+25. **Технический журнал `app_tech_log`:** checkbox **«Логирование»** в шапке «Бумаги» (выкл. по умолчанию); start/end/event по `thread_key` (sec:N:gen:M); API `POST/GET /api/tech-log`.
+26. **Fix pan влево (SMAT3):** proactive `loadOlder`, `incremental=false` при сдвиге `end_dt` влево, защита poll от stale gen, debounce по `lastVisibleRange`.
 
 ### Автотесты
 
@@ -163,6 +165,7 @@
 
 | Дата | Суть |
 |------|------|
+| 2026-07-12 | app_tech_log + UI «Логирование»; fix pan-left SMAT3 sync |
 | 2026-07-12 | SMAT3 локальная свёртка; chart sync без зависания; verify-chart-sync |
 | 2026-07-12 | logics: logic_indicator_signals, sig_*_def, UI сигналов, signal-formula |
 | 2026-07-12 | pgsql-http, локальная БД 00–02 |
@@ -215,3 +218,4 @@
 21. «SMAT3 — sma(pp)*sma(pp)*sma(pp) (свёртка рядов); SMAT3COMP — sma(sma(sma(pp))) (композиция); при том же N числа разные; * без подмены ядром».
 22. «После пересоздания БД теряется токен T-Bank — диалог ввода при загрузке цен, хранить в глобальных параметрах, отмена → MOEX; пересоздать БД; в репо».
 26. «Drag индикатора: сразу в таблицу, расчёт async; жёсткий verify-async-sync в prebuild».
+27. «SMAT3 при перемотке в одну сторону OK, в обратную — зависает; таблица tech log в БД; галочка Логирование (выкл.); логировать start/end по потокам; пересобрать БД; контекст; в репо».

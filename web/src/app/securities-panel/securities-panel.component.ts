@@ -26,6 +26,7 @@ import { PriceChartComponent } from '../price-chart/price-chart.component';
 import { SecurityEditorComponent } from '../security-editor/security-editor.component';
 import { TbankTokenDialogComponent } from '../tbank-token-dialog/tbank-token-dialog.component';
 import { SettingsService } from '../services/settings.service';
+import { TechLogService } from '../services/tech-log.service';
 
 @Component({
   selector: 'app-securities-panel',
@@ -88,6 +89,12 @@ export class SecuritiesPanelComponent implements OnInit {
   private readonly indicatorCoverageMaxAttempts = 12;
   private autoRangeTimers = new Map<number, ReturnType<typeof setTimeout>>();
   private pendingSyncPointCount = new Map<number, number>();
+  /** Последний end_dt успешного sync — для incremental при pan влево. */
+  private lastSyncedEndDt = new Map<number, string>();
+  /** loadOlder уже запрошен для этого syncGen. */
+  private historyLoadForSyncGen = new Map<number, number>();
+  /** trace_id для цепочки pan по security+gen. */
+  private syncTraceIds = new Map<string, string>();
   /** Каталог индикаторов для оптимистичного drop (сразу в таблицу). */
   private indicatorsById = new Map<number, IndicatorRow>();
 
@@ -123,15 +130,24 @@ export class SecuritiesPanelComponent implements OnInit {
   tbankTokenDialogOpen = false;
   private pendingPriceLoadRow: SecurityRow | null = null;
 
+  /** Техническое логирование в БД (выключено по умолчанию). */
+  techLoggingEnabled = false;
+
   constructor(
     private readonly refs: ReferencesService,
     private readonly securities: SecuritiesService,
     private readonly settings: SettingsService,
+    private readonly techLog: TechLogService,
     private readonly appConfig: AppConfigService
   ) {}
 
   ngOnInit(): void {
+    this.techLoggingEnabled = this.techLog.enabled;
     this.loadMeta();
+  }
+
+  onTechLoggingChange(enabled: boolean): void {
+    this.techLog.setEnabled(enabled);
   }
 
   get exchangeName(): string {
@@ -202,6 +218,42 @@ export class SecuritiesPanelComponent implements OnInit {
   /** Техническая расшифровка последнего sync (для отладки). */
   indicatorSyncDebugText(id: number): string | null {
     return this.indicatorSyncDebug.get(id) ?? null;
+  }
+
+  private syncTraceKey(securityId: number, syncGen: number): string {
+    return `${securityId}:${syncGen}`;
+  }
+
+  private traceForSync(securityId: number, syncGen: number): string {
+    const key = this.syncTraceKey(securityId, syncGen);
+    let trace = this.syncTraceIds.get(key);
+    if (!trace) {
+      trace = this.techLog.newTraceId(securityId, syncGen);
+      this.syncTraceIds.set(key, trace);
+    }
+    return trace;
+  }
+
+  private logSyncEvent(
+    securityId: number,
+    syncGen: number | null | undefined,
+    operation: string,
+    message: string,
+    payload?: Record<string, unknown>
+  ): void {
+    const gen = syncGen ?? undefined;
+    this.techLog.event(
+      this.techLog.threadKey(securityId, gen),
+      operation,
+      message,
+      {
+        traceId: gen != null ? this.traceForSync(securityId, gen) : undefined,
+        securityId,
+        timeframeId: this.timeframeId ?? undefined,
+        syncGen: gen,
+        payload,
+      }
+    );
   }
 
   private setIndicatorSyncDebug(securityId: number, detail: string): void {
@@ -432,29 +484,64 @@ export class SecuritiesPanelComponent implements OnInit {
       body.indicator_id = opts.indicatorId;
     }
 
+    const syncGen = opts.syncGen ?? null;
+    const spanId =
+      syncGen != null
+        ? this.techLog.start(
+            this.traceForSync(securityId, syncGen),
+            this.techLog.threadKey(securityId, syncGen, 'asyncSync'),
+            'indicator.asyncSync',
+            {
+              securityId,
+              timeframeId: this.timeframeId ?? undefined,
+              syncGen,
+              message: opts.message,
+              payload: {
+                end_dt: body.end_dt,
+                point_count: body.point_count,
+                incremental: body.incremental,
+                indicator_id: body.indicator_id ?? null,
+              },
+            }
+          )
+        : '';
+
     this.securities.syncIndicatorSeries(body).subscribe({
       next: () => {
+        this.logSyncEvent(securityId, syncGen, 'indicator.asyncSync.accepted', 'POST 202', {
+          end_dt: body.end_dt,
+          point_count: body.point_count,
+        });
         this.pollIndicatorValuesAfterSync(
           securityId,
           opts.indicatorId ? [opts.indicatorId] : null,
           opts.seriesRows,
           opts.range,
           opts.mergeOnly === true,
-          opts.syncGen ?? null,
-          0
+          syncGen,
+          0,
+          spanId
         );
       },
       error: (err) => {
+        this.techLog.end(spanId, {
+          message: 'asyncSync POST error',
+          payload: { error: err?.message ?? String(err) },
+        });
         const msg =
           err?.name === 'TimeoutError'
             ? 'Не удалось запустить пересчёт индикаторов'
             : err?.error?.error || err?.message || 'Ошибка запуска пересчёта';
-        this.finishIndicatorRecalc(securityId, msg);
+        this.finishIndicatorRecalc(securityId, msg, syncGen);
       },
     });
   }
 
-  private finishIndicatorRecalc(securityId: number, error: string | null): void {
+  private finishIndicatorRecalc(
+    securityId: number,
+    error: string | null,
+    syncGen?: number | null
+  ): void {
     this.indicatorRecalc.set(securityId, {
       active: false,
       message: null,
@@ -463,8 +550,24 @@ export class SecuritiesPanelComponent implements OnInit {
     if (error) {
       this.indicatorCalcError.set(securityId, error);
       this.suppressIndicatorDraw.set(securityId, false);
+      this.logSyncEvent(
+        securityId,
+        syncGen,
+        'indicator.recalc.error',
+        error,
+        { syncGen: syncGen ?? null }
+      );
     } else {
       this.indicatorCalcError.set(securityId, null);
+      if (syncGen != null) {
+        this.logSyncEvent(
+          securityId,
+          syncGen,
+          'indicator.recalc.done',
+          'OK',
+          { syncGen }
+        );
+      }
     }
     this.indicatorPollTimers.delete(securityId);
   }
@@ -549,10 +652,19 @@ export class SecuritiesPanelComponent implements OnInit {
     syncGen: number,
     retry = 0
   ): void {
+    const liveRange = this.lastVisibleRange.get(securityId) ?? range;
+
     if (!this.isSyncGenerationCurrent(securityId, syncGen)) {
       this.setIndicatorSyncDebug(
         securityId,
         `sync skip: устаревшее поколение gen=${syncGen}`
+      );
+      this.logSyncEvent(
+        securityId,
+        syncGen,
+        'indicator.rangeSync.stale',
+        `skip gen=${syncGen}`,
+        { retry }
       );
       return;
     }
@@ -568,48 +680,112 @@ export class SecuritiesPanelComponent implements OnInit {
         securityId,
         `wait candles: loading=${state.loading}, older=${state.loadingOlder}, retry=${retry}`
       );
+      this.logSyncEvent(
+        securityId,
+        syncGen,
+        'indicator.rangeSync.waitCandles',
+        `loading=${state.loading}, older=${state.loadingOlder}`,
+        { retry }
+      );
       if (retry < this.indicatorRangeMaxRetries) {
         setTimeout(
           () =>
-            this.scheduleIndicatorRangeSync(securityId, range, syncGen, retry + 1),
+            this.scheduleIndicatorRangeSync(
+              securityId,
+              liveRange,
+              syncGen,
+              retry + 1
+            ),
           this.indicatorRangeRetryMs
         );
       } else {
-        this.finishIndicatorRecalc(securityId, 'Таймаут ожидания свечей');
+        this.finishIndicatorRecalc(securityId, 'Таймаут ожидания свечей', syncGen);
       }
       return;
     }
 
-    if (!this.candlesCoverRange(state.candles, range)) {
+    if (!this.candlesCoverRange(state.candles, liveRange)) {
       this.indicatorRecalc.set(securityId, {
         active: true,
         message: 'Загрузка истории…',
         error: null,
       });
+      const first = state.candles[0]?.dt;
+      const needOlder =
+        state.candles.length > 0 &&
+        first != null &&
+        liveRange.startDt < first &&
+        state.hasMore &&
+        !state.loadingOlder;
+      if (
+        needOlder &&
+        this.historyLoadForSyncGen.get(securityId) !== syncGen
+      ) {
+        this.historyLoadForSyncGen.set(securityId, syncGen);
+        this.logSyncEvent(
+          securityId,
+          syncGen,
+          'chart.loadOlder.request',
+          `need ${liveRange.startDt}, have from ${first}`,
+          { retry }
+        );
+        this.loadChart(securityId, true, { skipIndicatorSync: true });
+      }
       this.setIndicatorSyncDebug(
         securityId,
-        `wait history: need ${range.startDt}…${range.endDt}, have ${state.candles[0]?.dt ?? '—'}…${state.candles[state.candles.length - 1]?.dt ?? '—'}, retry=${retry}`
+        `wait history: need ${liveRange.startDt}…${liveRange.endDt}, have ${state.candles[0]?.dt ?? '—'}…${state.candles[state.candles.length - 1]?.dt ?? '—'}, retry=${retry}`
+      );
+      this.logSyncEvent(
+        securityId,
+        syncGen,
+        'indicator.rangeSync.waitHistory',
+        `retry=${retry}`,
+        {
+          needStart: liveRange.startDt,
+          needEnd: liveRange.endDt,
+          haveStart: state.candles[0]?.dt ?? null,
+          haveEnd: state.candles[state.candles.length - 1]?.dt ?? null,
+          needOlder,
+        }
       );
       if (retry < this.indicatorRangeMaxRetries) {
         setTimeout(
           () =>
-            this.scheduleIndicatorRangeSync(securityId, range, syncGen, retry + 1),
+            this.scheduleIndicatorRangeSync(
+              securityId,
+              liveRange,
+              syncGen,
+              retry + 1
+            ),
           this.indicatorRangeRetryMs
         );
       } else {
         this.finishIndicatorRecalc(
           securityId,
-          'Недостаточно свечей для расчёта индикаторов'
+          'Недостаточно свечей для расчёта индикаторов',
+          syncGen
         );
       }
       return;
     }
 
+    this.historyLoadForSyncGen.delete(securityId);
     this.setIndicatorSyncDebug(
       securityId,
-      `sync start: gen=${syncGen}, bars=${range.count}, ${range.startDt}…${range.endDt}`
+      `sync start: gen=${syncGen}, bars=${liveRange.count}, ${liveRange.startDt}…${liveRange.endDt}`
     );
-    this.syncIndicatorsForRange(securityId, range, {
+    this.logSyncEvent(
+      securityId,
+      syncGen,
+      'indicator.rangeSync.start',
+      `${liveRange.count} bars`,
+      {
+        startDt: liveRange.startDt,
+        endDt: liveRange.endDt,
+        retry,
+      }
+    );
+    this.syncIndicatorsForRange(securityId, liveRange, {
       incremental: true,
       syncGen,
     });
@@ -643,18 +819,28 @@ export class SecuritiesPanelComponent implements OnInit {
     range: ChartVisibleRange | null,
     mergeOnly: boolean,
     syncGen: number | null,
-    attempt: number
+    attempt: number,
+    pollSpanId = ''
   ): void {
     if (!this.isSyncGenerationCurrent(securityId, syncGen)) {
+      this.techLog.end(pollSpanId, { message: 'poll aborted: stale gen' });
       return;
     }
-    const maxAttempts = 90;
+    const maxAttempts = 45;
     const label =
       indicatorIds?.length === 1
         ? seriesRows[0]?.indicator_code ?? 'индикатора'
         : 'индикаторов';
     if (attempt >= maxAttempts) {
-      this.finishIndicatorRecalc(securityId, `Таймаут пересчёта ${label}`);
+      this.techLog.end(pollSpanId, {
+        message: 'poll timeout',
+        payload: { attempt, maxAttempts },
+      });
+      this.finishIndicatorRecalc(
+        securityId,
+        `Таймаут пересчёта ${label}`,
+        syncGen
+      );
       return;
     }
 
@@ -662,13 +848,15 @@ export class SecuritiesPanelComponent implements OnInit {
       indicatorIds ??
       [...new Set(seriesRows.map((s) => s.indicator_id))].filter(Boolean);
     if (ids.length === 0) {
-      this.finishIndicatorRecalc(securityId, null);
+      this.techLog.end(pollSpanId, { message: 'poll: no indicator ids' });
+      this.finishIndicatorRecalc(securityId, null, syncGen);
       return;
     }
 
-    const waitMs = attempt === 0 ? 500 : 2000;
+    const waitMs = attempt === 0 ? 500 : attempt < 5 ? 800 : 2000;
     const timer = setTimeout(() => {
       if (!this.timeframeId || !this.isSyncGenerationCurrent(securityId, syncGen)) {
+        this.techLog.end(pollSpanId, { message: 'poll timer: stale gen' });
         return;
       }
       this.securities
@@ -682,9 +870,22 @@ export class SecuritiesPanelComponent implements OnInit {
         .subscribe({
           next: (values) => {
             if (!this.isSyncGenerationCurrent(securityId, syncGen)) {
+              this.techLog.end(pollSpanId, { message: 'poll response: stale gen' });
               return;
             }
             if (values.length === 0) {
+              if (attempt === 0 || attempt % 5 === 0) {
+                this.logSyncEvent(
+                  securityId,
+                  syncGen,
+                  'indicator.poll.empty',
+                  `attempt=${attempt + 1}`,
+                  { waitMs }
+                );
+              }
+              if (!this.isSyncGenerationCurrent(securityId, syncGen)) {
+                return;
+              }
               this.pollIndicatorValuesAfterSync(
                 securityId,
                 indicatorIds,
@@ -692,7 +893,8 @@ export class SecuritiesPanelComponent implements OnInit {
                 range,
                 mergeOnly,
                 syncGen,
-                attempt + 1
+                attempt + 1,
+                pollSpanId
               );
               return;
             }
@@ -710,6 +912,9 @@ export class SecuritiesPanelComponent implements OnInit {
                 securityId,
                 `poll wait coverage: got=${values.length}, attempt=${attempt + 1}`
               );
+              if (!this.isSyncGenerationCurrent(securityId, syncGen)) {
+                return;
+              }
               this.pollIndicatorValuesAfterSync(
                 securityId,
                 indicatorIds,
@@ -717,7 +922,8 @@ export class SecuritiesPanelComponent implements OnInit {
                 range,
                 mergeOnly,
                 syncGen,
-                attempt + 1
+                attempt + 1,
+                pollSpanId
               );
               return;
             }
@@ -750,9 +956,24 @@ export class SecuritiesPanelComponent implements OnInit {
               securityId,
               `poll ok: points=${values.length}, gen=${syncGen ?? '—'}, merge=${mergeOnly}`
             );
-            this.finishIndicatorRecalc(securityId, null);
+            this.techLog.end(pollSpanId, {
+              message: 'poll ok',
+              payload: { points: values.length, attempt: attempt + 1 },
+            });
+            this.finishIndicatorRecalc(securityId, null, syncGen);
           },
           error: () => {
+            if (!this.isSyncGenerationCurrent(securityId, syncGen)) {
+              this.techLog.end(pollSpanId, { message: 'poll error: stale gen' });
+              return;
+            }
+            this.logSyncEvent(
+              securityId,
+              syncGen,
+              'indicator.poll.error',
+              `attempt=${attempt + 1}`,
+              {}
+            );
             if (!this.isSyncGenerationCurrent(securityId, syncGen)) {
               return;
             }
@@ -763,7 +984,8 @@ export class SecuritiesPanelComponent implements OnInit {
               range,
               mergeOnly,
               syncGen,
-              attempt + 1
+              attempt + 1,
+              pollSpanId
             );
           },
         });
@@ -934,6 +1156,9 @@ export class SecuritiesPanelComponent implements OnInit {
     if (state.loadingOlder || !state.hasMore || state.candles.length === 0) {
       return;
     }
+    this.logSyncEvent(securityId, null, 'chart.loadOlder', 'viewStart edge', {
+      candles: state.candles.length,
+    });
     this.loadChart(securityId, true);
   }
 
@@ -952,6 +1177,10 @@ export class SecuritiesPanelComponent implements OnInit {
 
     const syncGen = (this.indicatorSyncGen.get(securityId) ?? 0) + 1;
     this.indicatorSyncGen.set(securityId, syncGen);
+    this.syncTraceIds.set(
+      this.syncTraceKey(securityId, syncGen),
+      this.techLog.newTraceId(securityId, syncGen)
+    );
 
     this.clearIndicatorPoll(securityId);
     const prev = this.visibleRangeTimers.get(securityId);
@@ -970,11 +1199,19 @@ export class SecuritiesPanelComponent implements OnInit {
       securityId,
       `range user: gen=${syncGen}, debounce ${this.indicatorRangeDebounceMs}ms`
     );
+    this.logSyncEvent(
+      securityId,
+      syncGen,
+      'chart.visibleRange.user',
+      `${range.count} bars ${range.startDt}…${range.endDt}`,
+      { viewStart: range.viewStart }
+    );
 
     this.visibleRangeTimers.set(
       securityId,
       setTimeout(() => {
-        this.scheduleIndicatorRangeSync(securityId, range, syncGen);
+        const live = this.lastVisibleRange.get(securityId) ?? range;
+        this.scheduleIndicatorRangeSync(securityId, live, syncGen);
       }, this.indicatorRangeDebounceMs)
     );
   }
@@ -1227,12 +1464,35 @@ export class SecuritiesPanelComponent implements OnInit {
     const before =
       older && prev.candles.length > 0 ? prev.candles[0].dt : undefined;
 
+    if (!older) {
+      this.lastSyncedEndDt.delete(securityId);
+    }
+
     this.charts.set(securityId, {
       ...prev,
       loading: !older,
       loadingOlder: older,
       error: null,
     });
+
+    const loadSpan = older
+      ? this.techLog.start(
+          this.techLog.newTraceId(securityId),
+          this.techLog.threadKey(
+            securityId,
+            this.indicatorSyncGen.get(securityId) ?? undefined,
+            'loadOlder'
+          ),
+          'chart.loadOlder',
+          {
+            securityId,
+            timeframeId: this.timeframeId,
+            syncGen: this.indicatorSyncGen.get(securityId),
+            message: before ?? 'initial',
+            payload: { before: before ?? null },
+          }
+        )
+      : '';
 
     this.securities
       .getPrices(securityId, this.timeframeId, 120, before)
@@ -1249,6 +1509,10 @@ export class SecuritiesPanelComponent implements OnInit {
               dedup.length === 0
                 ? 'Нет свечей — нажмите «Загрузить цены»'
                 : null,
+          });
+          this.techLog.end(loadSpan, {
+            message: 'loadOlder done',
+            payload: { added: rows.length, total: dedup.length },
           });
           const expandGate = this.expandIndicatorGate.get(securityId);
           if (expandGate) {
@@ -1277,6 +1541,10 @@ export class SecuritiesPanelComponent implements OnInit {
           }
         },
         error: (err) => {
+          this.techLog.end(loadSpan, {
+            message: 'loadOlder error',
+            payload: { error: err?.message ?? String(err) },
+          });
           this.charts.set(securityId, {
             ...prev,
             loading: false,
@@ -1343,7 +1611,18 @@ export class SecuritiesPanelComponent implements OnInit {
       Math.max(range.count, 1),
       this.maxIndicatorCandles
     );
-    const incremental = opts?.incremental !== false;
+    const prevEnd = this.lastSyncedEndDt.get(securityId);
+    const movedLeft = prevEnd != null && range.endDt < prevEnd;
+    const incremental = opts?.incremental !== false && !movedLeft;
+    if (opts?.syncGen != null) {
+      this.logSyncEvent(
+        securityId,
+        opts.syncGen,
+        'indicator.sync.params',
+        movedLeft ? 'incremental=false (pan left)' : `incremental=${incremental}`,
+        { prevEnd: prevEnd ?? null, endDt: range.endDt, movedLeft }
+      );
+    }
 
     this.pendingSyncPointCount.set(securityId, pointCount);
     this.indicatorsLoading.delete(securityId);
@@ -1358,6 +1637,7 @@ export class SecuritiesPanelComponent implements OnInit {
       mergeOnly: false,
       syncGen: opts?.syncGen,
     });
+    this.lastSyncedEndDt.set(securityId, range.endDt);
     this.setIndicatorSyncDebug(
       securityId,
       `POST async sync: indicators=${assigned.length}, point_count=${pointCount}, gen=${opts?.syncGen ?? '—'}`

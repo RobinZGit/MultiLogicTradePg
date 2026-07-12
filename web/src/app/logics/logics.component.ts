@@ -129,6 +129,7 @@ export class LogicsComponent implements OnInit, OnDestroy {
   }
 
   toggleSignalsBlock(logicId: number, event: Event): void {
+    event.preventDefault();
     event.stopPropagation();
     if (this.expandedSignalsBlocks.has(logicId)) {
       this.expandedSignalsBlocks.delete(logicId);
