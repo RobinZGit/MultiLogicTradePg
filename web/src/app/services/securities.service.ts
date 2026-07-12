@@ -97,7 +97,7 @@ export class SecuritiesService {
         `${this.appConfig.apiUrl}/security-indicator-series`,
         body
       )
-      .pipe(timeout(120_000));
+      .pipe(timeout(30_000));
   }
 
   removeIndicatorSeries(id: number): Observable<{ ok: boolean }> {
@@ -137,6 +137,6 @@ export class SecuritiesService {
     return this.http.get<IndicatorValueRow[]>(
       `${this.appConfig.apiUrl}/indicator-values`,
       { params }
-    );
+    ).pipe(timeout(15_000));
   }
 }

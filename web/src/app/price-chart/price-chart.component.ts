@@ -295,6 +295,41 @@ export class PriceChartComponent implements AfterViewInit, OnChanges, OnDestroy 
     return this.indicatorSeries.some((s) => !s.on_price_scale);
   }
 
+  /** Индикаторы на шкале цены, для которых нужна явная линия y=0 (вторая разность и т.п.). */
+  private priceScaleAnchorsZero(): boolean {
+    return this.indicatorSeries.some(
+      (s) =>
+        s.on_price_scale &&
+        !s.is_threshold &&
+        ['PACC', 'MOM', 'ROC'].includes(s.indicator_code)
+    );
+  }
+
+  private drawReferenceLevel(
+    ctx: CanvasRenderingContext2D,
+    yScale: (v: number) => number,
+    value: number,
+    minV: number,
+    maxV: number,
+    left: number,
+    right: number,
+    label: string
+  ): void {
+    if (value < minV || value > maxV) return;
+    const y = yScale(value);
+    const axisSize = this.px(10);
+    ctx.strokeStyle = '#e5e7eb';
+    ctx.lineWidth = 1;
+    ctx.setLineDash([]);
+    ctx.beginPath();
+    ctx.moveTo(left, y);
+    ctx.lineTo(right, y);
+    ctx.stroke();
+    ctx.fillStyle = '#9ca3af';
+    ctx.font = `${axisSize}px system-ui, sans-serif`;
+    ctx.fillText(label, 4, y + Math.round(axisSize * 0.35));
+  }
+
   private valueAtDt(series: ChartIndicatorSeries, dt: string): number | null {
     const point = series.points.find((p) => p.dt === dt);
     return point != null ? point.value : null;
@@ -374,6 +409,11 @@ export class PriceChartComponent implements AfterViewInit, OnChanges, OnDestroy 
       }
     }
 
+    if (this.priceScaleAnchorsZero()) {
+      minP = Math.min(minP, 0);
+      maxP = Math.max(maxP, 0);
+    }
+
     const pricePad = (maxP - minP) * 0.06 || maxP * 0.001 || 1;
     minP -= pricePad;
     maxP += pricePad;
@@ -393,6 +433,17 @@ export class PriceChartComponent implements AfterViewInit, OnChanges, OnDestroy 
       ctx.font = `${axisSize}px system-ui, sans-serif`;
       ctx.fillText(p.toFixed(2), 4, y + Math.round(axisSize * 0.35));
     }
+
+    this.drawReferenceLevel(
+      ctx,
+      yScale,
+      0,
+      minP,
+      maxP,
+      pad.left,
+      cssW - pad.right,
+      '0'
+    );
 
     visible.forEach((c, i) => {
       const x = pad.left + i * cw + cw / 2;
@@ -445,10 +496,23 @@ export class PriceChartComponent implements AfterViewInit, OnChanges, OnDestroy 
         oscMin = 0;
         oscMax = 100;
       }
+      oscMin = Math.min(oscMin, 0);
+      oscMax = Math.max(oscMax, 0);
       const oscPad = (oscMax - oscMin) * 0.08 || 1;
       oscMin -= oscPad;
       oscMax += oscPad;
       const yOsc = (v: number) => oscTop + oscH - ((v - oscMin) / (oscMax - oscMin)) * oscH;
+
+      this.drawReferenceLevel(
+        ctx,
+        yOsc,
+        0,
+        oscMin,
+        oscMax,
+        pad.left,
+        cssW - pad.right,
+        '0'
+      );
 
       for (const s of oscSeries.filter((x) => x.is_threshold)) {
         this.drawThresholdLine(ctx, s, yOsc, pad.left, cssW - pad.right);

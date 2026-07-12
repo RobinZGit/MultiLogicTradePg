@@ -5,7 +5,7 @@
 > Включать **запросы пользователя текстом** (секция «Запросы пользователя»).
 
 **Репозиторий:** https://github.com/RobinZGit/MultiLogicTradePg  
-**Последнее обновление:** 2026-07-12
+**Последнее обновление:** 2026-07-12 (PACC, многочлены, линия нуля, fix hang)
 
 ---
 
@@ -69,7 +69,9 @@
 
 ### Индикаторы и logics
 
-- справочник `indicators` (30 шт.), реализовано **7** (RSI, SMA, EMA, MACD, BB, ATR, STOCH);
+- справочник `indicators` (31 шт.), реализовано **8** (RSI, SMA, EMA, MACD, BB, ATR, STOCH, **PACC**);
+- **PACC** (Price Acceleration): формула `pp * (1; -2; 1)` — парсер многочленов (`poly_*`, `calc_poly_formula_array`) в `02`;
+- `invoke_formula` в `security_indicator_series`: если не `calc_*` — многочленная формула; иначе `calc_ind_*_array`;
 - `logics` + `logics_detail` — движок формул **ещё не реализован**;
 - UI: logics, logic-editor, securities-panel (загрузка цен).
 
@@ -89,7 +91,8 @@
 14. Функции **`calc_ind_*_array`** — один проход по ценам, возвращают `TABLE(dt, value)`; процедуры `ensure_security_indicator_series`, `sync_security_indicator_series(_all)`.
 15. API: `GET/POST/DELETE /api/security-indicator-series`, `POST /api/security-indicator-series/sync`, `GET /api/indicator-values`.
 16. UI: drag → создание всех серий индикатора + sync; список серий с удалением; график через sync (инкрементально при прокрутке).
-17. **График цен:** панель (↻ пересчёт, ± zoom, ◀▶, ⛶ полный экран); колёсико/pinch; инкрементальный sync индикаторов по видимому окну; в fullscreen подписи осей/легенды/даты **×1.55**.
+17. **График цен:** панель (↻ пересчёт, ± zoom, ◀▶, ⛶ полный экран); колёсико/pinch; инкрементальный sync по видимому окну; fullscreen подписи **×1.55**; **линия y=0** на шкале цены (PACC) и в панели OSC (MACD и др.).
+18. **Fix hang при добавлении индикатора:** POST `/api/security-indicator-series` без полного sync; расчёт — отдельно через `/sync`; прогресс «Добавление…» / «Расчёт…»; `insert_indicator_value` через UPSERT.
 
 ### Автотесты
 
@@ -133,7 +136,7 @@
 
 ## Заметки для агента
 
-- Коммиты — **только по запросу** пользователя.
+- Коммиты и push — **по запросу** пользователя (2026-07-12: push после PACC + zero line).
 - При **выкладке** — обязательно обновить этот файл (правило `.cursor/rules/project-context.mdc`).
 - Sergey — **2–3 устройства**; в начале сессии читать этот файл + `git log`.
 - Язык: русский (English note — только если пользователь пишет по-английски).
@@ -151,6 +154,7 @@
 | 2026-07-12 | TRUNCATE + load test; fix вечный CNYRUBF; правило контекста при выкладке |
 | 2026-07-12 | security_indicator_series, calc_ind_*_array, sync инкрементальный |
 | 2026-07-12 | verify-indicators, test:unit, fullscreen график, fix expand hang |
+| 2026-07-12 | PACC + poly parser; fix hang assign; линия нуля на графике; push в репо |
 
 ---
 
@@ -182,3 +186,6 @@
 12. «Автотесты на expand без цен + prebuild».
 13. «Загрузка цен без T-Bank — MOEX D1/H1; M15 нужен токен».
 14. «На графике пересчёт индикаторов; полный экран с zoom/pan; крупнее подписи в fullscreen; выложить в репо».
+15. «Индикатор ускорения цены PACC, парсер многочленов, формула pp*(1;-2;1)».
+16. «Зависание при добавлении PACC на ALRS — fix + прогресс».
+17. «Линия нуля на графике (fullscreen и обычный); обновить контекст; выложить в репо».

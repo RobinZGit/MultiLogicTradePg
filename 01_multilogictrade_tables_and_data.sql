@@ -473,6 +473,7 @@ INSERT INTO indicators (code, name, description, category) VALUES
     ('STOCH', 'Stochastic Oscillator', 'Стохастический осциллятор (%K, %D)', 'momentum'),
     ('BB', 'Bollinger Bands', 'Полосы Боллинджера', 'volatility'),
     ('ATR', 'Average True Range', 'Средний истинный диапазон', 'volatility'),
+    ('PACC', 'Price Acceleration', 'Ускорение цены', 'momentum'),
     ('ADX', 'Average Directional Index', 'Индекс среднего направления', 'trend'),
     ('OBV', 'On-Balance Volume', 'Накопленный объем', 'volume'),
     ('VWAP', 'Volume Weighted Average Price', 'Объемно-взвешенная средняя цена', 'volume'),
@@ -505,6 +506,7 @@ UPDATE indicators SET script = 'SELECT calc_ind_macd(:fast_period, :slow_period,
 UPDATE indicators SET script = 'SELECT calc_ind_bb(:period, :std_dev, :series, :security_id, :timeframe_id, :dt, :indicator_id)' WHERE code = 'BB';
 UPDATE indicators SET script = 'SELECT calc_ind_atr(:period, :series, :security_id, :timeframe_id, :dt, :indicator_id)' WHERE code = 'ATR';
 UPDATE indicators SET script = 'SELECT calc_ind_stoch(:k_period, :d_period, :smooth, :series, :security_id, :timeframe_id, :dt, :indicator_id)' WHERE code = 'STOCH';
+UPDATE indicators SET script = 'pp * (1; -2; 1)' WHERE code = 'PACC';
 
 -- Подробные описания индикаторов с функциями расчёта в PostgreSQL
 UPDATE indicators SET description = $desc$
@@ -577,6 +579,18 @@ Stochastic Oscillator (STOCH) — стохастический осциллят�
 Применение: тайминг входа на коррекциях в тренде, скальпинг и intraday, комбинация с уровнями и трендовыми фильтрами (MA, ADX).
 $desc$ WHERE code = 'STOCH';
 
+UPDATE indicators SET description = $desc$
+Price Acceleration (PACC) — ускорение цены
+
+Расчёт: вторая разность цены закрытия — дискретный аналог второй производной по времени.
+Формула в терминах многочленов MultiLogic: pp * (1; -2; 1), где pp — ряд Close, оператор * — свёртка (см. MultiLogic PolynomialIndicators).
+На баре k: a_k = p_k − 2·p_{k−1} + p_{k−2}. Показывает, ускоряется или замедляется движение цены.
+
+Сигналы: смена знака ускорения — возможный разворот импульса; положительное ускорение на растущей цене — усиление тренда; отрицательное — замедление роста или усиление падения.
+
+Применение: фильтр импульса, подтверждение пробоев, оценка «кривизны» траектории цены; линия строится на шкале цены (как SMA).
+$desc$ WHERE code = 'PACC';
+
 -- ============================================
 -- Таблица: indicator_value_types (линии индикаторов)
 -- ============================================
@@ -618,6 +632,7 @@ JOIN (VALUES
     ('BB', 'BANDWIDTH', 'Ширина полос', 'float', FALSE, NULL, 'Bandwidth', 4),
     ('ATR', 'ATR', 'Значение ATR', 'float', FALSE, NULL, 'ATR', 1),
     ('ATR', 'ATR_PCT', 'ATR в процентах', 'float', FALSE, NULL, 'ATR %', 2),
+    ('PACC', 'VALUE', 'Ускорение цены', 'float', FALSE, NULL, 'pp * (1;-2;1)', 1),
     ('SMA', 'VALUE', 'Значение MA', 'float', FALSE, NULL, 'SMA value', 1),
     ('EMA', 'VALUE', 'Значение EMA', 'float', FALSE, NULL, 'EMA value', 1),
     ('WMA', 'VALUE', 'Значение WMA', 'float', FALSE, NULL, 'WMA value', 1)
@@ -657,7 +672,7 @@ CREATE INDEX IF NOT EXISTS idx_security_indicator_series_indicator_id
     ON security_indicator_series(indicator_id);
 
 COMMENT ON TABLE security_indicator_series IS
-'Привязка серий индикатора к бумаге: invoke_formula → calc_ind_*_array(…, series, security_id, timeframe_id, point_count, end_dt)';
+'Привязка серий индикатора к бумаге: invoke_formula — calc_ind_*_array(…) или многочленная формула (pp * (1;-2;1), @SMA, …)';
 
 -- Пример: SBER + STOCH, серии %K и %D с параметрами по умолчанию
 INSERT INTO security_indicator_series (
@@ -673,6 +688,17 @@ CROSS JOIN (
         ('K', 'calc_ind_stoch_array(:param_k_period, :param_d_period, :param_smooth, :series, :security_id, :timeframe_id, :point_count, :end_dt)', 1),
         ('D', 'calc_ind_stoch_array(:param_k_period, :param_d_period, :param_smooth, :series, :security_id, :timeframe_id, :point_count, :end_dt)', 2)
 ) AS v(series_code, formula, ord)
+ON CONFLICT (security_id, indicator_id, series_code) DO NOTHING;
+
+-- Пример: SBER + PACC (ускорение цены), многочленная формула по умолчанию
+INSERT INTO security_indicator_series (
+    security_id, indicator_id, series_code, invoke_formula,
+    point_count, display_order
+)
+SELECT s.id, i.id, 'VALUE', 'pp * (1; -2; 1)', 100, 3
+FROM securities s
+JOIN security_prefixes sp ON sp.security_id = s.id AND sp.prefix = 'SBER'
+JOIN indicators i ON i.code = 'PACC'
 ON CONFLICT (security_id, indicator_id, series_code) DO NOTHING;
 
 -- ============================================

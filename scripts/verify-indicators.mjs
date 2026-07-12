@@ -203,6 +203,56 @@ try {
     1
   );
 
+  // PACC: многочленная формула pp * (1;-2;1)
+  const paccId = runPsql(psql, `SELECT id::text FROM indicators WHERE code = 'PACC' LIMIT 1`);
+  runPsql(psql, `CALL ensure_security_indicator_series(${sberId}, ${paccId})`);
+
+  const paccSeriesId = runPsql(
+    psql,
+    `SELECT id::text FROM security_indicator_series
+     WHERE security_id = ${sberId} AND indicator_id = ${paccId} LIMIT 1`
+  );
+
+  assertEq(
+    'PACC invoke_formula is polynomial',
+    runPsql(
+      psql,
+      `SELECT CASE WHEN poly_is_formula(invoke_formula) THEN 1 ELSE 0 END::text
+       FROM security_indicator_series
+       WHERE security_id = ${sberId} AND indicator_id = ${paccId} LIMIT 1`
+    ),
+    '1'
+  );
+
+  runPsql(
+    psql,
+    `CALL sync_security_indicator_series(${paccSeriesId}, ${m15Id}, NULL, 20, FALSE)`
+  );
+
+  assertGte(
+    'PACC indicator_values after sync',
+    runPsql(
+      psql,
+      `SELECT COUNT(*)::text FROM indicator_values iv
+       WHERE iv.security_id = ${sberId} AND iv.timeframe_id = ${m15Id}
+         AND iv.indicator_id = ${paccId}`
+    ),
+    1
+  );
+
+  // Линейный ряд close → вторая разность ≈ 0
+  const paccLast = runPsql(
+    psql,
+    `SELECT ABS(value)::text FROM indicator_values
+     WHERE security_id = ${sberId} AND timeframe_id = ${m15Id} AND indicator_id = ${paccId}
+     ORDER BY dt DESC LIMIT 1`
+  );
+  if (Number(paccLast) > 0.001) {
+    console.error(`verify-indicators: FAIL PACC linear close accel: expected ~0, got ${paccLast}`);
+    process.exit(1);
+  }
+  console.log('verify-indicators: OK PACC linear close accel ~0');
+
   console.log('\nverify-indicators: OK — индикаторы и серии работают');
 } catch (err) {
   console.error('verify-indicators:', err.message);

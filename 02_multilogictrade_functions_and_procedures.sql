@@ -1725,6 +1725,847 @@ BEGIN
 END;
 $$;
 
+-- ============================================
+-- Многочленные индикаторы: парсинг и вычисление
+-- Синтаксис по MultiLogic PolynomialIndicators:
+--   pp oo hh ll vv — OHLCV; (a; b; c) — ядро; * — свёртка; # /# — покомпонентно; @CODE — индикатор
+-- ============================================
+
+CREATE OR REPLACE FUNCTION poly_is_formula(p_formula TEXT)
+RETURNS BOOLEAN
+LANGUAGE sql IMMUTABLE AS $$
+    SELECT COALESCE(btrim(p_formula), '') <> ''
+       AND btrim(p_formula) !~* '^calc_';
+$$;
+
+CREATE OR REPLACE FUNCTION poly_len(p_arr NUMERIC[])
+RETURNS INTEGER
+LANGUAGE sql IMMUTABLE AS $$
+    SELECT COALESCE(array_length(p_arr, 1), 0);
+$$;
+
+CREATE OR REPLACE FUNCTION poly_extend(p_arr NUMERIC[], p_len INTEGER)
+RETURNS NUMERIC[]
+LANGUAGE plpgsql IMMUTABLE AS $$
+DECLARE
+    v_n INTEGER := poly_len(p_arr);
+    v_out NUMERIC[];
+    i INTEGER;
+BEGIN
+    IF p_len <= 0 THEN RETURN ARRAY[]::NUMERIC[]; END IF;
+    IF v_n = 0 THEN RETURN array_fill(0::NUMERIC, ARRAY[p_len]); END IF;
+    IF v_n = 1 THEN RETURN array_fill(p_arr[1], ARRAY[p_len]); END IF;
+    IF v_n >= p_len THEN RETURN p_arr[1:p_len]; END IF;
+    v_out := p_arr;
+    FOR i IN v_n + 1 .. p_len LOOP
+        v_out := array_append(v_out, 0::NUMERIC);
+    END LOOP;
+    RETURN v_out;
+END;
+$$;
+
+CREATE OR REPLACE FUNCTION poly_align2(
+    p_a NUMERIC[],
+    p_b NUMERIC[]
+)
+RETURNS TABLE (a NUMERIC[], b NUMERIC[])
+LANGUAGE plpgsql IMMUTABLE AS $$
+DECLARE
+    v_len INTEGER;
+BEGIN
+    v_len := GREATEST(poly_len(p_a), poly_len(p_b));
+    a := poly_extend(p_a, v_len);
+    b := poly_extend(p_b, v_len);
+    RETURN NEXT;
+END;
+$$;
+
+CREATE OR REPLACE FUNCTION poly_add(p_a NUMERIC[], p_b NUMERIC[])
+RETURNS NUMERIC[]
+LANGUAGE plpgsql IMMUTABLE AS $$
+DECLARE
+    v_row RECORD;
+    v_i INTEGER;
+    v_out NUMERIC[];
+BEGIN
+    SELECT * INTO v_row FROM poly_align2(p_a, p_b);
+    v_out := ARRAY[]::NUMERIC[];
+    FOR v_i IN 1 .. poly_len(v_row.a) LOOP
+        v_out := array_append(v_out, COALESCE(v_row.a[v_i], 0) + COALESCE(v_row.b[v_i], 0));
+    END LOOP;
+    RETURN v_out;
+END;
+$$;
+
+CREATE OR REPLACE FUNCTION poly_sub(p_a NUMERIC[], p_b NUMERIC[])
+RETURNS NUMERIC[]
+LANGUAGE plpgsql IMMUTABLE AS $$
+DECLARE
+    v_row RECORD;
+    v_i INTEGER;
+    v_out NUMERIC[];
+BEGIN
+    SELECT * INTO v_row FROM poly_align2(p_a, p_b);
+    v_out := ARRAY[]::NUMERIC[];
+    FOR v_i IN 1 .. poly_len(v_row.a) LOOP
+        v_out := array_append(v_out, COALESCE(v_row.a[v_i], 0) - COALESCE(v_row.b[v_i], 0));
+    END LOOP;
+    RETURN v_out;
+END;
+$$;
+
+CREATE OR REPLACE FUNCTION poly_neg(p_a NUMERIC[])
+RETURNS NUMERIC[]
+LANGUAGE plpgsql IMMUTABLE AS $$
+DECLARE
+    v_i INTEGER;
+    v_out NUMERIC[] := ARRAY[]::NUMERIC[];
+BEGIN
+    FOR v_i IN 1 .. poly_len(p_a) LOOP
+        v_out := array_append(v_out, -p_a[v_i]);
+    END LOOP;
+    RETURN v_out;
+END;
+$$;
+
+CREATE OR REPLACE FUNCTION poly_comp_mul(p_a NUMERIC[], p_b NUMERIC[])
+RETURNS NUMERIC[]
+LANGUAGE plpgsql IMMUTABLE AS $$
+DECLARE
+    v_row RECORD;
+    v_i INTEGER;
+    v_out NUMERIC[];
+BEGIN
+    SELECT * INTO v_row FROM poly_align2(p_a, p_b);
+    v_out := ARRAY[]::NUMERIC[];
+    FOR v_i IN 1 .. poly_len(v_row.a) LOOP
+        v_out := array_append(v_out, COALESCE(v_row.a[v_i], 0) * COALESCE(v_row.b[v_i], 0));
+    END LOOP;
+    RETURN v_out;
+END;
+$$;
+
+CREATE OR REPLACE FUNCTION poly_comp_div(p_a NUMERIC[], p_b NUMERIC[])
+RETURNS NUMERIC[]
+LANGUAGE plpgsql IMMUTABLE AS $$
+DECLARE
+    v_row RECORD;
+    v_i INTEGER;
+    v_out NUMERIC[];
+    v_den NUMERIC;
+BEGIN
+    SELECT * INTO v_row FROM poly_align2(p_a, p_b);
+    v_out := ARRAY[]::NUMERIC[];
+    FOR v_i IN 1 .. poly_len(v_row.a) LOOP
+        v_den := COALESCE(v_row.b[v_i], 0);
+        IF v_den = 0 THEN
+            v_out := array_append(v_out, NULL);
+        ELSE
+            v_out := array_append(v_out, COALESCE(v_row.a[v_i], 0) / v_den);
+        END IF;
+    END LOOP;
+    RETURN v_out;
+END;
+$$;
+
+CREATE OR REPLACE FUNCTION poly_convolve(p_a NUMERIC[], p_b NUMERIC[])
+RETURNS NUMERIC[]
+LANGUAGE plpgsql IMMUTABLE AS $$
+DECLARE
+    v_na INTEGER := poly_len(p_a);
+    v_nb INTEGER := poly_len(p_b);
+    v_out NUMERIC[];
+    i INTEGER;
+    j INTEGER;
+    v_sum NUMERIC;
+BEGIN
+    IF v_na = 0 OR v_nb = 0 THEN RETURN ARRAY[]::NUMERIC[]; END IF;
+    v_out := array_fill(0::NUMERIC, ARRAY[v_na]);
+    FOR i IN 1 .. v_na LOOP
+        v_sum := 0;
+        FOR j IN 1 .. v_nb LOOP
+            IF i - j + 1 >= 1 AND i - j + 1 <= v_na THEN
+                v_sum := v_sum + p_a[i - j + 1] * p_b[j];
+            END IF;
+        END LOOP;
+        v_out[i] := v_sum;
+    END LOOP;
+    RETURN v_out;
+END;
+$$;
+
+CREATE OR REPLACE FUNCTION poly_delta_kernel(p_k INTEGER)
+RETURNS NUMERIC[]
+LANGUAGE plpgsql IMMUTABLE AS $$
+DECLARE
+    v_out NUMERIC[];
+    i INTEGER;
+BEGIN
+    IF p_k < 0 THEN
+        RAISE EXCEPTION 'poly_delta_kernel: k must be >= 0, got %', p_k;
+    END IF;
+    v_out := array_fill(0::NUMERIC, ARRAY[p_k + 1]);
+    v_out[p_k + 1] := 1;
+    RETURN v_out;
+END;
+$$;
+
+CREATE OR REPLACE FUNCTION poly_tokenize(p_formula TEXT)
+RETURNS TEXT[]
+LANGUAGE plpgsql IMMUTABLE AS $$
+DECLARE
+    v_src TEXT := COALESCE(p_formula, '');
+    v_len INTEGER := length(v_src);
+    v_i INTEGER := 1;
+    v_c TEXT;
+    v_tokens TEXT[] := ARRAY[]::TEXT[];
+    v_buf TEXT;
+    v_num TEXT;
+    v_peek TEXT;
+    v_j INTEGER;
+BEGIN
+    WHILE v_i <= v_len LOOP
+        v_c := substr(v_src, v_i, 1);
+        IF v_c ~ '\s' THEN
+            v_i := v_i + 1;
+            CONTINUE;
+        END IF;
+
+        IF v_c = '(' THEN
+            v_j := v_i + 1;
+            WHILE v_j <= v_len AND substr(v_src, v_j, 1) ~ '\s' LOOP v_j := v_j + 1; END LOOP;
+            IF v_j <= v_len AND substr(v_src, v_j, 1) ~ '[0-9.\-+]' THEN
+                v_buf := '';
+                v_j := v_i + 1;
+                WHILE v_j <= v_len LOOP
+                    v_peek := substr(v_src, v_j, 1);
+                    IF v_peek ~ '[0-9.\-+eE,; ]' THEN
+                        IF v_peek !~ '\s' THEN v_buf := v_buf || v_peek; END IF;
+                        v_j := v_j + 1;
+                    ELSE
+                        EXIT;
+                    END IF;
+                END LOOP;
+                IF v_j <= v_len AND substr(v_src, v_j, 1) = ')'
+                   AND (position(';' IN v_buf) > 0 OR position(',' IN v_buf) > 0) THEN
+                    v_buf := replace(replace(v_buf, ';', ','), ' ', '');
+                    v_tokens := array_append(v_tokens, 'VEC:' || v_buf);
+                    v_i := v_j + 1;
+                    CONTINUE;
+                END IF;
+            END IF;
+            v_tokens := array_append(v_tokens, 'LP');
+            v_i := v_i + 1;
+            CONTINUE;
+        END IF;
+
+        IF v_c = ')' THEN
+            v_tokens := array_append(v_tokens, 'RP');
+            v_i := v_i + 1;
+            CONTINUE;
+        END IF;
+
+        IF v_c = '@' THEN
+            v_buf := '';
+            v_i := v_i + 1;
+            WHILE v_i <= v_len LOOP
+                v_peek := substr(v_src, v_i, 1);
+                EXIT WHEN v_peek !~ '[A-Za-z0-9_]';
+                v_buf := v_buf || v_peek;
+                v_i := v_i + 1;
+            END LOOP;
+            IF v_buf = '' THEN
+                RAISE EXCEPTION 'poly_tokenize: empty indicator reference at position %', v_i;
+            END IF;
+            IF v_i <= v_len AND substr(v_src, v_i, 1) = ':' THEN
+                v_i := v_i + 1;
+                v_num := '';
+                WHILE v_i <= v_len LOOP
+                    v_peek := substr(v_src, v_i, 1);
+                    EXIT WHEN v_peek !~ '[A-Za-z0-9_]';
+                    v_num := v_num || v_peek;
+                    v_i := v_i + 1;
+                END LOOP;
+                v_tokens := array_append(v_tokens, 'IND:' || upper(v_buf) || ':' || upper(v_num));
+            ELSE
+                v_tokens := array_append(v_tokens, 'IND:' || upper(v_buf));
+            END IF;
+            CONTINUE;
+        END IF;
+
+        IF v_c ~ '[A-Za-z]' THEN
+            v_buf := v_c;
+            v_i := v_i + 1;
+            WHILE v_i <= v_len LOOP
+                v_peek := substr(v_src, v_i, 1);
+                EXIT WHEN v_peek !~ '[A-Za-z0-9_]';
+                v_buf := v_buf || v_peek;
+                v_i := v_i + 1;
+            END LOOP;
+            IF lower(v_buf) IN ('dd', 'delta') THEN
+                WHILE v_i <= v_len AND substr(v_src, v_i, 1) ~ '\s' LOOP v_i := v_i + 1; END LOOP;
+                IF v_i > v_len OR substr(v_src, v_i, 1) <> '(' THEN
+                    RAISE EXCEPTION 'poly_tokenize: expected ( after %', v_buf;
+                END IF;
+                v_i := v_i + 1;
+                v_num := '';
+                WHILE v_i <= v_len LOOP
+                    v_peek := substr(v_src, v_i, 1);
+                    IF v_peek ~ '[0-9]' THEN
+                        v_num := v_num || v_peek;
+                        v_i := v_i + 1;
+                    ELSIF v_peek ~ '\s' THEN
+                        v_i := v_i + 1;
+                    ELSE
+                        EXIT;
+                    END IF;
+                END LOOP;
+                IF v_i > v_len OR substr(v_src, v_i, 1) <> ')' OR v_num = '' THEN
+                    RAISE EXCEPTION 'poly_tokenize: invalid dd(k) at position %', v_i;
+                END IF;
+                v_tokens := array_append(v_tokens, 'DD:' || v_num);
+                v_i := v_i + 1;
+                CONTINUE;
+            END IF;
+            v_tokens := array_append(v_tokens, 'ID:' || lower(v_buf));
+            CONTINUE;
+        END IF;
+
+        IF v_c ~ '[0-9.]' OR (v_c = '-' AND v_i < v_len AND substr(v_src, v_i + 1, 1) ~ '[0-9.]') THEN
+            v_num := v_c;
+            v_i := v_i + 1;
+            WHILE v_i <= v_len AND substr(v_src, v_i, 1) ~ '[0-9.eE+-]' LOOP
+                v_num := v_num || substr(v_src, v_i, 1);
+                v_i := v_i + 1;
+            END LOOP;
+            v_tokens := array_append(v_tokens, 'NUM:' || v_num);
+            CONTINUE;
+        END IF;
+
+        IF v_c = '/' AND v_i < v_len AND substr(v_src, v_i + 1, 1) = '#' THEN
+            v_tokens := array_append(v_tokens, 'OP:/#');
+            v_i := v_i + 2;
+            CONTINUE;
+        END IF;
+
+        IF v_c IN ('+', '-', '*', '#') THEN
+            v_tokens := array_append(v_tokens, 'OP:' || v_c);
+            v_i := v_i + 1;
+            CONTINUE;
+        END IF;
+
+        RAISE EXCEPTION 'poly_tokenize: unexpected character % at position %', v_c, v_i;
+    END LOOP;
+    RETURN v_tokens;
+END;
+$$;
+
+CREATE OR REPLACE FUNCTION poly_peek_token(p_tokens TEXT[], p_pos INTEGER)
+RETURNS TEXT
+LANGUAGE sql IMMUTABLE AS $$
+    SELECT CASE WHEN p_pos >= 1 AND p_pos <= COALESCE(array_length(p_tokens, 1), 0)
+                THEN p_tokens[p_pos] ELSE NULL END;
+$$;
+
+CREATE OR REPLACE FUNCTION poly_parse_atom(
+    p_tokens TEXT[],
+    p_pos INTEGER
+)
+RETURNS JSONB
+LANGUAGE plpgsql IMMUTABLE AS $$
+DECLARE
+    v_t TEXT;
+    v_parts TEXT[];
+    v_vec NUMERIC[];
+    v_inner JSONB;
+    i INTEGER;
+    v_pos INTEGER := p_pos;
+BEGIN
+    v_t := poly_peek_token(p_tokens, v_pos);
+    IF v_t IS NULL THEN
+        RAISE EXCEPTION 'poly_parse: unexpected end of formula';
+    END IF;
+
+    IF v_t = 'LP' THEN
+        v_pos := v_pos + 1;
+        v_inner := poly_parse_add(p_tokens, v_pos);
+        v_pos := (v_inner ->> 'p')::INTEGER;
+        IF poly_peek_token(p_tokens, v_pos) <> 'RP' THEN
+            RAISE EXCEPTION 'poly_parse: expected )';
+        END IF;
+        RETURN jsonb_build_object('n', v_inner -> 'n', 'p', v_pos + 1);
+    END IF;
+
+    IF v_t LIKE 'ID:%' THEN
+        RETURN jsonb_build_object('n', jsonb_build_object('var', substr(v_t, 4)), 'p', v_pos + 1);
+    END IF;
+
+    IF v_t LIKE 'NUM:%' THEN
+        RETURN jsonb_build_object('n', jsonb_build_object('num', substr(v_t, 5)::NUMERIC), 'p', v_pos + 1);
+    END IF;
+
+    IF v_t LIKE 'VEC:%' THEN
+        v_parts := string_to_array(substr(v_t, 5), ',');
+        v_vec := ARRAY[]::NUMERIC[];
+        FOR i IN 1 .. COALESCE(array_length(v_parts, 1), 0) LOOP
+            v_vec := array_append(v_vec, btrim(v_parts[i])::NUMERIC);
+        END LOOP;
+        RETURN jsonb_build_object('n', jsonb_build_object('vec', to_jsonb(v_vec)), 'p', v_pos + 1);
+    END IF;
+
+    IF v_t LIKE 'DD:%' THEN
+        RETURN jsonb_build_object('n', jsonb_build_object('dd', (substr(v_t, 4))::INTEGER), 'p', v_pos + 1);
+    END IF;
+
+    IF v_t LIKE 'IND:%' THEN
+        v_parts := string_to_array(substr(v_t, 5), ':');
+        IF array_length(v_parts, 1) = 1 THEN
+            RETURN jsonb_build_object(
+                'n', jsonb_build_object('ind', jsonb_build_object('code', v_parts[1], 'series', NULL)),
+                'p', v_pos + 1
+            );
+        END IF;
+        RETURN jsonb_build_object(
+            'n', jsonb_build_object('ind', jsonb_build_object('code', v_parts[1], 'series', v_parts[2])),
+            'p', v_pos + 1
+        );
+    END IF;
+
+    RAISE EXCEPTION 'poly_parse: unexpected token %', v_t;
+END;
+$$;
+
+CREATE OR REPLACE FUNCTION poly_parse_unary(
+    p_tokens TEXT[],
+    p_pos INTEGER
+)
+RETURNS JSONB
+LANGUAGE plpgsql IMMUTABLE AS $$
+DECLARE
+    v_inner JSONB;
+BEGIN
+    IF poly_peek_token(p_tokens, p_pos) = 'OP:-' THEN
+        v_inner := poly_parse_unary(p_tokens, p_pos + 1);
+        RETURN jsonb_build_object(
+            'n', jsonb_build_object('op', 'neg', 'arg', v_inner -> 'n'),
+            'p', (v_inner ->> 'p')::INTEGER
+        );
+    END IF;
+    RETURN poly_parse_atom(p_tokens, p_pos);
+END;
+$$;
+
+CREATE OR REPLACE FUNCTION poly_parse_comp(
+    p_tokens TEXT[],
+    p_pos INTEGER
+)
+RETURNS JSONB
+LANGUAGE plpgsql IMMUTABLE AS $$
+DECLARE
+    v_left JSONB;
+    v_right JSONB;
+    v_op TEXT;
+    v_pos INTEGER;
+BEGIN
+    v_left := poly_parse_unary(p_tokens, p_pos);
+    v_pos := (v_left ->> 'p')::INTEGER;
+    v_left := v_left -> 'n';
+
+    WHILE poly_peek_token(p_tokens, v_pos) IN ('OP:#', 'OP:/#') LOOP
+        v_op := substr(poly_peek_token(p_tokens, v_pos), 4);
+        v_pos := v_pos + 1;
+        v_right := poly_parse_unary(p_tokens, v_pos);
+        v_pos := (v_right ->> 'p')::INTEGER;
+        IF v_op = '#' THEN
+            v_left := jsonb_build_object('op', 'cmul', 'left', v_left, 'right', v_right -> 'n');
+        ELSE
+            v_left := jsonb_build_object('op', 'cdiv', 'left', v_left, 'right', v_right -> 'n');
+        END IF;
+    END LOOP;
+
+    RETURN jsonb_build_object('n', v_left, 'p', v_pos);
+END;
+$$;
+
+CREATE OR REPLACE FUNCTION poly_parse_conv(
+    p_tokens TEXT[],
+    p_pos INTEGER
+)
+RETURNS JSONB
+LANGUAGE plpgsql IMMUTABLE AS $$
+DECLARE
+    v_left JSONB;
+    v_right JSONB;
+    v_pos INTEGER;
+BEGIN
+    v_left := poly_parse_comp(p_tokens, p_pos);
+    v_pos := (v_left ->> 'p')::INTEGER;
+    v_left := v_left -> 'n';
+
+    WHILE poly_peek_token(p_tokens, v_pos) = 'OP:*' LOOP
+        v_pos := v_pos + 1;
+        v_right := poly_parse_comp(p_tokens, v_pos);
+        v_pos := (v_right ->> 'p')::INTEGER;
+        v_left := jsonb_build_object('op', 'conv', 'left', v_left, 'right', v_right -> 'n');
+    END LOOP;
+
+    RETURN jsonb_build_object('n', v_left, 'p', v_pos);
+END;
+$$;
+
+CREATE OR REPLACE FUNCTION poly_parse_add(
+    p_tokens TEXT[],
+    p_pos INTEGER
+)
+RETURNS JSONB
+LANGUAGE plpgsql IMMUTABLE AS $$
+DECLARE
+    v_left JSONB;
+    v_right JSONB;
+    v_op TEXT;
+    v_pos INTEGER;
+BEGIN
+    v_left := poly_parse_conv(p_tokens, p_pos);
+    v_pos := (v_left ->> 'p')::INTEGER;
+    v_left := v_left -> 'n';
+
+    WHILE poly_peek_token(p_tokens, v_pos) IN ('OP:+', 'OP:-') LOOP
+        v_op := substr(poly_peek_token(p_tokens, v_pos), 4);
+        v_pos := v_pos + 1;
+        v_right := poly_parse_conv(p_tokens, v_pos);
+        v_pos := (v_right ->> 'p')::INTEGER;
+        IF v_op = '+' THEN
+            v_left := jsonb_build_object('op', 'add', 'left', v_left, 'right', v_right -> 'n');
+        ELSE
+            v_left := jsonb_build_object('op', 'sub', 'left', v_left, 'right', v_right -> 'n');
+        END IF;
+    END LOOP;
+
+    RETURN jsonb_build_object('n', v_left, 'p', v_pos);
+END;
+$$;
+
+CREATE OR REPLACE FUNCTION poly_parse(p_formula TEXT)
+RETURNS JSONB
+LANGUAGE plpgsql STABLE AS $$
+DECLARE
+    v_tokens TEXT[];
+    v_pos INTEGER := 1;
+    v_step JSONB;
+BEGIN
+    v_tokens := poly_tokenize(p_formula);
+    IF COALESCE(array_length(v_tokens, 1), 0) = 0 THEN
+        RAISE EXCEPTION 'poly_parse: empty formula';
+    END IF;
+    v_step := poly_parse_add(v_tokens, v_pos);
+    v_pos := (v_step ->> 'p')::INTEGER;
+    IF v_pos <= COALESCE(array_length(v_tokens, 1), 0) THEN
+        RAISE EXCEPTION 'poly_parse: trailing tokens at position % (%)', v_pos, v_tokens[v_pos];
+    END IF;
+    RETURN v_step -> 'n';
+END;
+$$;
+
+CREATE OR REPLACE FUNCTION poly_load_market_array(
+    p_field TEXT,
+    p_security_id INTEGER,
+    p_timeframe_id INTEGER,
+    p_end_dt TIMESTAMP,
+    p_bars INTEGER
+)
+RETURNS NUMERIC[]
+LANGUAGE plpgsql STABLE AS $$
+DECLARE
+    v_arr NUMERIC[];
+    v_field TEXT := lower(btrim(p_field));
+BEGIN
+    SELECT array_agg(x.v ORDER BY x.dt)
+    INTO v_arr
+    FROM (
+        SELECT p.dt,
+               CASE v_field
+                   WHEN 'pp' THEN p.close_price
+                   WHEN 'oo' THEN p.open_price
+                   WHEN 'hh' THEN p.high_price
+                   WHEN 'll' THEN p.low_price
+                   WHEN 'vv' THEN p.volume::NUMERIC
+                   ELSE NULL
+               END AS v
+        FROM prices p
+        WHERE p.security_id = p_security_id
+          AND p.timeframe_id = p_timeframe_id
+          AND p.dt <= p_end_dt
+        ORDER BY p.dt DESC
+        LIMIT p_bars
+    ) x;
+    RETURN COALESCE(v_arr, ARRAY[]::NUMERIC[]);
+END;
+$$;
+
+CREATE OR REPLACE FUNCTION poly_load_market_dts(
+    p_security_id INTEGER,
+    p_timeframe_id INTEGER,
+    p_end_dt TIMESTAMP,
+    p_bars INTEGER
+)
+RETURNS TIMESTAMP[]
+LANGUAGE sql STABLE AS $$
+    SELECT COALESCE(array_agg(x.dt ORDER BY x.dt), ARRAY[]::TIMESTAMP[])
+    FROM (
+        SELECT p.dt
+        FROM prices p
+        WHERE p.security_id = p_security_id
+          AND p.timeframe_id = p_timeframe_id
+          AND p.dt <= p_end_dt
+        ORDER BY p.dt DESC
+        LIMIT p_bars
+    ) x;
+$$;
+
+CREATE OR REPLACE FUNCTION poly_load_indicator_array(
+    p_indicator_code TEXT,
+    p_series TEXT,
+    p_security_id INTEGER,
+    p_timeframe_id INTEGER,
+    p_end_dt TIMESTAMP,
+    p_bars INTEGER,
+    p_period INTEGER DEFAULT NULL,
+    p_fast_period INTEGER DEFAULT NULL,
+    p_slow_period INTEGER DEFAULT NULL,
+    p_signal_period INTEGER DEFAULT NULL,
+    p_std_dev NUMERIC DEFAULT NULL,
+    p_k_period INTEGER DEFAULT NULL,
+    p_d_period INTEGER DEFAULT NULL,
+    p_smooth INTEGER DEFAULT NULL,
+    p_target_dts TIMESTAMP[] DEFAULT NULL
+)
+RETURNS NUMERIC[]
+LANGUAGE plpgsql STABLE AS $$
+DECLARE
+    v_series TEXT := COALESCE(NULLIF(btrim(p_series), ''), 'VALUE');
+    v_map JSONB := '{}'::JSONB;
+    v_arr NUMERIC[] := ARRAY[]::NUMERIC[];
+    v_dt TIMESTAMP;
+    v_val NUMERIC;
+    i INTEGER;
+BEGIN
+    FOR v_dt, v_val IN
+        SELECT t.dt, t.value
+        FROM calc_indicator_series_array(
+            p_indicator_code, v_series,
+            p_security_id, p_timeframe_id, p_bars, p_end_dt,
+            p_period, p_fast_period, p_slow_period, p_signal_period,
+            p_std_dev, p_k_period, p_d_period, p_smooth
+        ) t
+    LOOP
+        v_map := v_map || jsonb_build_object(to_char(v_dt, 'YYYY-MM-DD HH24:MI:SS'), to_jsonb(v_val));
+    END LOOP;
+
+    IF p_target_dts IS NULL THEN
+        SELECT COALESCE(array_agg((v_map ->> to_char(d, 'YYYY-MM-DD HH24:MI:SS'))::NUMERIC ORDER BY ord), ARRAY[]::NUMERIC[])
+        INTO v_arr
+        FROM unnest(
+            (SELECT poly_load_market_dts(p_security_id, p_timeframe_id, p_end_dt, p_bars))
+        ) WITH ORDINALITY AS t(d, ord);
+        RETURN v_arr;
+    END IF;
+
+    FOR i IN 1 .. COALESCE(array_length(p_target_dts, 1), 0) LOOP
+        v_dt := p_target_dts[i];
+        v_val := (v_map ->> to_char(v_dt, 'YYYY-MM-DD HH24:MI:SS'))::NUMERIC;
+        v_arr := array_append(v_arr, v_val);
+    END LOOP;
+    RETURN v_arr;
+END;
+$$;
+
+CREATE OR REPLACE FUNCTION poly_eval_node(
+    p_node JSONB,
+    p_ctx JSONB
+)
+RETURNS NUMERIC[]
+LANGUAGE plpgsql STABLE AS $$
+DECLARE
+    v_op TEXT;
+    v_var TEXT;
+    v_num NUMERIC;
+    v_vec NUMERIC[];
+    v_left NUMERIC[];
+    v_right NUMERIC[];
+    v_ind JSONB;
+    v_code TEXT;
+    v_series TEXT;
+    i INTEGER;
+BEGIN
+    IF p_node ? 'num' THEN
+        RETURN ARRAY[(p_node ->> 'num')::NUMERIC];
+    END IF;
+
+    IF p_node ? 'vec' THEN
+        v_vec := ARRAY[]::NUMERIC[];
+        FOR i IN 0 .. jsonb_array_length(p_node -> 'vec') - 1 LOOP
+            v_vec := array_append(v_vec, ((p_node -> 'vec' ->> i)::NUMERIC));
+        END LOOP;
+        RETURN v_vec;
+    END IF;
+
+    IF p_node ? 'dd' THEN
+        RETURN poly_delta_kernel((p_node ->> 'dd')::INTEGER);
+    END IF;
+
+    IF p_node ? 'var' THEN
+        v_var := p_node ->> 'var';
+        IF p_ctx ? ('m_' || v_var) THEN
+            v_vec := ARRAY(SELECT jsonb_array_elements_text(p_ctx -> ('m_' || v_var))::NUMERIC);
+            RETURN v_vec;
+        END IF;
+        RAISE EXCEPTION 'poly_eval: unknown market variable %', v_var;
+    END IF;
+
+    IF p_node ? 'ind' THEN
+        v_ind := p_node -> 'ind';
+        v_code := v_ind ->> 'code';
+        v_series := v_ind ->> 'series';
+        RETURN poly_load_indicator_array(
+            v_code, v_series,
+            (p_ctx ->> 'security_id')::INTEGER,
+            (p_ctx ->> 'timeframe_id')::INTEGER,
+            (p_ctx ->> 'end_dt')::TIMESTAMP,
+            (p_ctx ->> 'bars')::INTEGER,
+            NULLIF(p_ctx ->> 'param_period', '')::INTEGER,
+            NULLIF(p_ctx ->> 'param_fast_period', '')::INTEGER,
+            NULLIF(p_ctx ->> 'param_slow_period', '')::INTEGER,
+            NULLIF(p_ctx ->> 'param_signal_period', '')::INTEGER,
+            NULLIF(p_ctx ->> 'param_std_dev', '')::NUMERIC,
+            NULLIF(p_ctx ->> 'param_k_period', '')::INTEGER,
+            NULLIF(p_ctx ->> 'param_d_period', '')::INTEGER,
+            NULLIF(p_ctx ->> 'param_smooth', '')::INTEGER,
+            ARRAY(SELECT jsonb_array_elements_text(p_ctx -> 'dts')::TIMESTAMP)
+        );
+    END IF;
+
+    IF p_node ? 'op' THEN
+        v_op := p_node ->> 'op';
+        IF v_op = 'neg' THEN
+            RETURN poly_neg(poly_eval_node(p_node -> 'arg', p_ctx));
+        END IF;
+        v_left := poly_eval_node(p_node -> 'left', p_ctx);
+        v_right := poly_eval_node(p_node -> 'right', p_ctx);
+        CASE v_op
+            WHEN 'add' THEN RETURN poly_add(v_left, v_right);
+            WHEN 'sub' THEN RETURN poly_sub(v_left, v_right);
+            WHEN 'conv' THEN RETURN poly_convolve(v_left, v_right);
+            WHEN 'cmul' THEN RETURN poly_comp_mul(v_left, v_right);
+            WHEN 'cdiv' THEN RETURN poly_comp_div(v_left, v_right);
+            ELSE RAISE EXCEPTION 'poly_eval: unknown op %', v_op;
+        END CASE;
+    END IF;
+
+    RAISE EXCEPTION 'poly_eval: invalid node %', p_node;
+END;
+$$;
+
+CREATE OR REPLACE FUNCTION calc_poly_formula_array(
+    p_formula TEXT,
+    p_series VARCHAR,
+    p_security_id INTEGER,
+    p_timeframe_id INTEGER,
+    p_point_count INTEGER DEFAULT 100,
+    p_end_dt TIMESTAMP DEFAULT NULL,
+    p_period INTEGER DEFAULT NULL,
+    p_fast_period INTEGER DEFAULT NULL,
+    p_slow_period INTEGER DEFAULT NULL,
+    p_signal_period INTEGER DEFAULT NULL,
+    p_std_dev NUMERIC DEFAULT NULL,
+    p_k_period INTEGER DEFAULT NULL,
+    p_d_period INTEGER DEFAULT NULL,
+    p_smooth INTEGER DEFAULT NULL
+)
+RETURNS TABLE (dt TIMESTAMP, value NUMERIC)
+LANGUAGE plpgsql STABLE AS $$
+DECLARE
+    v_end TIMESTAMP;
+    v_bars INTEGER;
+    v_dts TIMESTAMP[];
+    v_ast JSONB;
+    v_ctx JSONB;
+    v_values NUMERIC[];
+    v_n INTEGER;
+    v_start INTEGER;
+    i INTEGER;
+BEGIN
+    IF p_series IS NOT NULL AND p_series NOT IN ('VALUE', 'PACC') THEN
+        RETURN;
+    END IF;
+
+    v_end := ind_resolve_end_dt(p_security_id, p_timeframe_id, p_end_dt);
+    IF v_end IS NULL THEN RETURN; END IF;
+
+    v_bars := GREATEST(COALESCE(p_point_count, 100) + 30, ind_warmup_bars(COALESCE(p_period, 14), p_point_count));
+
+    v_dts := poly_load_market_dts(p_security_id, p_timeframe_id, v_end, v_bars);
+    v_n := COALESCE(array_length(v_dts, 1), 0);
+    IF v_n = 0 THEN RETURN; END IF;
+
+    v_ctx := jsonb_build_object(
+        'security_id', p_security_id,
+        'timeframe_id', p_timeframe_id,
+        'end_dt', to_char(v_end, 'YYYY-MM-DD HH24:MI:SS'),
+        'bars', v_bars,
+        'param_period', p_period,
+        'param_fast_period', p_fast_period,
+        'param_slow_period', p_slow_period,
+        'param_signal_period', p_signal_period,
+        'param_std_dev', p_std_dev,
+        'param_k_period', p_k_period,
+        'param_d_period', p_d_period,
+        'param_smooth', p_smooth,
+        'dts', to_jsonb(v_dts)
+    );
+
+    IF position('pp' IN lower(btrim(p_formula))) > 0 THEN
+        v_ctx := v_ctx || jsonb_build_object(
+            'm_pp', to_jsonb(poly_load_market_array('pp', p_security_id, p_timeframe_id, v_end, v_bars))
+        );
+    END IF;
+    IF position('oo' IN lower(btrim(p_formula))) > 0 THEN
+        v_ctx := v_ctx || jsonb_build_object(
+            'm_oo', to_jsonb(poly_load_market_array('oo', p_security_id, p_timeframe_id, v_end, v_bars))
+        );
+    END IF;
+    IF position('hh' IN lower(btrim(p_formula))) > 0 THEN
+        v_ctx := v_ctx || jsonb_build_object(
+            'm_hh', to_jsonb(poly_load_market_array('hh', p_security_id, p_timeframe_id, v_end, v_bars))
+        );
+    END IF;
+    IF position('ll' IN lower(btrim(p_formula))) > 0 THEN
+        v_ctx := v_ctx || jsonb_build_object(
+            'm_ll', to_jsonb(poly_load_market_array('ll', p_security_id, p_timeframe_id, v_end, v_bars))
+        );
+    END IF;
+    IF position('vv' IN lower(btrim(p_formula))) > 0 THEN
+        v_ctx := v_ctx || jsonb_build_object(
+            'm_vv', to_jsonb(poly_load_market_array('vv', p_security_id, p_timeframe_id, v_end, v_bars))
+        );
+    END IF;
+
+    v_ast := poly_parse(p_formula);
+    v_values := poly_eval_node(v_ast, v_ctx);
+    v_n := LEAST(COALESCE(array_length(v_values, 1), 0), COALESCE(array_length(v_dts, 1), 0));
+    IF v_n = 0 THEN RETURN; END IF;
+
+    v_start := GREATEST(1, v_n - COALESCE(p_point_count, 100) + 1);
+    FOR i IN v_start .. v_n LOOP
+        dt := v_dts[i];
+        value := v_values[i];
+        RETURN NEXT;
+    END LOOP;
+END;
+$$;
+
+COMMENT ON FUNCTION calc_poly_formula_array IS
+'Вычисляет многочленную формулу индикатора (pp * (1;-2;1), @SMA # pp, …) и возвращает последние point_count точек.';
+
 -- Диспетчер массивного расчёта по коду индикатора
 CREATE OR REPLACE FUNCTION calc_indicator_series_array(
     p_indicator_code VARCHAR,
@@ -1769,6 +2610,11 @@ BEGIN
             RETURN QUERY SELECT * FROM calc_ind_stoch_array(
                 COALESCE(p_k_period, 14), COALESCE(p_d_period, 3), COALESCE(p_smooth, 3),
                 p_series, p_security_id, p_timeframe_id, p_point_count, p_end_dt);
+        WHEN 'PACC' THEN
+            RETURN QUERY SELECT * FROM calc_poly_formula_array(
+                'pp * (1; -2; 1)', p_series, p_security_id, p_timeframe_id, p_point_count, p_end_dt,
+                p_period, p_fast_period, p_slow_period, p_signal_period,
+                p_std_dev, p_k_period, p_d_period, p_smooth);
         ELSE
             RETURN;
     END CASE;
@@ -1822,6 +2668,7 @@ LANGUAGE sql IMMUTABLE AS $$
         WHEN 'BB' THEN 'calc_ind_bb_array(:param_period, :param_std_dev, :series, :security_id, :timeframe_id, :point_count, :end_dt)'
         WHEN 'ATR' THEN 'calc_ind_atr_array(:param_period, :series, :security_id, :timeframe_id, :point_count, :end_dt)'
         WHEN 'STOCH' THEN 'calc_ind_stoch_array(:param_k_period, :param_d_period, :param_smooth, :series, :security_id, :timeframe_id, :point_count, :end_dt)'
+        WHEN 'PACC' THEN 'pp * (1; -2; 1)'
         ELSE 'calc_indicator_series_array(:indicator_code, :series, :security_id, :timeframe_id, :point_count, :end_dt)'
     END;
 $$;
@@ -1907,20 +2754,37 @@ BEGIN
         RETURN;
     END IF;
 
-    FOR v_pt IN
-        SELECT * FROM calc_indicator_series_array(
-            v_code, v_row.series_code,
-            v_row.security_id, p_timeframe_id, v_count, p_end_dt,
-            v_row.param_period, v_row.param_fast_period, v_row.param_slow_period,
-            v_row.param_signal_period, v_row.param_std_dev,
-            v_row.param_k_period, v_row.param_d_period, v_row.param_smooth
-        )
-    LOOP
-        PERFORM insert_indicator_value(
-            v_row.indicator_id, v_vt_id, v_row.security_id, p_timeframe_id,
-            v_pt.dt, v_pt.value, FALSE, NULL, NOT p_incremental
-        );
-    END LOOP;
+    IF poly_is_formula(v_row.invoke_formula) THEN
+        FOR v_pt IN
+            SELECT * FROM calc_poly_formula_array(
+                v_row.invoke_formula, v_row.series_code,
+                v_row.security_id, p_timeframe_id, v_count, p_end_dt,
+                v_row.param_period, v_row.param_fast_period, v_row.param_slow_period,
+                v_row.param_signal_period, v_row.param_std_dev,
+                v_row.param_k_period, v_row.param_d_period, v_row.param_smooth
+            )
+        LOOP
+            PERFORM insert_indicator_value(
+                v_row.indicator_id, v_vt_id, v_row.security_id, p_timeframe_id,
+                v_pt.dt, v_pt.value, FALSE, NULL, NOT p_incremental
+            );
+        END LOOP;
+    ELSE
+        FOR v_pt IN
+            SELECT * FROM calc_indicator_series_array(
+                v_code, v_row.series_code,
+                v_row.security_id, p_timeframe_id, v_count, p_end_dt,
+                v_row.param_period, v_row.param_fast_period, v_row.param_slow_period,
+                v_row.param_signal_period, v_row.param_std_dev,
+                v_row.param_k_period, v_row.param_d_period, v_row.param_smooth
+            )
+        LOOP
+            PERFORM insert_indicator_value(
+                v_row.indicator_id, v_vt_id, v_row.security_id, p_timeframe_id,
+                v_pt.dt, v_pt.value, FALSE, NULL, NOT p_incremental
+            );
+        END LOOP;
+    END IF;
 END;
 $$;
 
@@ -2834,62 +3698,31 @@ CREATE OR REPLACE FUNCTION insert_indicator_value(
     p_overwrite BOOLEAN
 )
 RETURNS VOID AS $$
-DECLARE
-    v_existing_count INTEGER;  -- Количество существующих записей (0 или 1)
 BEGIN
-    -- ============================================================
-    -- БЛОК 1: ПРОВЕРКА СУЩЕСТВОВАНИЯ ЗАПИСИ
-    -- ============================================================
-    -- Проверяем, есть ли уже запись для данной комбинации:
-    -- индикатор + тип значения + бумага + таймфрейм + дата
-    SELECT COUNT(*) INTO v_existing_count
-    FROM indicator_values
-    WHERE indicator_id = p_indicator_id
-      AND indicator_value_type_id = p_value_type_id
-      AND security_id = p_security_id
-      AND timeframe_id = p_timeframe_id
-      AND dt = p_dt;
-
-    -- ============================================================
-    -- БЛОК 2: ОБРАБОТКА В ЗАВИСИМОСТИ ОТ ФЛАГА OVERWRITE
-    -- ============================================================
-    IF v_existing_count > 0 AND NOT p_overwrite THEN
-        -- Запись есть и overwrite=FALSE -- пропускаем (ничего не делаем)
-        RETURN;
+    IF p_overwrite THEN
+        INSERT INTO indicator_values (
+            indicator_id, indicator_value_type_id, security_id, timeframe_id,
+            dt, value, is_signal, signal_type
+        ) VALUES (
+            p_indicator_id, p_value_type_id, p_security_id, p_timeframe_id,
+            p_dt, p_value, p_is_signal, p_signal_type
+        )
+        ON CONFLICT (indicator_id, indicator_value_type_id, security_id, timeframe_id, dt)
+        DO UPDATE SET
+            value = EXCLUDED.value,
+            is_signal = EXCLUDED.is_signal,
+            signal_type = EXCLUDED.signal_type;
+    ELSE
+        INSERT INTO indicator_values (
+            indicator_id, indicator_value_type_id, security_id, timeframe_id,
+            dt, value, is_signal, signal_type
+        ) VALUES (
+            p_indicator_id, p_value_type_id, p_security_id, p_timeframe_id,
+            p_dt, p_value, p_is_signal, p_signal_type
+        )
+        ON CONFLICT (indicator_id, indicator_value_type_id, security_id, timeframe_id, dt)
+        DO NOTHING;
     END IF;
-
-    -- Если запись есть и overwrite=TRUE -- удаляем старую
-    IF v_existing_count > 0 THEN
-        DELETE FROM indicator_values
-        WHERE indicator_id = p_indicator_id
-          AND indicator_value_type_id = p_value_type_id
-          AND security_id = p_security_id
-          AND timeframe_id = p_timeframe_id
-          AND dt = p_dt;
-    END IF;
-
-    -- ============================================================
-    -- БЛОК 3: ВСТАВКА НОВОГО ЗНАЧЕНИЯ
-    -- ============================================================
-    INSERT INTO indicator_values (
-        indicator_id,           -- Ссылка на индикатор
-        indicator_value_type_id,-- Ссылка на тип значения (линия/порог)
-        security_id,            -- Ссылка на бумагу
-        timeframe_id,           -- Ссылка на таймфрейм
-        dt,                     -- Дата/время свечи
-        value,                  -- Рассчитанное значение
-        is_signal,              -- Это сигнальное значение?
-        signal_type             -- Тип сигнала (buy, sell, overbought, oversold)
-    ) VALUES (
-        p_indicator_id,
-        p_value_type_id,
-        p_security_id,
-        p_timeframe_id,
-        p_dt,
-        p_value,
-        p_is_signal,
-        p_signal_type
-    );
 END;
 $$ LANGUAGE plpgsql;
 

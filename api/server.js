@@ -198,12 +198,7 @@ app.post('/api/security-indicator-series', async (req, res) => {
       securityId,
       indicatorId,
     ]);
-    if (timeframeId) {
-      await client.query(
-        'CALL sync_security_indicator_series_all($1, $2, NULL, NULL, FALSE)',
-        [securityId, timeframeId]
-      );
-    }
+    // Расчёт — отдельно через POST /sync (не блокируем добавление серии).
     const { rows } = await client.query(
       `
       SELECT

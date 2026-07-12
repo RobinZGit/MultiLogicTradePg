@@ -138,6 +138,12 @@ describe('SecuritiesPanelComponent', () => {
     expect(securities.syncIndicatorSeries).not.toHaveBeenCalled();
   }));
 
+  it('shows assigning status while indicator is being attached', () => {
+    component.indicatorAssigning.add(29);
+    expect(component.indicatorStatus(29)).toBe('Добавление индикатора…');
+    expect(component.isIndicatorsLoading(29)).toBeTrue();
+  });
+
   it('does not block chart loading overlay on indicator sync', () => {
     component.charts.set(29, {
       candles: [{ dt: '2026-01-02T10:00:00', open_price: 1, high_price: 1, low_price: 1, close_price: 1, volume: 1 }],

@@ -69,4 +69,19 @@ describe('PriceChartComponent', () => {
     component.closeFullscreen();
     expect(component.fullscreen).toBeFalse();
   });
+
+  it('anchors zero on price scale for PACC', () => {
+    component.indicatorSeries = [
+      {
+        indicator_code: 'PACC',
+        line_code: 'VALUE',
+        line_name: 'Ускорение цены',
+        color: '#2563eb',
+        on_price_scale: true,
+        is_threshold: false,
+        points: [{ dt: '2026-01-01T10:00:00', value: 0.1 }],
+      },
+    ];
+    expect((component as unknown as { priceScaleAnchorsZero(): boolean }).priceScaleAnchorsZero()).toBeTrue();
+  });
 });

@@ -160,9 +160,9 @@
 
                     <summary>Индикаторы бумаги</summary>
 
-                    @if (isIndicatorsLoading(row.id)) {
+                    @if (indicatorStatus(row.id); as status) {
 
-                      <p class="ind-status">Расчёт индикаторов…</p>
+                      <p class="ind-status">{{ status }}</p>
 
                     }
 
@@ -330,9 +330,9 @@
 
                     <summary>Индикаторы бумаги</summary>
 
-                    @if (isIndicatorsLoading(row.id)) {
+                    @if (indicatorStatus(row.id); as status) {
 
-                      <p class="ind-status">Расчёт индикаторов…</p>
+                      <p class="ind-status">{{ status }}</p>
 
                     }
 

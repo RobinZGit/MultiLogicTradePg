@@ -55,6 +55,8 @@ export class SecuritiesPanelComponent implements OnInit {
   securityIndicatorSeries = new Map<number, SecurityIndicatorSeriesRow[]>();
   indicatorSeries = new Map<number, ChartIndicatorSeries[]>();
   indicatorsLoading = new Set<number>();
+  /** Drag-and-drop: привязка серии к бумаге (быстрый POST без полного sync). */
+  indicatorAssigning = new Set<number>();
   indicatorCalcError = new Map<number, string | null>();
   dropTargetId: number | null = null;
   private loadAbort = new Map<number, boolean>();
@@ -117,7 +119,17 @@ export class SecuritiesPanelComponent implements OnInit {
   }
 
   isIndicatorsLoading(id: number): boolean {
-    return this.indicatorsLoading.has(id);
+    return this.indicatorsLoading.has(id) || this.indicatorAssigning.has(id);
+  }
+
+  indicatorStatus(id: number): string | null {
+    if (this.indicatorAssigning.has(id)) {
+      return 'Добавление индикатора…';
+    }
+    if (this.indicatorsLoading.has(id)) {
+      return 'Расчёт индикаторов…';
+    }
+    return null;
   }
 
   indicatorError(id: number): string | null {
@@ -180,10 +192,13 @@ export class SecuritiesPanelComponent implements OnInit {
 
   private assignIndicator(row: SecurityRow, indicatorId: number): void {
     if (!this.timeframeId) return;
+    this.indicatorAssigning.add(row.id);
+    this.indicatorCalcError.set(row.id, null);
     this.securities
       .assignIndicatorSeries(row.id, indicatorId, this.timeframeId)
       .subscribe({
         next: (created) => {
+          this.indicatorAssigning.delete(row.id);
           const list = [...(this.securityIndicatorSeries.get(row.id) ?? [])];
           for (const s of created) {
             if (!list.some((x) => x.id === s.id)) {
@@ -199,6 +214,12 @@ export class SecuritiesPanelComponent implements OnInit {
           }
         },
         error: (err) => {
+          this.indicatorAssigning.delete(row.id);
+          const msg =
+            err?.name === 'TimeoutError'
+              ? 'Таймаут при добавлении индикатора'
+              : err?.error?.error || err?.message || 'Ошибка добавления индикатора';
+          this.indicatorCalcError.set(row.id, msg);
           console.error(err);
         },
       });
@@ -718,7 +739,7 @@ export class SecuritiesPanelComponent implements OnInit {
   }
 
   private isPriceScaleSeries(indicatorCode: string, lineCode: string): boolean {
-    if (['SMA', 'EMA', 'WMA'].includes(indicatorCode) && lineCode === 'VALUE') {
+    if (['SMA', 'EMA', 'WMA', 'PACC'].includes(indicatorCode) && lineCode === 'VALUE') {
       return true;
     }
     if (indicatorCode === 'BB' && ['UPPER', 'MIDDLE', 'LOWER'].includes(lineCode)) {
