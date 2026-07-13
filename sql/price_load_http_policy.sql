@@ -1,10 +1,13 @@
--- Политика источников: T-Bank; MOEX только без TBANK_API_TOKEN
+-- Политика источников: сначала T-Bank; при ошибке или 0 свечей — MOEX (+ M1 resample)
 
 CREATE OR REPLACE FUNCTION price_load_use_moex_fallback()
 RETURNS BOOLEAN
 LANGUAGE sql STABLE AS $$
-    SELECT NOT COALESCE(tbank_token_is_configured(), FALSE);
+    SELECT TRUE;
 $$;
+
+COMMENT ON FUNCTION price_load_use_moex_fallback() IS
+'MOEX разрешён как fallback после неудачи T-Bank (ошибка или 0 записей)';
 
 CREATE OR REPLACE PROCEDURE load_prices_http(
     p_security_id INTEGER,
@@ -61,7 +64,8 @@ BEGIN
                     'T-BANK', 0, v_tbank_error
                 );
         END;
-        IF NOT v_tbank_ok AND price_load_use_moex_fallback() THEN
+        IF NOT v_tbank_ok THEN
+            RAISE NOTICE 'T-Bank: нет данных (%), пробуем MOEX...', COALESCE(v_tbank_error, '0 свечей');
             BEGIN
                 CALL load_prices_from_moex_http(p_security_id, p_timeframe_id, p_date_from, p_date_to);
             EXCEPTION
@@ -72,8 +76,6 @@ BEGIN
                         RAISE;
                     END IF;
             END;
-        ELSIF NOT v_tbank_ok AND tbank_token_is_configured() THEN
-            RAISE NOTICE 'T-Bank не дал данных; MOEX пропущен (задан TBANK_API_TOKEN)';
         END IF;
         RETURN;
     END IF;
@@ -97,8 +99,6 @@ BEGIN
         v_tbank_ok := COALESCE(v_tbank_records, 0) > 0;
         IF v_tbank_ok THEN
             RAISE NOTICE 'Цены успешно загружены из T-Bank: % свечей', v_tbank_records;
-        ELSE
-            RAISE NOTICE 'T-Bank: 0 свечей, MOEX только без токена';
         END IF;
     EXCEPTION
         WHEN OTHERS THEN
@@ -114,7 +114,8 @@ BEGIN
             RAISE NOTICE 'T-Bank недоступен: %', v_tbank_error;
     END;
 
-    IF NOT v_tbank_ok AND price_load_use_moex_fallback() THEN
+    IF NOT v_tbank_ok THEN
+        RAISE NOTICE 'T-Bank не дал данных, пробуем MOEX...';
         BEGIN
             CALL load_prices_from_moex_http(p_security_id, p_timeframe_id, p_date_from, p_date_to);
             SELECT records_loaded INTO v_moex_records
@@ -151,8 +152,6 @@ BEGIN
                 END;
             END IF;
         END IF;
-    ELSIF NOT v_tbank_ok AND tbank_token_is_configured() THEN
-        RAISE NOTICE 'T-Bank не дал данных; MOEX пропущен (задан TBANK_API_TOKEN — источник T-Bank)';
     END IF;
 END;
 $$;

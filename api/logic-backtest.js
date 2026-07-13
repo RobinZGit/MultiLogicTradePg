@@ -153,18 +153,16 @@ async function ensureTbankForBacktest(pool, runId, logicId) {
   const status = rows[0]?.s ?? {};
   if (status.valid) return true;
 
-  const msg =
+  await backtestLog(
+    pool,
+    runId,
+    logicId,
+    'backtest.tbank.missing',
     status.error_message ||
-    'Для intraday-таймфрейма (M15 и т.п.) нужен валидный токен T-Bank. MOEX используется только без токена.';
-  await backtestLog(pool, runId, logicId, 'backtest.failed', msg, { tbank_status: status });
-  await updateRun(pool, runId, {
-    status: 'failed',
-    error_message: msg,
-    progress_pct: 100,
-    phase_message: 'Нужен T-Bank',
-    finished_at: new Date(),
-  });
-  return false;
+      'Токен T-Bank не задан или невалиден — загрузка цен через MOEX',
+    { tbank_status: status }
+  );
+  return true;
 }
 
 /**
@@ -201,9 +199,52 @@ async function ensureSecurityData(
       tfId
     );
   } else {
-    await pool.query('CALL load_prices($1, $2, $3, $4)', [secId, tfId, loadDateFrom, dateTo]);
-    stats.pricesLoaded += 1;
-    pricesReloaded = true;
+    await backtestLog(
+      pool,
+      runId,
+      logicId,
+      'backtest.prices.load',
+      `Загрузка цен: ${secName || secId} (${loadDateFrom} — ${dateTo})`,
+      { security_id: secId, name: secName, date_from: loadDateFrom, date_to: dateTo },
+      secId,
+      tfId
+    );
+    try {
+      await pool.query('CALL load_prices($1, $2, $3, $4)', [secId, tfId, loadDateFrom, dateTo]);
+      stats.pricesLoaded += 1;
+      pricesReloaded = true;
+    } catch (e) {
+      stats.pricesErr += 1;
+      await backtestLog(
+        pool,
+        runId,
+        logicId,
+        'backtest.prices.error',
+        e.message,
+        { security_id: secId, name: secName },
+        secId,
+        tfId
+      );
+      return;
+    }
+    const okAfterLoad = await pricesCached(pool, secId, tfId, loadDateFrom, dateFrom, dateTo);
+    const inPeriod = await countPricesInPeriod(pool, logicId, tfId, dateFrom, dateTo);
+    await backtestLog(
+      pool,
+      runId,
+      logicId,
+      okAfterLoad ? 'backtest.prices.loaded' : 'backtest.prices.insufficient',
+      okAfterLoad
+        ? `Цены загружены: ${secName || secId}, в периоде ${inPeriod} свечей`
+        : `Недостаточно свечей после загрузки (${inPeriod} в периоде ${dateFrom} — ${dateTo})`,
+      { security_id: secId, prices_in_period: inPeriod, coverage_ok: okAfterLoad },
+      secId,
+      tfId
+    );
+    if (!okAfterLoad) {
+      stats.pricesErr += 1;
+      return;
+    }
   }
 
   const indicatorIds = await fetchActiveIndicatorIds(pool, logicId);

@@ -1,14 +1,13 @@
--- MOEX fallback (M1 resample) — только когда токен T-Bank НЕ задан.
--- При заданном токене intraday (M15 …) — только T-Bank, как в live trading.
+-- MOEX fallback после неудачи T-Bank (ошибка или 0 свечей); M1 resample для intraday TF.
 
 CREATE OR REPLACE FUNCTION price_load_use_moex_fallback()
 RETURNS BOOLEAN
 LANGUAGE sql STABLE AS $$
-    SELECT NOT COALESCE(tbank_token_is_configured(), FALSE);
+    SELECT TRUE;
 $$;
 
 COMMENT ON FUNCTION price_load_use_moex_fallback() IS
-'MOEX как источник цен — только если TBANK_API_TOKEN не задан (как «Загрузить цены» без токена)';
+'MOEX разрешён как fallback после неудачи T-Bank (ошибка или 0 свечей)';
 
 -- ============================================
 

@@ -142,21 +142,69 @@ CREATE OR REPLACE FUNCTION backtest_prices_cached(
     p_min_warmup INTEGER DEFAULT 20
 )
 RETURNS BOOLEAN
-LANGUAGE sql STABLE AS $$
-    SELECT
-        (SELECT COUNT(*)::INTEGER FROM prices p
-         WHERE p.security_id = p_security_id
-           AND p.timeframe_id = p_timeframe_id
-           AND p.dt::date BETWEEN p_date_from AND p_date_to) > 0
-        AND
-        (SELECT COUNT(*)::INTEGER FROM prices p
-         WHERE p.security_id = p_security_id
-           AND p.timeframe_id = p_timeframe_id
-           AND p.dt::date BETWEEN p_warmup_from AND p_date_to) >= GREATEST(p_min_warmup, 1);
+LANGUAGE plpgsql STABLE AS $$
+DECLARE
+    v_tf_sec INTEGER;
+    v_span_days INTEGER;
+    v_in_period INTEGER;
+    v_warmup_count INTEGER;
+    v_min_date DATE;
+    v_max_date DATE;
+    v_edge_slack INTEGER;
+    v_min_bars INTEGER;
+BEGIN
+    IF p_date_from IS NULL OR p_date_to IS NULL OR p_date_from > p_date_to THEN
+        RETURN FALSE;
+    END IF;
+
+    SELECT t.sec INTO v_tf_sec FROM timeframes t WHERE t.id = p_timeframe_id;
+    v_tf_sec := COALESCE(v_tf_sec, 86400);
+    v_span_days := GREATEST(1, (p_date_to - p_date_from) + 1);
+    v_edge_slack := GREATEST(3, LEAST(14, v_span_days / 20));
+
+    SELECT COUNT(*)::INTEGER, MIN(p.dt::date), MAX(p.dt::date)
+    INTO v_in_period, v_min_date, v_max_date
+    FROM prices p
+    WHERE p.security_id = p_security_id
+      AND p.timeframe_id = p_timeframe_id
+      AND p.dt::date BETWEEN p_date_from AND p_date_to;
+
+    IF v_in_period = 0 OR v_min_date IS NULL THEN
+        RETURN FALSE;
+    END IF;
+
+    IF v_min_date > p_date_from + v_edge_slack THEN
+        RETURN FALSE;
+    END IF;
+    IF v_max_date < p_date_to - v_edge_slack THEN
+        RETURN FALSE;
+    END IF;
+
+    SELECT COUNT(*)::INTEGER INTO v_warmup_count
+    FROM prices p
+    WHERE p.security_id = p_security_id
+      AND p.timeframe_id = p_timeframe_id
+      AND p.dt::date BETWEEN p_warmup_from AND p_date_to;
+
+    IF v_warmup_count < GREATEST(p_min_warmup, 1) THEN
+        RETURN FALSE;
+    END IF;
+
+    IF v_tf_sec >= 86400 THEN
+        v_min_bars := GREATEST(5, (v_span_days * 2) / 5);
+    ELSE
+        v_min_bars := GREATEST(
+            p_min_warmup,
+            GREATEST(20, (v_span_days * 8 * 3600 / v_tf_sec / 4)::INTEGER)
+        );
+    END IF;
+
+    RETURN v_in_period >= v_min_bars;
+END;
 $$;
 
 COMMENT ON FUNCTION backtest_prices_cached(INTEGER, INTEGER, DATE, DATE, DATE, INTEGER) IS
-'True если в БД уже есть свечи на период теста и прогрева (кэш — не дергать T-Bank)';
+'True если свечи покрывают период теста (даты начала/конца + мин. число баров) и прогрев; иначе load_prices';
 
 CREATE OR REPLACE FUNCTION backtest_indicators_cached(
     p_security_id INTEGER,

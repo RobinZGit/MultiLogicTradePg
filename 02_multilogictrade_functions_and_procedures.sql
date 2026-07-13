@@ -5187,6 +5187,34 @@ $$;
 COMMENT ON FUNCTION logic_resolve_stop_timeframe_id(INTEGER) IS
 'timeframe_id из logic_params.stop_loss_timeframe (по умолчанию M5)';
 
+-- @include sql/logic_stop_runner.sql (см. sql/logic_stop_runner.sql — дублируется ниже)
+-- ============================================
+-- Stop-loss runner: security / security_resume / portfolio
+-- ============================================
+
+CREATE OR REPLACE FUNCTION logic_resolve_stop_timeframe_id(p_logic_id INTEGER)
+RETURNS INTEGER
+LANGUAGE plpgsql STABLE AS $$
+DECLARE
+    v_tf TEXT;
+    v_id INTEGER;
+BEGIN
+    v_tf := upper(btrim(COALESCE(get_logic_param_text(p_logic_id, 'stop_loss_timeframe'), 'M5')));
+    SELECT t.id INTO v_id
+    FROM timeframes t
+    WHERE upper(t.tf) = v_tf AND COALESCE(t.is_active, TRUE)
+    ORDER BY t.sec
+    LIMIT 1;
+    IF v_id IS NULL THEN
+        SELECT t.id INTO v_id FROM timeframes t WHERE upper(t.tf) = 'M5' LIMIT 1;
+    END IF;
+    RETURN v_id;
+END;
+$$;
+
+COMMENT ON FUNCTION logic_resolve_stop_timeframe_id(INTEGER) IS
+'timeframe_id из logic_params.stop_loss_timeframe (по умолчанию M5)';
+
 CREATE OR REPLACE FUNCTION logic_long_position_qty(
     p_logic_id INTEGER,
     p_security_id INTEGER,
@@ -7592,21 +7620,69 @@ CREATE OR REPLACE FUNCTION backtest_prices_cached(
     p_min_warmup INTEGER DEFAULT 20
 )
 RETURNS BOOLEAN
-LANGUAGE sql STABLE AS $$
-    SELECT
-        (SELECT COUNT(*)::INTEGER FROM prices p
-         WHERE p.security_id = p_security_id
-           AND p.timeframe_id = p_timeframe_id
-           AND p.dt::date BETWEEN p_date_from AND p_date_to) > 0
-        AND
-        (SELECT COUNT(*)::INTEGER FROM prices p
-         WHERE p.security_id = p_security_id
-           AND p.timeframe_id = p_timeframe_id
-           AND p.dt::date BETWEEN p_warmup_from AND p_date_to) >= GREATEST(p_min_warmup, 1);
+LANGUAGE plpgsql STABLE AS $$
+DECLARE
+    v_tf_sec INTEGER;
+    v_span_days INTEGER;
+    v_in_period INTEGER;
+    v_warmup_count INTEGER;
+    v_min_date DATE;
+    v_max_date DATE;
+    v_edge_slack INTEGER;
+    v_min_bars INTEGER;
+BEGIN
+    IF p_date_from IS NULL OR p_date_to IS NULL OR p_date_from > p_date_to THEN
+        RETURN FALSE;
+    END IF;
+
+    SELECT t.sec INTO v_tf_sec FROM timeframes t WHERE t.id = p_timeframe_id;
+    v_tf_sec := COALESCE(v_tf_sec, 86400);
+    v_span_days := GREATEST(1, (p_date_to - p_date_from) + 1);
+    v_edge_slack := GREATEST(3, LEAST(14, v_span_days / 20));
+
+    SELECT COUNT(*)::INTEGER, MIN(p.dt::date), MAX(p.dt::date)
+    INTO v_in_period, v_min_date, v_max_date
+    FROM prices p
+    WHERE p.security_id = p_security_id
+      AND p.timeframe_id = p_timeframe_id
+      AND p.dt::date BETWEEN p_date_from AND p_date_to;
+
+    IF v_in_period = 0 OR v_min_date IS NULL THEN
+        RETURN FALSE;
+    END IF;
+
+    IF v_min_date > p_date_from + v_edge_slack THEN
+        RETURN FALSE;
+    END IF;
+    IF v_max_date < p_date_to - v_edge_slack THEN
+        RETURN FALSE;
+    END IF;
+
+    SELECT COUNT(*)::INTEGER INTO v_warmup_count
+    FROM prices p
+    WHERE p.security_id = p_security_id
+      AND p.timeframe_id = p_timeframe_id
+      AND p.dt::date BETWEEN p_warmup_from AND p_date_to;
+
+    IF v_warmup_count < GREATEST(p_min_warmup, 1) THEN
+        RETURN FALSE;
+    END IF;
+
+    IF v_tf_sec >= 86400 THEN
+        v_min_bars := GREATEST(5, (v_span_days * 2) / 5);
+    ELSE
+        v_min_bars := GREATEST(
+            p_min_warmup,
+            GREATEST(20, (v_span_days * 8 * 3600 / v_tf_sec / 4)::INTEGER)
+        );
+    END IF;
+
+    RETURN v_in_period >= v_min_bars;
+END;
 $$;
 
 COMMENT ON FUNCTION backtest_prices_cached(INTEGER, INTEGER, DATE, DATE, DATE, INTEGER) IS
-'True если в БД уже есть свечи на период теста и прогрева (кэш — не дергать T-Bank)';
+'True если свечи покрывают период теста (даты начала/конца + мин. число баров) и прогрев; иначе load_prices';
 
 CREATE OR REPLACE FUNCTION backtest_indicators_cached(
     p_security_id INTEGER,
@@ -9271,11 +9347,11 @@ COMMENT ON PROCEDURE load_prices_from_moex_http(INTEGER, INTEGER, DATE, DATE, VA
 CREATE OR REPLACE FUNCTION price_load_use_moex_fallback()
 RETURNS BOOLEAN
 LANGUAGE sql STABLE AS $$
-    SELECT NOT COALESCE(tbank_token_is_configured(), FALSE);
+    SELECT TRUE;
 $$;
 
 COMMENT ON FUNCTION price_load_use_moex_fallback() IS
-'MOEX как источник цен — только если TBANK_API_TOKEN не задан';
+'MOEX разрешён как fallback после неудачи T-Bank (ошибка или 0 свечей)';
 
 CREATE OR REPLACE PROCEDURE resample_prices_to_timeframe(
     p_security_id INTEGER,
@@ -9733,7 +9809,8 @@ BEGIN
                     'T-BANK', 0, v_tbank_error
                 );
         END;
-        IF NOT v_tbank_ok AND price_load_use_moex_fallback() THEN
+        IF NOT v_tbank_ok THEN
+            RAISE NOTICE 'T-Bank: нет данных (%), пробуем MOEX...', COALESCE(v_tbank_error, '0 свечей');
             BEGIN
                 CALL load_prices_from_moex_http(p_security_id, p_timeframe_id, p_date_from, p_date_to);
             EXCEPTION
@@ -9744,8 +9821,6 @@ BEGIN
                         RAISE;
                     END IF;
             END;
-        ELSIF NOT v_tbank_ok AND tbank_token_is_configured() THEN
-            RAISE NOTICE 'T-Bank не дал данных; MOEX пропущен (задан TBANK_API_TOKEN)';
         END IF;
         RETURN;
     END IF;
@@ -9788,8 +9863,6 @@ BEGIN
         v_tbank_ok := COALESCE(v_tbank_records, 0) > 0;
         IF v_tbank_ok THEN
             RAISE NOTICE 'Цены успешно загружены из T-Bank: % свечей', v_tbank_records;
-        ELSE
-            RAISE NOTICE 'T-Bank: 0 свечей, MOEX только без токена';
         END IF;
     EXCEPTION
         WHEN OTHERS THEN
@@ -9805,8 +9878,8 @@ BEGIN
             RAISE NOTICE 'T-Bank недоступен: %', v_tbank_error;
     END;
 
-    -- MOEX — только если токен T-Bank не задан (как live: с токеном — T-Bank)
-    IF NOT v_tbank_ok AND price_load_use_moex_fallback() THEN
+    IF NOT v_tbank_ok THEN
+        RAISE NOTICE 'T-Bank не дал данных, пробуем MOEX...';
         BEGIN
             CALL load_prices_from_moex_http(p_security_id, p_timeframe_id, p_date_from, p_date_to);
             SELECT records_loaded INTO v_moex_records
@@ -9845,14 +9918,12 @@ BEGIN
                 END;
             END IF;
         END IF;
-    ELSIF NOT v_tbank_ok AND tbank_token_is_configured() THEN
-        RAISE NOTICE 'T-Bank не дал данных; MOEX пропущен (задан TBANK_API_TOKEN — источник T-Bank)';
     END IF;
 END;
 $$;
 
 COMMENT ON PROCEDURE load_prices_http(INTEGER, INTEGER, DATE, DATE) IS 
-'Загрузка цен: T-Bank; MOEX (+ M1 resample) только если токен T-Bank не задан.';
+'Загрузка цен: сначала T-Bank; при ошибке или 0 свечей — MOEX (+ M1 resample).';
 
 -- ============================================
 -- Процедура: load_prices_batch_http
@@ -10415,7 +10486,7 @@ END;
 $$;
 
 COMMENT ON PROCEDURE load_prices(INTEGER, INTEGER, DATE, DATE) IS
-'Загрузка цен: T-Bank; MOEX только без токена TBANK_API_TOKEN.';
+'Загрузка цен: T-Bank; при ошибке или 0 свечей — MOEX (+ M1 resample).';
 
 
 -- ============================================
