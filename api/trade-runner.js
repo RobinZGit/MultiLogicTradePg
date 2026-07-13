@@ -95,6 +95,28 @@ async function getLongPositionQty(pool, logicId, securityId) {
   return Math.max(0, Number(rows[0]?.qty ?? 0));
 }
 
+async function getShortPositionQty(pool, logicId, securityId) {
+  const { rows } = await pool.query(
+    `
+    SELECT COALESCE(SUM(
+      CASE
+        WHEN s.name = 'Open' AND a.name = 'Short' THEN lt.quantity
+        WHEN s.name = 'Close' AND a.name = 'Short' THEN -lt.quantity
+        ELSE 0
+      END
+    ), 0) AS qty
+    FROM logic_trades lt
+    JOIN sides s ON s.id = lt.side_id
+    JOIN actions a ON a.id = lt.action_id
+    WHERE lt.logic_id = $1
+      AND lt.security_id = $2
+      AND lt.status IN ('filled', 'submitted')
+    `,
+    [logicId, securityId]
+  );
+  return Math.max(0, Number(rows[0]?.qty ?? 0));
+}
+
 async function countOpenLongPositions(pool, logicId) {
   const { rows } = await pool.query(
     `
@@ -123,6 +145,42 @@ async function countOpenLongPositions(pool, logicId) {
     [logicId]
   );
   return rows.length;
+}
+
+async function countOpenShortPositions(pool, logicId) {
+  const { rows } = await pool.query(
+    `
+    SELECT lt.security_id,
+      COALESCE(SUM(
+        CASE
+          WHEN s.name = 'Open' AND a.name = 'Short' THEN lt.quantity
+          WHEN s.name = 'Close' AND a.name = 'Short' THEN -lt.quantity
+          ELSE 0
+        END
+      ), 0) AS qty
+    FROM logic_trades lt
+    JOIN sides s ON s.id = lt.side_id
+    JOIN actions a ON a.id = lt.action_id
+    WHERE lt.logic_id = $1
+      AND lt.status IN ('filled', 'submitted')
+    GROUP BY lt.security_id
+    HAVING COALESCE(SUM(
+      CASE
+        WHEN s.name = 'Open' AND a.name = 'Short' THEN lt.quantity
+        WHEN s.name = 'Close' AND a.name = 'Short' THEN -lt.quantity
+        ELSE 0
+      END
+    ), 0) > 0
+    `,
+    [logicId]
+  );
+  return rows.length;
+}
+
+async function countOpenPositions(pool, logicId) {
+  const longN = await countOpenLongPositions(pool, logicId);
+  const shortN = await countOpenShortPositions(pool, logicId);
+  return longN + shortN;
 }
 
 async function ensureLogicBalance(pool, logic) {
@@ -232,7 +290,7 @@ async function processLogic(pool, logic) {
   const [{ rows: signals }, { rows: securities }] = await Promise.all([
     pool.query(
       `
-      SELECT lis.id, lis.signal_kind, lis.formula, lis.indicator_id, i.code AS indicator_code
+      SELECT lis.id, lis.position_side, lis.signal_kind, lis.formula, lis.indicator_id, i.code AS indicator_code
       FROM logic_indicator_signals lis
       JOIN indicators i ON i.id = lis.indicator_id
       WHERE lis.logic_id = $1 AND lis.is_active = TRUE
@@ -255,11 +313,19 @@ async function processLogic(pool, logic) {
   }
 
   let created = 0;
-  let openPositions = await countOpenLongPositions(pool, logic.id);
+  let openPositions = await countOpenPositions(pool, logic.id);
 
   for (const sec of securities) {
     for (const sig of signals) {
-      const heldQty = await getLongPositionQty(pool, logic.id, sec.security_id);
+      const positionSide = sig.position_side === 'short' ? 'short' : 'long';
+      const heldLong =
+        positionSide === 'long'
+          ? await getLongPositionQty(pool, logic.id, sec.security_id)
+          : 0;
+      const heldShort =
+        positionSide === 'short'
+          ? await getShortPositionQty(pool, logic.id, sec.security_id)
+          : 0;
       const parsed = parseSignalFormula(sig.formula);
       if (!parsed.valid) continue;
 
@@ -290,8 +356,27 @@ async function processLogic(pool, logic) {
       let direction;
       let quantity;
 
-      if (isTrend) {
-        if (heldQty > 0) continue;
+      if (positionSide === 'long') {
+        if (isTrend) {
+          if (heldLong > 0) continue;
+          if (openPositions >= maxPositions) continue;
+          quantity = calcOpenQuantity(balance, positionSizePct, priceRow.price);
+          if (quantity < 1) {
+            if (isFake) continue;
+            quantity = 1;
+          }
+          sideId = sideOpenId;
+          actionId = actionLongId;
+          direction = 'BUY';
+        } else {
+          if (heldLong <= 0) continue;
+          quantity = heldLong;
+          sideId = sideCloseId;
+          actionId = actionLongId;
+          direction = 'SELL';
+        }
+      } else if (isTrend) {
+        if (heldShort > 0) continue;
         if (openPositions >= maxPositions) continue;
         quantity = calcOpenQuantity(balance, positionSizePct, priceRow.price);
         if (quantity < 1) {
@@ -299,14 +384,14 @@ async function processLogic(pool, logic) {
           quantity = 1;
         }
         sideId = sideOpenId;
-        actionId = actionLongId;
-        direction = 'BUY';
-      } else {
-        if (heldQty <= 0) continue;
-        quantity = heldQty;
-        sideId = sideCloseId;
-        actionId = actionLongId;
+        actionId = actionShortId;
         direction = 'SELL';
+      } else {
+        if (heldShort <= 0) continue;
+        quantity = heldShort;
+        sideId = sideCloseId;
+        actionId = actionShortId;
+        direction = 'BUY';
       }
 
       let isSimulated = isFake;
@@ -360,11 +445,16 @@ async function processLogic(pool, logic) {
 
       if (isFake && balance != null && status !== 'rejected') {
         const notional = quantity * priceRow.price;
-        if (direction === 'BUY') {
-          balance -= notional;
+        const isOpen =
+          (positionSide === 'long' && isTrend) || (positionSide === 'short' && isTrend);
+        if (positionSide === 'long') {
+          balance += isOpen ? -notional : notional;
+        } else {
+          balance += isOpen ? notional : -notional;
+        }
+        if (isOpen) {
           openPositions += 1;
         } else {
-          balance += notional;
           openPositions = Math.max(0, openPositions - 1);
         }
         await updateLogicBalance(pool, logic.id, balance);

@@ -397,7 +397,8 @@
 
                         <p class="signals-help">
                           Кол-во лота: <code>floor(остаток × % / 100 / цена)</code>, минимум 1.
-                          Сигнал <strong>тренд</strong> — покупка (Open Long), <strong>к-тренд</strong> — продажа (Close Long), если есть позиция.
+                          Сигнал <strong>тренд</strong> — открытие позиции, <strong>к-тренд</strong> — закрытие.
+                          Long: покупка/продажа; Short: продажа/покупка.
                         </p>
 
                       </div>
@@ -432,31 +433,19 @@
                         <span class="signals-summary-actions">
 
                           <button
-
                             type="button"
-
-                            class="btn btn-sm btn-trend"
-
-                            (click)="openSignalPicker(row.id, 'trend', $event)"
-
+                            class="btn btn-sm btn-long"
+                            (click)="openSignalPicker(row.id, 'long', $event)"
                           >
-
-                            + Тренд
-
+                            + Индикатор Long
                           </button>
 
                           <button
-
                             type="button"
-
-                            class="btn btn-sm btn-counter"
-
-                            (click)="openSignalPicker(row.id, 'counter', $event)"
-
+                            class="btn btn-sm btn-short"
+                            (click)="openSignalPicker(row.id, 'short', $event)"
                           >
-
-                            + К-тренд
-
+                            + Индикатор Short
                           </button>
 
                         </span>
@@ -465,16 +454,45 @@
 
                       <div class="signals-body">
 
-                      @if (isPickerOpen(row.id, 'trend') || isPickerOpen(row.id, 'counter')) {
+                      @if (isPickerOpen(row.id) && signalPicker) {
 
                         <div class="indicator-picker">
 
                           <p class="picker-title">
+                            Добавить индикатор —
+                            <strong>{{ positionSideLabel(signalPicker.positionSide) }}</strong>
+                          </p>
 
-                            Выберите индикаторы
+                          <div class="signal-picker-options" (click)="$event.stopPropagation()">
 
-                            ({{ signalKindLabel(signalPicker!.kind) }}) — двойной клик или галочки + «Добавить»
+                            <span class="picker-option-label">Тип сигнала:</span>
 
+                            <label class="picker-radio">
+                              <input
+                                type="radio"
+                                name="picker-kind-{{ row.id }}"
+                                [checked]="signalPicker.signalKind === 'trend'"
+                                (change)="onPickerSignalKindChange('trend')"
+                              />
+                              Тренд
+                            </label>
+
+                            <label class="picker-radio">
+                              <input
+                                type="radio"
+                                name="picker-kind-{{ row.id }}"
+                                [checked]="signalPicker.signalKind === 'counter'"
+                                (change)="onPickerSignalKindChange('counter')"
+                              />
+                              К-тренд
+                            </label>
+
+                          </div>
+
+                          <p class="picker-hint">
+                            Формула по умолчанию — из
+                            <code>sig_trend_def</code> / <code>sig_ct_def</code> индикатора
+                            ({{ signalKindLabel(signalPicker.signalKind) }}).
                           </p>
 
                           @if (!indicatorsLoaded) {
@@ -488,30 +506,26 @@
                               @for (ind of indicatorsCatalog; track ind.id) {
 
                                 <li
-
                                   class="picker-item"
-
                                   [class.selected]="isPickerSelected(ind.id)"
-
                                   (dblclick)="onPickerRowDblClick(ind)"
-
                                 >
 
                                   <label>
 
                                     <input
-
                                       type="checkbox"
-
                                       [checked]="isPickerSelected(ind.id)"
-
                                       (change)="togglePickerSelection(ind.id)"
-
                                     />
 
                                     <span class="picker-code">{{ ind.code }}</span>
 
                                     <span class="picker-name">{{ ind.name }}</span>
+
+                                    @if (isPickerSelected(ind.id)) {
+                                      <code class="picker-formula-preview">{{ pickerPreviewFormula(ind) }}</code>
+                                    }
 
                                   </label>
 
@@ -526,25 +540,16 @@
                           <div class="picker-actions">
 
                             <button
-
                               type="button"
-
                               class="btn btn-sm btn-ok"
-
                               [disabled]="pickerSelectedIds.size === 0"
-
                               (click)="addSelectedSignals()"
-
                             >
-
-                              ОК — добавить ({{ pickerSelectedIds.size }})
-
+                              Добавить ({{ pickerSelectedIds.size }})
                             </button>
 
                             <button type="button" class="btn btn-sm btn-muted" (click)="closeSignalPicker()">
-
                               Отмена
-
                             </button>
 
                           </div>
@@ -558,6 +563,8 @@
                         <thead>
 
                           <tr>
+
+                            <th>Сторона</th>
 
                             <th>Тип</th>
 
@@ -580,13 +587,21 @@
                               <td>
 
                                 <span
-
                                   class="sig-badge"
+                                  [class.sig-long]="sig.position_side === 'long'"
+                                  [class.sig-short]="sig.position_side === 'short'"
+                                >
+                                  {{ positionSideLabel(sig.position_side) }}
+                                </span>
 
+                              </td>
+
+                              <td>
+
+                                <span
+                                  class="sig-badge"
                                   [class.sig-trend]="sig.signal_kind === 'trend'"
-
                                   [class.sig-counter]="sig.signal_kind === 'counter'"
-
                                 >
 
                                   {{ signalKindLabel(sig.signal_kind) }}

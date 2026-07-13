@@ -1,6 +1,6 @@
 -- ============================================
 -- MultiLogicTrade — шаг 1: таблицы и справочники
--- Версия: v18 (идемпотентный запуск)
+-- Версия: v19 (идемпотентный запуск)
 -- ============================================
 -- Подключение: база multilogictrade
 -- Можно выполнять многократно: объекты и строки не дублируются.
@@ -943,13 +943,34 @@ CREATE TABLE IF NOT EXISTS logic_indicator_signals (
     id SERIAL PRIMARY KEY,
     logic_id INTEGER NOT NULL REFERENCES logics(id) ON DELETE CASCADE,
     indicator_id INTEGER NOT NULL REFERENCES indicators(id) ON DELETE RESTRICT,
+    position_side VARCHAR(10) NOT NULL DEFAULT 'long' CHECK (position_side IN ('long', 'short')),
     signal_kind VARCHAR(10) NOT NULL CHECK (signal_kind IN ('trend', 'counter')),
     formula TEXT NOT NULL,
     display_order INTEGER NOT NULL DEFAULT 0,
     is_active BOOLEAN NOT NULL DEFAULT TRUE,
     created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    UNIQUE (logic_id, indicator_id, signal_kind)
+    UNIQUE (logic_id, indicator_id, position_side, signal_kind)
 );
+
+-- Миграция v18 → v19: position_side (long | short)
+ALTER TABLE logic_indicator_signals ADD COLUMN IF NOT EXISTS position_side VARCHAR(10) NOT NULL DEFAULT 'long';
+
+DO $$
+BEGIN
+    ALTER TABLE logic_indicator_signals ADD CONSTRAINT logic_indicator_signals_position_side_check
+        CHECK (position_side IN ('long', 'short'));
+EXCEPTION
+    WHEN duplicate_object THEN NULL;
+END $$;
+
+UPDATE logic_indicator_signals SET position_side = 'long' WHERE position_side IS NULL OR position_side = '';
+
+ALTER TABLE logic_indicator_signals DROP CONSTRAINT IF EXISTS logic_indicator_signals_logic_id_indicator_id_signal_kind_key;
+
+DROP INDEX IF EXISTS logic_indicator_signals_logic_id_indicator_id_signal_kind_key;
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_logic_indicator_signals_unique
+    ON logic_indicator_signals (logic_id, indicator_id, position_side, signal_kind);
 
 CREATE INDEX IF NOT EXISTS idx_logic_indicator_signals_logic_id
     ON logic_indicator_signals(logic_id);
@@ -958,6 +979,7 @@ CREATE INDEX IF NOT EXISTS idx_logic_indicator_signals_indicator_id
 
 COMMENT ON TABLE logic_indicator_signals IS
 'Сигналы индикаторов для logics: формула @CODE(params) + условие из indicators.sig_*_def';
+COMMENT ON COLUMN logic_indicator_signals.position_side IS 'long | short — сторона позиции сигнала';
 COMMENT ON COLUMN logic_indicator_signals.signal_kind IS 'trend | counter';
 COMMENT ON COLUMN logic_indicator_signals.formula IS
 'Редактируемая формула: @RSI(period=14,series=VALUE) VALUE > 50';
@@ -1003,21 +1025,21 @@ COMMENT ON TABLE logic_securities IS
 COMMENT ON COLUMN logic_securities.display_order IS 'Порядок отображения в UI';
 
 -- Демо-логика SMA Price Cross Demo: сигналы и бумага SBER
-INSERT INTO logic_indicator_signals (logic_id, indicator_id, signal_kind, formula, display_order)
-SELECT l.id, i.id, 'trend', '@SMA(period=20,series=VALUE) pp > VALUE', 0
+INSERT INTO logic_indicator_signals (logic_id, indicator_id, position_side, signal_kind, formula, display_order)
+SELECT l.id, i.id, 'long', 'trend', '@SMA(period=20,series=VALUE) pp > VALUE', 0
 FROM logics l
 CROSS JOIN indicators i
 WHERE l.name = 'SMA Price Cross Demo' AND i.code = 'SMA'
-ON CONFLICT (logic_id, indicator_id, signal_kind) DO UPDATE SET
+ON CONFLICT (logic_id, indicator_id, position_side, signal_kind) DO UPDATE SET
     formula = EXCLUDED.formula,
     is_active = TRUE;
 
-INSERT INTO logic_indicator_signals (logic_id, indicator_id, signal_kind, formula, display_order)
-SELECT l.id, i.id, 'counter', '@SMA(period=20,series=VALUE) pp < VALUE', 1
+INSERT INTO logic_indicator_signals (logic_id, indicator_id, position_side, signal_kind, formula, display_order)
+SELECT l.id, i.id, 'long', 'counter', '@SMA(period=20,series=VALUE) pp < VALUE', 1
 FROM logics l
 CROSS JOIN indicators i
 WHERE l.name = 'SMA Price Cross Demo' AND i.code = 'SMA'
-ON CONFLICT (logic_id, indicator_id, signal_kind) DO UPDATE SET
+ON CONFLICT (logic_id, indicator_id, position_side, signal_kind) DO UPDATE SET
     formula = EXCLUDED.formula,
     is_active = TRUE;
 

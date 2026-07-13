@@ -1,6 +1,7 @@
 import { IndicatorRow } from '../models/lookup.model';
 
 export type SignalKind = 'trend' | 'counter';
+export type PositionSide = 'long' | 'short';
 
 export interface ParsedSignalFormula {
   raw: string;
@@ -120,4 +121,9 @@ export function parseSignalFormula(raw: string): ParsedSignalFormula {
 /** Краткая подпись вида сигнала для UI. */
 export function signalKindLabel(kind: SignalKind): string {
   return kind === 'trend' ? 'Тренд' : 'К-тренд';
+}
+
+/** Подпись стороны позиции для UI. */
+export function positionSideLabel(side: PositionSide): string {
+  return side === 'long' ? 'Long' : 'Short';
 }

@@ -372,6 +372,18 @@ tbody tr:hover {
   background: #eff6ff;
 }
 
+.btn-long {
+  border-color: #86efac;
+  color: #15803d;
+  background: #f0fdf4;
+}
+
+.btn-short {
+  border-color: #fca5a5;
+  color: #b91c1c;
+  background: #fef2f2;
+}
+
 .btn-counter {
   border-color: #fcd34d;
   color: #92400e;
@@ -388,8 +400,43 @@ tbody tr:hover {
   padding: 0.65rem 0.75rem;
   margin-bottom: 0.75rem;
   background: #f1f5f9;
-  max-height: 220px;
+  max-height: 320px;
   overflow: auto;
+}
+
+.signal-picker-options {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.75rem;
+  margin-bottom: 0.5rem;
+  font-size: 0.85rem;
+}
+
+.picker-option-label {
+  color: #475569;
+  font-weight: 600;
+}
+
+.picker-radio {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  cursor: pointer;
+}
+
+.picker-hint {
+  margin: 0 0 0.5rem;
+  font-size: 0.78rem;
+  color: #64748b;
+}
+
+.picker-formula-preview {
+  display: block;
+  margin-top: 0.25rem;
+  font-size: 0.72rem;
+  color: #334155;
+  word-break: break-word;
 }
 
 .picker-title {
@@ -500,6 +547,16 @@ tbody tr:hover {
 .sig-trend {
   background: #dbeafe;
   color: #1d4ed8;
+}
+
+.sig-long {
+  background: #dcfce7;
+  color: #15803d;
+}
+
+.sig-short {
+  background: #fee2e2;
+  color: #b91c1c;
 }
 
 .sig-counter {

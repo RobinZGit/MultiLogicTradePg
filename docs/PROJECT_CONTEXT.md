@@ -25,7 +25,7 @@
 | Файл | Назначение |
 |------|------------|
 | `00_create_database.sql` | **DROP + CREATE** базы `multilogictrade` (полное пересоздание) |
-| `01_multilogictrade_tables_and_data.sql` | Таблицы, индексы, справочники (идемпотентно, **v18**) |
+| `01_multilogictrade_tables_and_data.sql` | Таблицы, индексы, справочники (идемпотентно, **v19**) |
 | `02_multilogictrade_functions_and_procedures.sql` | Функции и процедуры (идемпотентно) |
 | `03_multilogictrade_examples.sql` | Примеры SELECT (необязательно) |
 
@@ -71,7 +71,7 @@
 
 - справочник `indicators` (32 шт.: + **SMAT3**), классические + **PACC** + пользовательские через `formula`;
 - **`indicators.sig_trend_def`**, **`indicators.sig_ct_def`** — условия тренда/контртренда по умолчанию (на сериях: `VALUE > 50`, `pp > VALUE`, …);
-- **`logic_indicator_signals`** — сигналы индикаторов на логике (`logic_id`, `indicator_id`, `signal_kind` trend|counter, `formula`);
+- **`logic_indicator_signals`** — сигналы индикаторов на логике (`position_side` long|short, `signal_kind` trend|counter, `formula`);
 - **`logic_stops`** — стоп-лосс и тейк-профит по логике (`rule_kind` stop_loss|take_profit, `scope_type` security|portfolio, `value`, `value_unit` percent|atr);
 - **`logic_securities`** — портфель бумаг логики (`logic_id`, `security_id`, `display_order`, `is_active`);
 - **`logic_trades`** — сделки по сигналам: `is_simulated` (фейковый счёт), **`is_fictitious`** (резерв), `signal_kind`, `bar_dt`, `status`, `broker_order_id`;
@@ -122,6 +122,7 @@
 32. **Logics — сделки:** таблица `logic_trades`, trade runner по включённым логикам, UI блок «Сделки»; поля `is_simulated` / `is_fictitious`.
 33. **Logics — параметры торговли:** `position_size_pct`, `max_open_positions`, `initial_balance`, `current_balance`; UI блок «Параметры логики»; runner — расчёт лота и лимит позиций; демо `SMA Price Cross Demo`.
 34. **Fix params UI:** черновик в Map (не теряются правки), % показывается как `10` не `10.0000`, сообщение об ошибке сохранения; T-Bank токен при включении фейковой логики.
+35. **logic_indicator_signals.position_side:** Long/Short; кнопки «+ Индикатор Long/Short», тренд/к-тренд на форме picker.
 
 ### Автотесты
 
@@ -255,3 +256,4 @@
 35. «Сделки по включённой логике в реальном времени по сигналам; реальный/фейковый счёт; поле Фиктивная (резерв); блок «Сделки» на logics; таблица сделок».
 36. «Параметры логики: % депозита, макс. открытых позиций, начальный остаток (фейк); текущий остаток в logics; блок «Параметры» сверху; расчёт лота и лимит позиций; сделки по выбранным сигналам индикаторов; демо SMA на FAKE-EFF-001 (выше SMA покупаем, ниже продаём) + SBER».
 37. «Fix: % депозита 10.0000 / не сохраняются параметры; TS2322; T-Bank токен при включении фейковой логики; в репо».
+38. «Сигналы: поле Long/Short; кнопки + Long/+ Short; тренд/к-тренд на форме; выложить».

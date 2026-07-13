@@ -22,6 +22,8 @@ import { TbankTokenDialogComponent } from '../tbank-token-dialog/tbank-token-dia
 import {
   buildLogicSignalFormula,
   parseSignalFormula,
+  positionSideLabel,
+  PositionSide,
   signalKindLabel,
   SignalKind,
 } from '../shared/signal-formula';
@@ -45,7 +47,8 @@ const POLL_INTERVAL_MS = 2000;
 
 type SignalPickerState = {
   logicId: number;
-  kind: SignalKind;
+  positionSide: PositionSide;
+  signalKind: SignalKind;
 } | null;
 
 type StopFormState = {
@@ -192,6 +195,7 @@ export class LogicsComponent implements OnInit, OnDestroy {
   }
 
   signalKindLabel = signalKindLabel;
+  positionSideLabel = positionSideLabel;
   ruleKindLabel = ruleKindLabel;
   scopeTypeLabel = scopeTypeLabel;
   valueUnitLabel = valueUnitLabel;
@@ -734,9 +738,13 @@ export class LogicsComponent implements OnInit, OnDestroy {
     return this.signalsLoading.has(logicId);
   }
 
-  openSignalPicker(logicId: number, kind: SignalKind, event: Event): void {
+  openSignalPicker(logicId: number, positionSide: PositionSide, event: Event): void {
     event.stopPropagation();
-    this.signalPicker = { logicId, kind };
+    this.signalPicker = {
+      logicId,
+      positionSide,
+      signalKind: positionSide === 'long' ? 'trend' : 'counter',
+    };
     this.pickerSelectedIds.clear();
     if (!this.expandedLogics.has(logicId)) {
       this.expandedLogics.add(logicId);
@@ -745,15 +753,24 @@ export class LogicsComponent implements OnInit, OnDestroy {
     this.loadSignalsForLogic(logicId);
   }
 
+  onPickerSignalKindChange(kind: SignalKind): void {
+    if (this.signalPicker) {
+      this.signalPicker = { ...this.signalPicker, signalKind: kind };
+    }
+  }
+
+  pickerPreviewFormula(indicator: IndicatorRow): string {
+    if (!this.signalPicker) return '';
+    return buildLogicSignalFormula(indicator, this.signalPicker.signalKind);
+  }
+
   closeSignalPicker(): void {
     this.signalPicker = null;
     this.pickerSelectedIds.clear();
   }
 
-  isPickerOpen(logicId: number, kind: SignalKind): boolean {
-    return (
-      this.signalPicker?.logicId === logicId && this.signalPicker.kind === kind
-    );
+  isPickerOpen(logicId: number): boolean {
+    return this.signalPicker?.logicId === logicId;
   }
 
   togglePickerSelection(indicatorId: number): void {
@@ -777,10 +794,12 @@ export class LogicsComponent implements OnInit, OnDestroy {
 
   addSelectedSignals(): void {
     if (!this.signalPicker || this.pickerSelectedIds.size === 0) return;
-    const { logicId, kind } = this.signalPicker;
+    const { logicId, positionSide, signalKind } = this.signalPicker;
     const existing = new Set(
       this.signalsFor(logicId)
-        .filter((s) => s.signal_kind === kind)
+        .filter(
+          (s) => s.position_side === positionSide && s.signal_kind === signalKind
+        )
         .map((s) => s.indicator_id)
     );
     const toAdd = [...this.pickerSelectedIds].filter((id) => !existing.has(id));
@@ -795,12 +814,13 @@ export class LogicsComponent implements OnInit, OnDestroy {
         pending -= 1;
         continue;
       }
-      const formula = buildLogicSignalFormula(ind, kind);
+      const formula = buildLogicSignalFormula(ind, signalKind);
       this.logicsService
         .createLogicIndicatorSignal({
           logic_id: logicId,
           indicator_id: indicatorId,
-          signal_kind: kind,
+          position_side: positionSide,
+          signal_kind: signalKind,
           formula,
         })
         .subscribe({

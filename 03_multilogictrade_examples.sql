@@ -341,7 +341,7 @@ JOIN accounts a ON a.id = l.account_id
 WHERE l.name = 'SMA Price Cross Demo';
 
 -- 6.4 Сигналы и бумаги демо-логики
-SELECT l.name, lis.signal_kind, lis.formula, i.code AS indicator
+SELECT l.name, lis.position_side, lis.signal_kind, lis.formula, i.code AS indicator
 FROM logics l
 JOIN logic_indicator_signals lis ON lis.logic_id = l.id
 JOIN indicators i ON i.id = lis.indicator_id
