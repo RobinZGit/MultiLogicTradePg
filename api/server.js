@@ -43,8 +43,21 @@ app.get('/api/health', async (_req, res) => {
   }
 });
 
-app.get('/api/settings/tbank-token', async (_req, res) => {
+app.get('/api/settings/tbank-token', async (req, res) => {
+  const validate = req.query.validate === '1' || req.query.validate === 'true';
   try {
+    if (validate) {
+      const { rows } = await pool.query(
+        'SELECT tbank_verify_token() AS status'
+      );
+      const status = rows[0]?.status ?? {};
+      res.json({
+        has_token: Boolean(status.has_token),
+        valid: Boolean(status.valid),
+        error_message: status.error_message ?? null,
+      });
+      return;
+    }
     const { rows } = await pool.query(
       'SELECT tbank_token_is_configured() AS has_token'
     );
@@ -64,7 +77,25 @@ app.put('/api/settings/tbank-token', async (req, res) => {
   }
   try {
     await pool.query('CALL set_tbank_token($1)', [token]);
-    res.json({ ok: true, has_token: true });
+    const { rows } = await pool.query('SELECT tbank_verify_token() AS status');
+    const status = rows[0]?.status ?? {};
+    if (!status.valid) {
+      res.status(400).json({
+        error:
+          status.error_message ||
+          'Токен сохранён, но T-Bank его не принял. Проверьте API-токен.',
+        has_token: Boolean(status.has_token),
+        valid: false,
+        error_message: status.error_message ?? null,
+      });
+      return;
+    }
+    res.json({
+      ok: true,
+      has_token: true,
+      valid: true,
+      error_message: null,
+    });
   } catch (err) {
     console.error('PUT /api/settings/tbank-token', err);
     res.status(500).json({ error: err.message });

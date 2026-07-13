@@ -130,7 +130,11 @@ export class LogicsComponent implements OnInit, OnDestroy {
   readonly stopUnits = LOGIC_STOP_UNITS;
 
   tbankTokenDialogOpen = false;
+  tbankTokenDialogContext: 'prices' | 'logic' | 'trades' = 'logic';
+  tbankTokenDialogReason: 'missing' | 'invalid' = 'missing';
   private pendingEnableLogic: LogicRow | null = null;
+  private lastTbankTokenCheckAt = 0;
+  private readonly tbankTokenCheckMs = 30000;
 
   private readonly destroy$ = new Subject<void>();
   private savingIds = new Set<number>();
@@ -203,6 +207,7 @@ export class LogicsComponent implements OnInit, OnDestroy {
           this.error = null;
           // Сделки — read-only, обновляем; редактируемые блоки (параметры, формулы) — нет
           this.refreshExpandedTrades();
+          this.maybeCheckTbankTokenForTrades();
         },
         error: (err) => {
           if (this.loading || this.logics.length === 0) {
@@ -1137,10 +1142,12 @@ export class LogicsComponent implements OnInit, OnDestroy {
     if (this.savingIds.has(row.id)) return;
 
     if (checked && row.account_type === 'fake') {
-      this.settings.getTbankTokenStatus().subscribe({
-        next: ({ has_token }) => {
-          if (!has_token) {
+      this.settings.getTbankTokenStatus(true).subscribe({
+        next: (status) => {
+          if (!status.has_token || !status.valid) {
             this.pendingEnableLogic = row;
+            this.tbankTokenDialogContext = 'logic';
+            this.tbankTokenDialogReason = status.has_token ? 'invalid' : 'missing';
             this.tbankTokenDialogOpen = true;
             return;
           }
@@ -1156,6 +1163,7 @@ export class LogicsComponent implements OnInit, OnDestroy {
 
   onTbankTokenSavedForLogic(): void {
     this.tbankTokenDialogOpen = false;
+    this.lastTbankTokenCheckAt = Date.now();
     const row = this.pendingEnableLogic;
     this.pendingEnableLogic = null;
     if (row) {
@@ -1166,6 +1174,31 @@ export class LogicsComponent implements OnInit, OnDestroy {
   onTbankTokenCancelledForLogic(): void {
     this.tbankTokenDialogOpen = false;
     this.pendingEnableLogic = null;
+  }
+
+  private hasEnabledLogic(): boolean {
+    return this.logics.some((l) => l.is_enabled);
+  }
+
+  /** Проверка токена для runner: не дублируем диалог, если уже открыт. */
+  private maybeCheckTbankTokenForTrades(): void {
+    if (this.tbankTokenDialogOpen) return;
+    if (!this.hasEnabledLogic()) return;
+
+    const now = Date.now();
+    if (now - this.lastTbankTokenCheckAt < this.tbankTokenCheckMs) return;
+    this.lastTbankTokenCheckAt = now;
+
+    this.settings.getTbankTokenStatus(true).subscribe({
+      next: (status) => {
+        if (this.tbankTokenDialogOpen) return;
+        if (status.valid) return;
+        this.tbankTokenDialogContext = 'trades';
+        this.tbankTokenDialogReason = status.has_token ? 'invalid' : 'missing';
+        this.tbankTokenDialogOpen = true;
+      },
+      error: () => {},
+    });
   }
 
   private applyEnabledChange(row: LogicRow, checked: boolean): void {

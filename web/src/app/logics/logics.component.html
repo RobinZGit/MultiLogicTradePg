@@ -1611,7 +1611,8 @@
 
   <app-tbank-token-dialog
     [open]="tbankTokenDialogOpen"
-    context="logic"
+    [context]="tbankTokenDialogContext"
+    [reason]="tbankTokenDialogReason"
     (saved)="onTbankTokenSavedForLogic()"
     (cancelled)="onTbankTokenCancelledForLogic()"
   />

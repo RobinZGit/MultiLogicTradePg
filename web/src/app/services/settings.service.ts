@@ -5,6 +5,8 @@ import { AppConfigService } from './app-config.service';
 
 export interface TbankTokenStatus {
   has_token: boolean;
+  valid?: boolean;
+  error_message?: string | null;
 }
 
 @Injectable({ providedIn: 'root' })
@@ -14,14 +16,19 @@ export class SettingsService {
     private readonly appConfig: AppConfigService
   ) {}
 
-  getTbankTokenStatus(): Observable<TbankTokenStatus> {
+  getTbankTokenStatus(validate = false): Observable<TbankTokenStatus> {
+    const params: Record<string, string> = {};
+    if (validate) {
+      params['validate'] = '1';
+    }
     return this.http.get<TbankTokenStatus>(
-      `${this.appConfig.apiUrl}/settings/tbank-token`
+      `${this.appConfig.apiUrl}/settings/tbank-token`,
+      { params }
     );
   }
 
-  saveTbankToken(token: string): Observable<{ ok: boolean; has_token: boolean }> {
-    return this.http.put<{ ok: boolean; has_token: boolean }>(
+  saveTbankToken(token: string): Observable<TbankTokenStatus & { ok: boolean }> {
+    return this.http.put<TbankTokenStatus & { ok: boolean }>(
       `${this.appConfig.apiUrl}/settings/tbank-token`,
       { token }
     );

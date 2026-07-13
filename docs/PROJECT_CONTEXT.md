@@ -5,7 +5,7 @@
 > Включать **запросы пользователя текстом** (секция «Запросы пользователя»).
 
 **Репозиторий:** https://github.com/RobinZGit/MultiLogicTradePg  
-**Последнее обновление:** 2026-07-13 (v31: PnL, комиссия, пакеты сделок FIFO/средняя)
+**Последнее обновление:** 2026-07-13 (v32: проверка токена T-Bank для trade runner)
 
 ---
 
@@ -138,6 +138,7 @@
 45. **v29 runner только с UI:** heartbeat Angular → `touch_trade_runner_ui_heartbeat`; `run_trade_cycle` пропускает без UI; блок сделок со scroll.
 46. **v30 intraday TF:** runner **15 с**; `logic_trade_sync_point_count` (M1=400, M2=300, M5=200 свечей); T-Bank UTC→MSK (`market_candle_dt_from_iso`).
 47. **v31 PnL и пакеты сделок:** параметры **`commission_pct`** (% от депозита на сделку для фейка) и **`cost_method`** (FIFO / AVERAGE); колонки `logic_trades.commission`, `financial_result`; таблица **`logic_trade_lots`**; функции `logic_trade_finalize`, `logic_trade_build_lots`, `logic_trade_rebuild_pnl`; UI — параметры комиссии/метода, разворот строки сделки → таблица пакетов; API `GET /api/logic-trade-lots?trade_id=`; fix клика по блоку «Сделки»; исходник `sql/logic_trade_pnl.sql`.
+48. **v32 проверка токена T-Bank:** `tbank_verify_token()` (GetAccounts); `GET /api/settings/tbank-token?validate=1`; PUT проверяет токен после сохранения; UI logics — диалог «токен неактивен» при включённой логике (раз в 30 с, не дублируется если диалог открыт); `sql/tbank_token_verify.sql`.
 
 ### Автотесты
 
@@ -286,3 +287,4 @@
 43. «Из демо убрать counter-сигналы — только long-trend и short-trend».
 44. «Сделки не идут — переделать runner: timeframe в параметрах, цикл в PostgreSQL (pg_cron job), парсинг сигналов в БД; пересобрать БД; в репо».
 45. «Финансовый результат сделок: комиссия % от депозита (фейк) / с биржи (реал); метод FIFO или средняя; таблица пакетов по сделкам; разворот сделки в UI; параметры в блоке параметров; блок «Сделки» не разворачивается — исправить».
+46. «Проверка токена T-Bank при сделках: если не валиден — сообщение и диалог ввода; если диалог уже открыт — не дублировать; пересобрать БД с нуля».
