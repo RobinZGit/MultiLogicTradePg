@@ -6,6 +6,12 @@ const {
   hashToken,
 } = require('./tbank');
 const { runTradeCycle, startTradeRunner } = require('./trade-runner');
+const {
+  getTradingParams,
+  saveTradingParams,
+  ensureDefaultParams,
+  getLogicParamsDetailed,
+} = require('./lib/logic-params');
 
 const app = express();
 const port = Number(process.env.PORT) || 3000;
@@ -759,10 +765,6 @@ app.get('/api/logics', async (_req, res) => {
         l.name,
         l.account_id,
         l.is_enabled,
-        l.position_size_pct,
-        l.max_open_positions,
-        l.initial_balance,
-        l.current_balance,
         a.account_code,
         a.name AS account_name,
         a.account_type,
@@ -775,21 +777,59 @@ app.get('/api/logics', async (_req, res) => {
       JOIN brokers b ON b.id = a.broker_id
       ORDER BY l.id
     `);
-    res.json(
-      rows.map((r) => ({
-        ...r,
-        position_size_pct:
-          r.position_size_pct != null ? Number(r.position_size_pct) : 10,
-        max_open_positions:
-          r.max_open_positions != null ? Number(r.max_open_positions) : 5,
-        initial_balance:
-          r.initial_balance != null ? Number(r.initial_balance) : null,
-        current_balance:
-          r.current_balance != null ? Number(r.current_balance) : null,
-      }))
-    );
+    const result = [];
+    for (const r of rows) {
+      const params = await getTradingParams(pool, r.id);
+      result.push({ ...r, ...params });
+    }
+    res.json(result);
   } catch (err) {
     console.error('GET /api/logics', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.get('/api/logic-params', async (req, res) => {
+  const logicId = Number(req.query.logic_id);
+  if (!Number.isInteger(logicId) || logicId <= 0) {
+    res.status(400).json({ error: 'logic_id required' });
+    return;
+  }
+  try {
+    const rows = await getLogicParamsDetailed(pool, logicId);
+    const trading = await getTradingParams(pool, logicId);
+    res.json({ logic_id: logicId, trading, params: rows });
+  } catch (err) {
+    console.error('GET /api/logic-params', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.put('/api/logic-params', async (req, res) => {
+  const logicId = Number(req.body?.logic_id);
+  if (!Number.isInteger(logicId) || logicId <= 0) {
+    res.status(400).json({ error: 'logic_id required' });
+    return;
+  }
+  const parsed = parseLogicTradingParams(req.body);
+  if (parsed.error) {
+    res.status(400).json({ error: parsed.error });
+    return;
+  }
+  try {
+    const { rows: exists } = await pool.query(
+      'SELECT id FROM logics WHERE id = $1',
+      [logicId]
+    );
+    if (exists.length === 0) {
+      res.status(404).json({ error: 'Logic not found' });
+      return;
+    }
+    const trading = await saveTradingParams(pool, logicId, parsed);
+    const params = await getLogicParamsDetailed(pool, logicId);
+    res.json({ logic_id: logicId, trading, params });
+  } catch (err) {
+    console.error('PUT /api/logic-params', err);
     res.status(500).json({ error: err.message });
   }
 });
@@ -1151,7 +1191,10 @@ app.post('/api/logics', async (req, res) => {
       `,
       [parsed.name, parsed.account_id, parsed.is_enabled]
     );
-    res.status(201).json(rows[0]);
+    const row = rows[0];
+    await ensureDefaultParams(pool, row.id);
+    const params = await getTradingParams(pool, row.id);
+    res.status(201).json({ ...row, ...params });
   } catch (err) {
     console.error('POST /api/logics', err);
     if (err.code === '23505') {
@@ -1298,62 +1341,18 @@ app.patch('/api/logics/:id/trading-params', async (req, res) => {
   }
 
   try {
-    const sets = [];
-    const vals = [];
-    let idx = 1;
-
-    if (parsed.position_size_pct !== undefined) {
-      sets.push(`position_size_pct = $${idx++}`);
-      vals.push(parsed.position_size_pct);
-    }
-    if (parsed.max_open_positions !== undefined) {
-      sets.push(`max_open_positions = $${idx++}`);
-      vals.push(parsed.max_open_positions);
-    }
-    if (parsed.initial_balance !== undefined) {
-      sets.push(`initial_balance = $${idx++}`);
-      vals.push(parsed.initial_balance);
-      if (parsed.reset_balance) {
-        sets.push(`current_balance = $${idx++}`);
-        vals.push(parsed.initial_balance);
-      }
-    }
-
-    vals.push(id);
-    const { rows } = await pool.query(
-      `
-      UPDATE logics
-      SET ${sets.join(', ')}
-      WHERE id = $${idx}
-      RETURNING
-        id,
-        position_size_pct,
-        max_open_positions,
-        initial_balance,
-        current_balance
-      `,
-      vals
+    const { rows: exists } = await pool.query(
+      'SELECT id FROM logics WHERE id = $1',
+      [id]
     );
-    if (rows.length === 0) {
+    if (exists.length === 0) {
       res.status(404).json({ error: 'Logic not found' });
       return;
     }
-    const row = rows[0];
-    res.json({
-      ...row,
-      position_size_pct: Number(row.position_size_pct),
-      max_open_positions: Number(row.max_open_positions),
-      initial_balance:
-        row.initial_balance != null ? Number(row.initial_balance) : null,
-      current_balance:
-        row.current_balance != null ? Number(row.current_balance) : null,
-    });
+    const trading = await saveTradingParams(pool, id, parsed);
+    res.json({ id, ...trading });
   } catch (err) {
     console.error('PATCH /api/logics/:id/trading-params', err);
-    if (err.code === '23514') {
-      res.status(400).json({ error: 'Недопустимое значение параметра' });
-      return;
-    }
     res.status(500).json({ error: err.message });
   }
 });

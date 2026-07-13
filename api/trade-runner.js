@@ -5,6 +5,10 @@ const {
   parseParamSeries,
   evaluateCondition,
 } = require('./lib/signal-formula');
+const {
+  getTradingParams,
+  updateCurrentBalance,
+} = require('./lib/logic-params');
 
 const DEFAULT_TF = 'M15';
 const RUNNER_INTERVAL_MS = Number(process.env.TRADE_RUNNER_INTERVAL_MS) || 15000;
@@ -184,18 +188,18 @@ async function countOpenPositions(pool, logicId) {
 }
 
 async function ensureLogicBalance(pool, logic) {
-  if (logic.current_balance != null && Number.isFinite(Number(logic.current_balance))) {
-    return Number(logic.current_balance);
+  const params = logic._params || (await getTradingParams(pool, logic.id));
+  logic._params = params;
+  if (params.current_balance != null && Number.isFinite(Number(params.current_balance))) {
+    return Number(params.current_balance);
   }
-  const initial = logic.initial_balance != null ? Number(logic.initial_balance) : null;
+  const initial = params.initial_balance != null ? Number(params.initial_balance) : null;
   if (initial == null || !Number.isFinite(initial)) {
     return null;
   }
-  await pool.query(`UPDATE logics SET current_balance = $1 WHERE id = $2`, [
-    initial,
-    logic.id,
-  ]);
-  logic.current_balance = initial;
+  await updateCurrentBalance(pool, logic.id, initial);
+  params.current_balance = initial;
+  logic._params = params;
   return initial;
 }
 
@@ -210,10 +214,7 @@ function calcOpenQuantity(balance, positionSizePct, price) {
 }
 
 async function updateLogicBalance(pool, logicId, newBalance) {
-  await pool.query(`UPDATE logics SET current_balance = $1 WHERE id = $2`, [
-    newBalance,
-    logicId,
-  ]);
+  await updateCurrentBalance(pool, logicId, newBalance);
 }
 
 async function insertTrade(pool, payload) {
@@ -283,9 +284,11 @@ async function tryRealOrder(pool, accountId, securityId, quantity, price, direct
 async function processLogic(pool, logic) {
   const isFake = logic.account_type === 'fake';
   const tfId = defaultTimeframeId;
+  const params = await getTradingParams(pool, logic.id);
+  logic._params = params;
   let balance = await ensureLogicBalance(pool, logic);
-  const maxPositions = Math.max(1, Number(logic.max_open_positions) || 5);
-  const positionSizePct = Number(logic.position_size_pct) || 10;
+  const maxPositions = Math.max(1, Number(params.max_open_positions) || 5);
+  const positionSizePct = Number(params.position_size_pct) || 10;
 
   const [{ rows: signals }, { rows: securities }] = await Promise.all([
     pool.query(
@@ -458,7 +461,9 @@ async function processLogic(pool, logic) {
           openPositions = Math.max(0, openPositions - 1);
         }
         await updateLogicBalance(pool, logic.id, balance);
-        logic.current_balance = balance;
+        if (logic._params) {
+          logic._params.current_balance = balance;
+        }
       }
     }
   }
@@ -477,14 +482,7 @@ async function runTradeCycle(pool) {
 
     const { rows: logics } = await pool.query(
       `
-      SELECT
-        l.id,
-        l.account_id,
-        l.position_size_pct,
-        l.max_open_positions,
-        l.initial_balance,
-        l.current_balance,
-        a.account_type
+      SELECT l.id, l.account_id, a.account_type
       FROM logics l
       JOIN accounts a ON a.id = l.account_id
       WHERE l.is_enabled = TRUE AND a.is_active = TRUE

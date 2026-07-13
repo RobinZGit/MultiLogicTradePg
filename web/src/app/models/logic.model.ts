@@ -24,11 +24,27 @@ export interface LogicTradingParamsPayload {
 }
 
 export interface LogicTradingParamsResponse {
-  id: number;
   position_size_pct: number;
   max_open_positions: number;
   initial_balance: number | null;
   current_balance: number | null;
+}
+
+export interface LogicParamRow {
+  id: number;
+  logic_id: number;
+  param_key: string;
+  param_value: string;
+  value_type: 'number' | 'integer' | 'money' | 'boolean' | 'text';
+  updated_at?: string;
+  name_ru?: string;
+  description?: string;
+}
+
+export interface LogicParamsResponse {
+  logic_id: number;
+  trading: LogicTradingParamsResponse;
+  params: LogicParamRow[];
 }
 
 export interface LogicIndicatorSignalRow {

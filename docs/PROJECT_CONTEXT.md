@@ -25,7 +25,7 @@
 | Файл | Назначение |
 |------|------------|
 | `00_create_database.sql` | **DROP + CREATE** базы `multilogictrade` (полное пересоздание) |
-| `01_multilogictrade_tables_and_data.sql` | Таблицы, индексы, справочники (идемпотентно, **v19**) |
+| `01_multilogictrade_tables_and_data.sql` | Таблицы, индексы, справочники (идемпотентно, **v20**) |
 | `02_multilogictrade_functions_and_procedures.sql` | Функции и процедуры (идемпотентно) |
 | `03_multilogictrade_examples.sql` | Примеры SELECT (необязательно) |
 
@@ -75,7 +75,7 @@
 - **`logic_stops`** — стоп-лосс и тейк-профит по логике (`rule_kind` stop_loss|take_profit, `scope_type` security|portfolio, `value`, `value_unit` percent|atr);
 - **`logic_securities`** — портфель бумаг логики (`logic_id`, `security_id`, `display_order`, `is_active`);
 - **`logic_trades`** — сделки по сигналам: `is_simulated` (фейковый счёт), **`is_fictitious`** (резерв), `signal_kind`, `bar_dt`, `status`, `broker_order_id`;
-- **`logics.position_size_pct`**, **`max_open_positions`**, **`initial_balance`**, **`current_balance`** — параметры торговли и бумажный депозит;
+- **`logic_param_defs`** + **`logic_params`** — параметры торговли (EAV: ключ, значение, value_type);
 - **`indicators.formula`** — многочлен для `calc_poly_formula_array`; **`is_custom`** — подсветка в списке;
 - **`sma`**, **`ema`**, **`ww()`** — от close; **`sma(period=20)`**, **`sma(period=20, series=VALUE)`** — параметры в ();
 - **`@CODE`**, `*`, `#`, ядра `(1;-2;1)` — единый парсер `poly_*` в `02`;
@@ -84,7 +84,7 @@
 - API: `GET/POST /api/indicators`, `PUT /api/indicators/:id` (formula для `is_custom`);
 - `logics` + `logics_detail` — движок формул **ещё не реализован**;
 - UI **Операции** (`/operations`): пять сворачиваемых блоков — **«Параметры логики»**, **«Сигналы индикаторов»**, **«Стоп-лосс и тейк-профит»**, **«Ценные бумаги»**, **«Сделки»** (по умолчанию свёрнуты);
-- API logics: signals/stops/securities/trades — `GET /api/logic-trades?logic_id=`, `POST /api/logic-trades/run`; **`PATCH /api/logics/:id/trading-params`** — % депозита, макс. позиций, начальный остаток;
+- API logics: **`GET/PUT /api/logic-params`** — чтение/запись `logic_params`; signals/stops/securities/trades;
 - **Trade runner** (`api/trade-runner.js`): каждые ~15 с для `logics.is_enabled=TRUE` — **активные сигналы** `logic_indicator_signals` на бумагах `logic_securities`, M15; условие с `pp` (цена) и `VALUE` (индикатор); **trend→Open Long (BUY)**, **counter→Close Long (SELL)** при открытой позиции; лот = `floor(остаток × % / 100 / цена)`; лимит `max_open_positions`; fake→`is_simulated=true` + пересчёт `current_balance`; real→`tbank_post_order`; env `TRADE_RUNNER_ENABLED=0` отключает;
 - **Демо-логика** в `01`: `SMA Price Cross Demo` на `FAKE-EFF-001` — SMA(20): pp>VALUE покупка, pp<VALUE продажа, SBER, депозит 1M, 10%, макс. 3 позиции;
 
@@ -123,6 +123,7 @@
 33. **Logics — параметры торговли:** `position_size_pct`, `max_open_positions`, `initial_balance`, `current_balance`; UI блок «Параметры логики»; runner — расчёт лота и лимит позиций; демо `SMA Price Cross Demo`.
 34. **Fix params UI:** черновик в Map (не теряются правки), % показывается как `10` не `10.0000`, сообщение об ошибке сохранения; T-Bank токен при включении фейковой логики.
 35. **logic_indicator_signals.position_side:** Long/Short; кнопки «+ Индикатор Long/Short», тренд/к-тренд на форме picker.
+36. **logic_params (v20):** таблица параметров логики EAV; сохранение через PUT /api/logic-params; runner читает из logic_params.
 
 ### Автотесты
 
@@ -257,3 +258,4 @@
 36. «Параметры логики: % депозита, макс. открытых позиций, начальный остаток (фейк); текущий остаток в logics; блок «Параметры» сверху; расчёт лота и лимит позиций; сделки по выбранным сигналам индикаторов; демо SMA на FAKE-EFF-001 (выше SMA покупаем, ниже продаём) + SBER».
 37. «Fix: % депозита 10.0000 / не сохраняются параметры; TS2322; T-Bank токен при включении фейковой логики; в репо».
 38. «Сигналы: поле Long/Short; кнопки + Long/+ Short; тренд/к-тренд на форме; выложить».
+39. «Параметры логики не сохраняются — таблица logic_params (ключ/значение/тип); выложить».

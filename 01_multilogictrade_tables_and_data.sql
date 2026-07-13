@@ -1,6 +1,6 @@
 -- ============================================
 -- MultiLogicTrade — шаг 1: таблицы и справочники
--- Версия: v19 (идемпотентный запуск)
+-- Версия: v20 (идемпотентный запуск)
 -- ============================================
 -- Подключение: база multilogictrade
 -- Можно выполнять многократно: объекты и строки не дублируются.
@@ -915,6 +915,106 @@ ON CONFLICT (name) DO UPDATE SET
     max_open_positions = EXCLUDED.max_open_positions,
     initial_balance = EXCLUDED.initial_balance,
     current_balance = COALESCE(logics.current_balance, EXCLUDED.current_balance);
+
+-- ============================================
+-- Параметры торговой логики (EAV: logic_param_defs + logic_params)
+-- ============================================
+CREATE TABLE IF NOT EXISTS logic_param_defs (
+    param_key VARCHAR(64) PRIMARY KEY,
+    name_ru VARCHAR(200) NOT NULL,
+    value_type VARCHAR(20) NOT NULL CHECK (value_type IN ('number', 'integer', 'money', 'boolean', 'text')),
+    default_value TEXT NOT NULL DEFAULT '',
+    description TEXT,
+    display_order INTEGER NOT NULL DEFAULT 0
+);
+
+INSERT INTO logic_param_defs (param_key, name_ru, value_type, default_value, description, display_order) VALUES
+    ('position_size_pct', '% депозита на сделку', 'number', '10',
+     'Доля текущего остатка на одну покупку (1–100)', 1),
+    ('max_open_positions', 'Макс. открытых позиций', 'integer', '5',
+     'Long/Short позиции по разным бумагам одновременно', 2),
+    ('initial_balance', 'Начальный остаток', 'money', '',
+     'Стартовый депозит бумажной торговли / эталон для расчёта лота', 3),
+    ('current_balance', 'Текущий остаток', 'money', '',
+     'Обновляется trade runner после симулированных сделок', 4)
+ON CONFLICT (param_key) DO UPDATE SET
+    name_ru = EXCLUDED.name_ru,
+    value_type = EXCLUDED.value_type,
+    description = EXCLUDED.description,
+    display_order = EXCLUDED.display_order;
+
+CREATE TABLE IF NOT EXISTS logic_params (
+    id SERIAL PRIMARY KEY,
+    logic_id INTEGER NOT NULL REFERENCES logics(id) ON DELETE CASCADE,
+    param_key VARCHAR(64) NOT NULL REFERENCES logic_param_defs(param_key) ON DELETE RESTRICT,
+    param_value TEXT NOT NULL DEFAULT '',
+    value_type VARCHAR(20) NOT NULL CHECK (value_type IN ('number', 'integer', 'money', 'boolean', 'text')),
+    updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE (logic_id, param_key)
+);
+
+CREATE INDEX IF NOT EXISTS idx_logic_params_logic_id ON logic_params(logic_id);
+
+COMMENT ON TABLE logic_param_defs IS 'Справочник ключей параметров торговой логики';
+COMMENT ON TABLE logic_params IS 'Значения параметров logics: одна строка = один параметр одной логики';
+COMMENT ON COLUMN logic_params.param_key IS 'Имя параметра (ссылка на logic_param_defs)';
+COMMENT ON COLUMN logic_params.param_value IS 'Значение в текстовом виде';
+COMMENT ON COLUMN logic_params.value_type IS 'Тип значения: number | integer | money | boolean | text';
+
+-- Миграция v18/v19 → v20: перенос из колонок logics в logic_params
+INSERT INTO logic_params (logic_id, param_key, param_value, value_type)
+SELECT l.id, 'position_size_pct', l.position_size_pct::text, 'number'
+FROM logics l
+WHERE l.position_size_pct IS NOT NULL
+ON CONFLICT (logic_id, param_key) DO UPDATE SET
+    param_value = EXCLUDED.param_value,
+    updated_at = CURRENT_TIMESTAMP;
+
+INSERT INTO logic_params (logic_id, param_key, param_value, value_type)
+SELECT l.id, 'max_open_positions', l.max_open_positions::text, 'integer'
+FROM logics l
+WHERE l.max_open_positions IS NOT NULL
+ON CONFLICT (logic_id, param_key) DO UPDATE SET
+    param_value = EXCLUDED.param_value,
+    updated_at = CURRENT_TIMESTAMP;
+
+INSERT INTO logic_params (logic_id, param_key, param_value, value_type)
+SELECT l.id, 'initial_balance', l.initial_balance::text, 'money'
+FROM logics l
+WHERE l.initial_balance IS NOT NULL
+ON CONFLICT (logic_id, param_key) DO UPDATE SET
+    param_value = EXCLUDED.param_value,
+    updated_at = CURRENT_TIMESTAMP;
+
+INSERT INTO logic_params (logic_id, param_key, param_value, value_type)
+SELECT l.id, 'current_balance', l.current_balance::text, 'money'
+FROM logics l
+WHERE l.current_balance IS NOT NULL
+ON CONFLICT (logic_id, param_key) DO UPDATE SET
+    param_value = EXCLUDED.param_value,
+    updated_at = CURRENT_TIMESTAMP;
+
+-- Дефолты для всех логик без строк в logic_params
+INSERT INTO logic_params (logic_id, param_key, param_value, value_type)
+SELECT l.id, d.param_key, d.default_value, d.value_type
+FROM logics l
+CROSS JOIN logic_param_defs d
+ON CONFLICT (logic_id, param_key) DO NOTHING;
+
+-- Демо SMA: параметры в logic_params
+INSERT INTO logic_params (logic_id, param_key, param_value, value_type)
+SELECT l.id, v.param_key, v.param_value, v.value_type
+FROM logics l
+CROSS JOIN (VALUES
+    ('position_size_pct', '10', 'number'),
+    ('max_open_positions', '3', 'integer'),
+    ('initial_balance', '1000000', 'money'),
+    ('current_balance', '1000000', 'money')
+) AS v(param_key, param_value, value_type)
+WHERE l.name = 'SMA Price Cross Demo'
+ON CONFLICT (logic_id, param_key) DO UPDATE SET
+    param_value = EXCLUDED.param_value,
+    updated_at = CURRENT_TIMESTAMP;
 
 CREATE TABLE IF NOT EXISTS sides (
     id SERIAL PRIMARY KEY,

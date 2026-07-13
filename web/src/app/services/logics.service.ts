@@ -1,8 +1,8 @@
 import { Injectable } from '@angular/core';
 import { HttpClient } from '@angular/common/http';
-import { Observable } from 'rxjs';
+import { Observable, map } from 'rxjs';
 import { AppConfigService } from './app-config.service';
-import { LogicIndicatorSignalRow, LogicRow, LogicSecurityRow, LogicStopRow, LogicTradingParamsPayload, LogicTradingParamsResponse } from '../models/logic.model';
+import { LogicIndicatorSignalRow, LogicRow, LogicParamsResponse, LogicSecurityRow, LogicStopRow, LogicTradingParamsPayload, LogicTradingParamsResponse } from '../models/logic.model';
 import { LogicTradeRow } from '../shared/logic-trade';
 import { LogicPayload } from '../models/lookup.model';
 
@@ -38,13 +38,29 @@ export class LogicsService {
     );
   }
 
+  getLogicParams(logicId: number): Observable<LogicParamsResponse> {
+    return this.http.get<LogicParamsResponse>(
+      `${this.appConfig.apiUrl}/logic-params`,
+      { params: { logic_id: String(logicId) } }
+    );
+  }
+
+  saveLogicParams(
+    logicId: number,
+    payload: LogicTradingParamsPayload
+  ): Observable<LogicParamsResponse> {
+    return this.http.put<LogicParamsResponse>(
+      `${this.appConfig.apiUrl}/logic-params`,
+      { logic_id: logicId, ...payload }
+    );
+  }
+
   updateLogicTradingParams(
     id: number,
     payload: LogicTradingParamsPayload
   ): Observable<LogicTradingParamsResponse> {
-    return this.http.patch<LogicTradingParamsResponse>(
-      `${this.appConfig.apiUrl}/logics/${id}/trading-params`,
-      payload
+    return this.saveLogicParams(id, payload).pipe(
+      map((r) => ({ id, ...r.trading }))
     );
   }
 

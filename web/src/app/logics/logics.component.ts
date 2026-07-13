@@ -137,6 +137,7 @@ export class LogicsComponent implements OnInit, OnDestroy {
     }
   >();
   paramsSaveErrors = new Map<number, string>();
+  paramsLoading = new Set<number>();
 
   constructor(
     private readonly logicsService: LogicsService,
@@ -175,10 +176,10 @@ export class LogicsComponent implements OnInit, OnDestroy {
             }
             return row;
           });
-          this.syncParamsDraftsFromLogics();
           this.loading = false;
           this.error = null;
           this.refreshExpandedTrades();
+          this.refreshOpenParamsBlocks();
         },
         error: (err) => {
           if (this.loading || this.logics.length === 0) {
@@ -314,18 +315,61 @@ export class LogicsComponent implements OnInit, OnDestroy {
     return Number(raw.trim().replace(/\s/g, '').replace(',', '.'));
   }
 
-  private syncParamsDraftsFromLogics(): void {
+  private refreshOpenParamsBlocks(): void {
     for (const logicId of this.expandedParamsBlocks) {
       if (this.savingParamsIds.has(logicId)) continue;
-      this.ensureParamsDraft(logicId, true);
+      this.loadParamsForLogic(logicId, true);
     }
   }
 
-  private draftFromLogicRow(row: LogicRow) {
+  isParamsLoading(logicId: number): boolean {
+    return this.paramsLoading.has(logicId);
+  }
+
+  loadParamsForLogic(logicId: number, silent = false): void {
+    if (!silent) {
+      this.paramsLoading.add(logicId);
+    }
+    this.logicsService.getLogicParams(logicId).subscribe({
+      next: (resp) => {
+        this.applyTradingParamsToLogic(logicId, resp.trading);
+        this.paramsDrafts.set(logicId, this.draftFromTrading(resp.trading));
+        this.paramsLoading.delete(logicId);
+      },
+      error: () => {
+        this.paramsLoading.delete(logicId);
+        if (!silent) {
+          this.paramsSaveErrors.set(logicId, 'Не удалось загрузить параметры');
+        }
+      },
+    });
+  }
+
+  private applyTradingParamsToLogic(
+    logicId: number,
+    trading: {
+      position_size_pct: number;
+      max_open_positions: number;
+      initial_balance: number | null;
+      current_balance: number | null;
+    }
+  ): void {
+    const idx = this.logics.findIndex((l) => l.id === logicId);
+    if (idx >= 0) {
+      this.logics[idx] = { ...this.logics[idx], ...trading };
+    }
+  }
+
+  private draftFromTrading(trading: {
+    position_size_pct: number;
+    max_open_positions: number;
+    initial_balance: number | null;
+    current_balance: number | null;
+  }) {
     return {
-      position_size_pct: this.formatPctParam(row.position_size_pct),
-      max_open_positions: this.formatIntParam(row.max_open_positions, 5),
-      initial_balance: this.formatBalanceDraft(row.initial_balance),
+      position_size_pct: this.formatPctParam(trading.position_size_pct),
+      max_open_positions: this.formatIntParam(trading.max_open_positions, 5),
+      initial_balance: this.formatBalanceDraft(trading.initial_balance),
       reset_balance: false,
     };
   }
@@ -337,7 +381,7 @@ export class LogicsComponent implements OnInit, OnDestroy {
       this.expandedParamsBlocks.delete(logicId);
     } else {
       this.expandedParamsBlocks.add(logicId);
-      this.ensureParamsDraft(logicId);
+      this.loadParamsForLogic(logicId);
     }
   }
 
@@ -346,6 +390,15 @@ export class LogicsComponent implements OnInit, OnDestroy {
     const row = this.logics.find((l) => l.id === logicId);
     if (!row) return;
     this.paramsDrafts.set(logicId, this.draftFromLogicRow(row));
+  }
+
+  private draftFromLogicRow(row: LogicRow) {
+    return this.draftFromTrading({
+      position_size_pct: row.position_size_pct,
+      max_open_positions: row.max_open_positions,
+      initial_balance: row.initial_balance,
+      current_balance: row.current_balance,
+    });
   }
 
   isParamsSaving(logicId: number): boolean {
@@ -380,22 +433,18 @@ export class LogicsComponent implements OnInit, OnDestroy {
     this.paramsSaveErrors.delete(row.id);
     this.savingParamsIds.add(row.id);
     this.logicsService
-      .updateLogicTradingParams(row.id, {
+      .saveLogicParams(row.id, {
         position_size_pct,
         max_open_positions,
         initial_balance,
         reset_balance: draft.reset_balance,
       })
       .subscribe({
-        next: (updated) => {
-          const idx = this.logics.findIndex((l) => l.id === row.id);
-          const merged =
-            idx >= 0 ? { ...this.logics[idx], ...updated } : { ...row, ...updated };
-          if (idx >= 0) {
-            this.logics[idx] = merged;
-          }
-          this.paramsDrafts.set(row.id, this.draftFromLogicRow(merged));
+        next: (resp) => {
+          this.applyTradingParamsToLogic(row.id, resp.trading);
+          this.paramsDrafts.set(row.id, this.draftFromTrading(resp.trading));
           this.savingParamsIds.delete(row.id);
+          this.paramsSaveErrors.delete(row.id);
         },
         error: (err) => {
           this.savingParamsIds.delete(row.id);

@@ -248,6 +248,10 @@
 
                           <span class="signals-title">Параметры логики</span>
 
+                          @if (isParamsLoading(row.id)) {
+                            <span class="signals-loading">загрузка…</span>
+                          }
+
                         </span>
 
                       </summary>
@@ -396,9 +400,8 @@
                         </table>
 
                         <p class="signals-help">
+                          Параметры хранятся в таблице <code>logic_params</code> (ключ / значение / тип).
                           Кол-во лота: <code>floor(остаток × % / 100 / цена)</code>, минимум 1.
-                          Сигнал <strong>тренд</strong> — открытие позиции, <strong>к-тренд</strong> — закрытие.
-                          Long: покупка/продажа; Short: продажа/покупка.
                         </p>
 
                       </div>
