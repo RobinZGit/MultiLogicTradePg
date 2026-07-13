@@ -269,8 +269,14 @@ async function syncActiveSecurities(
     });
   }
 
-  for (let i = 0; i < secRows.length; i += 1) {
-    const { security_id: secId, name: secName } = secRows[i];
+  // Начальная загрузка — все бумаги; на барах — только новые (added).
+  const isInitialLoad = knownIds.size === 0;
+  const rowsToPrepare = isInitialLoad
+    ? secRows
+    : secRows.filter((r) => added.includes(r.security_id));
+
+  for (let i = 0; i < rowsToPrepare.length; i += 1) {
+    const { security_id: secId, name: secName } = rowsToPrepare[i];
     try {
       await ensureSecurityData(
         pool,
@@ -286,6 +292,12 @@ async function syncActiveSecurities(
         pointCount,
         stats
       );
+      if (isInitialLoad && secRows.length > 0) {
+        await updateRun(pool, runId, {
+          progress_pct: Math.min(35, Math.round(((i + 1) / secRows.length) * 35 * 100) / 100),
+          phase_detail: `Подготовка ${i + 1} / ${secRows.length}: ${secName || secId}`,
+        });
+      }
     } catch (e) {
       stats.pricesErr += 1;
       await backtestLog(
