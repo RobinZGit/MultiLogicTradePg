@@ -608,6 +608,7 @@ export class LogicsComponent implements OnInit, OnDestroy {
       }
     } else {
       this.expandedTradesBlocks.add(logicId);
+      this.expandedOpenPositionsBlocks.add(logicId);
       this.loadTradesForLogic(logicId);
     }
   }
