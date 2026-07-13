@@ -36,19 +36,6 @@
   font-size: 0.88rem;
 }
 
-.toolbar-field.tech-log-toggle {
-  flex-direction: row;
-  align-items: center;
-  gap: 0.4rem;
-  padding-top: 1rem;
-  color: #374151;
-  cursor: pointer;
-  user-select: none;
-}
-
-.toolbar-field.tech-log-toggle input {
-  margin: 0;
-}
 
 .status {
   color: #6b7280;

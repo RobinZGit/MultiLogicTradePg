@@ -1,5 +1,6 @@
 import { Injectable } from '@angular/core';
 import { HttpClient } from '@angular/common/http';
+import { Observable, tap } from 'rxjs';
 import { AppConfigService } from './app-config.service';
 
 export type TechLogPhase = 'start' | 'end' | 'event';
@@ -17,6 +18,7 @@ export interface TechLogWriteEntry {
   duration_ms?: number | null;
   security_id?: number | null;
   timeframe_id?: number | null;
+  logic_id?: number | null;
   sync_gen?: number | null;
   message?: string | null;
   payload?: Record<string, unknown> | null;
@@ -26,8 +28,6 @@ export interface TechLogRow extends TechLogWriteEntry {
   id: number;
   created_at: string;
 }
-
-const STORAGE_KEY = 'multilogic.techLogging';
 
 @Injectable({ providedIn: 'root' })
 export class TechLogService {
@@ -39,22 +39,49 @@ export class TechLogService {
   >();
 
   enabled = false;
+  private loaded = false;
 
   constructor(
     private readonly http: HttpClient,
     private readonly appConfig: AppConfigService
-  ) {
-    this.enabled = localStorage.getItem(STORAGE_KEY) === '1';
+  ) {}
+
+  loadEnabled(): Observable<{ enabled: boolean }> {
+    return this.http
+      .get<{ enabled: boolean }>(
+        `${this.appConfig.apiUrl}/settings/tech-logging`
+      )
+      .pipe(
+        tap((r) => {
+          this.enabled = Boolean(r.enabled);
+          this.loaded = true;
+        })
+      );
   }
 
   setEnabled(on: boolean): void {
-    this.enabled = on;
-    localStorage.setItem(STORAGE_KEY, on ? '1' : '0');
-    if (on) {
-      this.event('tech-log', 'logging.enabled', 'Логирование включено');
-    } else {
-      this.flush(true);
-    }
+    this.http
+      .put<{ ok: boolean; enabled: boolean }>(
+        `${this.appConfig.apiUrl}/settings/tech-logging`,
+        { enabled: on }
+      )
+      .subscribe({
+        next: (r) => {
+          this.enabled = Boolean(r.enabled);
+          if (on) {
+            this.event('settings', 'logging.enabled', 'Логирование включено (UI)');
+          } else {
+            this.flush(true);
+          }
+        },
+        error: () => {
+          this.enabled = on;
+        },
+      });
+  }
+
+  isLoaded(): boolean {
+    return this.loaded;
   }
 
   newTraceId(_securityId?: number, _syncGen?: number): string {
@@ -67,6 +94,11 @@ export class TechLogService {
     return suffix ? `${base}:${suffix}` : base;
   }
 
+  logicThreadKey(logicId: number, suffix?: string): string {
+    const base = `logic:${logicId}:ui`;
+    return suffix ? `${base}:${suffix}` : base;
+  }
+
   start(
     traceId: string,
     threadKey: string,
@@ -74,6 +106,7 @@ export class TechLogService {
     opts?: {
       securityId?: number;
       timeframeId?: number;
+      logicId?: number;
       syncGen?: number;
       message?: string;
       payload?: Record<string, unknown>;
@@ -96,6 +129,7 @@ export class TechLogService {
       started_at: new Date(startedAt).toISOString(),
       security_id: opts?.securityId ?? null,
       timeframe_id: opts?.timeframeId ?? null,
+      logic_id: opts?.logicId ?? null,
       sync_gen: opts?.syncGen ?? null,
       message: opts?.message ?? null,
       payload: opts?.payload ?? null,
@@ -139,6 +173,7 @@ export class TechLogService {
       traceId?: string;
       securityId?: number;
       timeframeId?: number;
+      logicId?: number;
       syncGen?: number;
       payload?: Record<string, unknown>;
     }
@@ -156,6 +191,7 @@ export class TechLogService {
       started_at: new Date().toISOString(),
       security_id: opts?.securityId ?? null,
       timeframe_id: opts?.timeframeId ?? null,
+      logic_id: opts?.logicId ?? null,
       sync_gen: opts?.syncGen ?? null,
       message,
       payload: opts?.payload ?? null,
@@ -165,11 +201,13 @@ export class TechLogService {
   fetchRecent(opts?: {
     limit?: number;
     securityId?: number;
+    logicId?: number;
     traceId?: string;
   }) {
     const params = new URLSearchParams();
     if (opts?.limit) params.set('limit', String(opts.limit));
     if (opts?.securityId) params.set('security_id', String(opts.securityId));
+    if (opts?.logicId) params.set('logic_id', String(opts.logicId));
     if (opts?.traceId) params.set('trace_id', String(opts.traceId));
     const q = params.toString();
     return this.http.get<{ rows: TechLogRow[] }>(

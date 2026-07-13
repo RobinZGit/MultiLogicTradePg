@@ -387,6 +387,127 @@ BEGIN
 END;
 $$;
 
+-- ============================================
+-- Глобальное техническое логирование (parameter_values + app_tech_log)
+-- Вставляется в 02 после set_tbank_token
+-- ============================================
+
+CREATE OR REPLACE FUNCTION app_tech_logging_enabled()
+RETURNS BOOLEAN
+LANGUAGE sql STABLE AS $$
+    SELECT COALESCE(
+        (
+            SELECT lower(btrim(pv.value)) IN ('1', 'true', 'yes', 'on')
+            FROM parameter_values pv
+            JOIN parameter_types pt ON pt.id = pv.parameter_type_id
+            JOIN parameter_sets ps ON ps.id = pv.parameter_set_id
+            WHERE ps.name = 'Default'
+              AND pt.short_name = 'APP_TECH_LOGGING'
+            LIMIT 1
+        ),
+        FALSE
+    );
+$$;
+
+COMMENT ON FUNCTION app_tech_logging_enabled() IS
+'TRUE, если в parameter_values (Default) включён APP_TECH_LOGGING';
+
+CREATE OR REPLACE PROCEDURE set_app_tech_logging(p_enabled BOOLEAN)
+LANGUAGE plpgsql AS $$
+DECLARE
+    v_set_id INTEGER;
+    v_type_id INTEGER;
+BEGIN
+    SELECT id INTO v_set_id FROM parameter_sets WHERE name = 'Default' LIMIT 1;
+    SELECT id INTO v_type_id FROM parameter_types WHERE short_name = 'APP_TECH_LOGGING' LIMIT 1;
+    IF v_set_id IS NULL OR v_type_id IS NULL THEN
+        RAISE EXCEPTION 'APP_TECH_LOGGING not found in parameter_types';
+    END IF;
+    INSERT INTO parameter_values (parameter_set_id, parameter_type_id, value)
+    VALUES (v_set_id, v_type_id, CASE WHEN COALESCE(p_enabled, FALSE) THEN '1' ELSE '0' END)
+    ON CONFLICT (parameter_set_id, parameter_type_id)
+    DO UPDATE SET value = EXCLUDED.value, record_date = CURRENT_TIMESTAMP;
+END;
+$$;
+
+COMMENT ON PROCEDURE set_app_tech_logging(BOOLEAN) IS
+'Вкл/выкл глобальное техническое логирование (галочка в шапке UI)';
+
+CREATE OR REPLACE FUNCTION app_tech_log_event(
+    p_thread_key TEXT,
+    p_operation TEXT,
+    p_message TEXT DEFAULT NULL,
+    p_source TEXT DEFAULT 'system',
+    p_phase TEXT DEFAULT 'event',
+    p_logic_id INTEGER DEFAULT NULL,
+    p_security_id INTEGER DEFAULT NULL,
+    p_timeframe_id INTEGER DEFAULT NULL,
+    p_payload JSONB DEFAULT NULL
+)
+RETURNS VOID
+LANGUAGE plpgsql AS $$
+BEGIN
+    IF NOT app_tech_logging_enabled() THEN
+        RETURN;
+    END IF;
+    IF COALESCE(btrim(p_thread_key), '') = '' OR COALESCE(btrim(p_operation), '') = '' THEN
+        RETURN;
+    END IF;
+    IF p_phase IS NOT NULL AND p_phase NOT IN ('start', 'end', 'event') THEN
+        RETURN;
+    END IF;
+
+    INSERT INTO app_tech_log (
+        trace_id, span_id, thread_key, source, operation, phase,
+        message, logic_id, security_id, timeframe_id, payload
+    ) VALUES (
+        gen_random_uuid(),
+        replace(gen_random_uuid()::TEXT, '-', ''),
+        btrim(p_thread_key),
+        COALESCE(NULLIF(btrim(p_source), ''), 'system'),
+        btrim(p_operation),
+        COALESCE(NULLIF(btrim(p_phase), ''), 'event'),
+        p_message,
+        p_logic_id,
+        p_security_id,
+        p_timeframe_id,
+        p_payload
+    );
+END;
+$$;
+
+COMMENT ON FUNCTION app_tech_log_event(TEXT, TEXT, TEXT, TEXT, TEXT, INTEGER, INTEGER, INTEGER, JSONB) IS
+'Запись в app_tech_log, если APP_TECH_LOGGING включён';
+
+CREATE OR REPLACE FUNCTION logic_trade_log(
+    p_logic_id INTEGER,
+    p_operation TEXT,
+    p_message TEXT,
+    p_payload JSONB DEFAULT NULL,
+    p_security_id INTEGER DEFAULT NULL,
+    p_timeframe_id INTEGER DEFAULT NULL
+)
+RETURNS VOID
+LANGUAGE plpgsql AS $$
+BEGIN
+    PERFORM app_tech_log_event(
+        'logic:' || COALESCE(p_logic_id::TEXT, '0') || ':trade',
+        p_operation,
+        p_message,
+        'postgresql',
+        'event',
+        p_logic_id,
+        p_security_id,
+        p_timeframe_id,
+        p_payload
+    );
+END;
+$$;
+
+COMMENT ON FUNCTION logic_trade_log(INTEGER, TEXT, TEXT, JSONB, INTEGER, INTEGER) IS
+'События trade runner по конкретной логике';
+
+
 COMMENT ON PROCEDURE insert_candle(INTEGER, INTEGER, TIMESTAMP, NUMERIC, NUMERIC, NUMERIC, NUMERIC, NUMERIC, NUMERIC, INTEGER, VARCHAR) IS 
 'Вставляет/обновляет одну свечу. contract_prefix — тикер контракта (Si-6.26) для фьючерсов';
 
@@ -4879,11 +5000,13 @@ BEGIN
       AND a.is_active = TRUE;
 
     IF NOT FOUND THEN
+        PERFORM logic_trade_log(p_logic_id, 'logic.skip', 'Логика выключена или счёт неактивен');
         RETURN 0;
     END IF;
 
     v_tf_id := logic_resolve_timeframe_id(p_logic_id);
     IF v_tf_id IS NULL THEN
+        PERFORM logic_trade_log(p_logic_id, 'logic.skip', 'Не задан timeframe в logic_params');
         RETURN 0;
     END IF;
 
@@ -4891,6 +5014,7 @@ BEGIN
 
     v_closed_bar_dt := logic_last_closed_bar_dt(v_tf_sec);
     IF v_closed_bar_dt IS NULL THEN
+        PERFORM logic_trade_log(p_logic_id, 'logic.skip', 'Не удалось вычислить закрытую свечу TF', NULL, NULL, v_tf_id);
         RETURN 0;
     END IF;
 
@@ -4899,6 +5023,14 @@ BEGIN
         BEGIN
             v_last_bar_dt := v_last_bar_raw::TIMESTAMP;
             IF v_closed_bar_dt <= v_last_bar_dt THEN
+                PERFORM logic_trade_log(
+                    p_logic_id,
+                    'trade.bar_skip',
+                    format('Свеча %s уже обработана (last=%s)', v_closed_bar_dt, v_last_bar_dt),
+                    jsonb_build_object('closed_bar', v_closed_bar_dt, 'last_bar', v_last_bar_dt),
+                    NULL,
+                    v_tf_id
+                );
                 RETURN 0;
             END IF;
         EXCEPTION
@@ -4929,6 +5061,7 @@ BEGIN
         SELECT 1 FROM logic_securities ls
         WHERE ls.logic_id = p_logic_id AND ls.is_active = TRUE
     ) THEN
+        PERFORM logic_trade_log(p_logic_id, 'logic.skip', 'Нет активных сигналов или бумаг');
         RETURN 0;
     END IF;
 
@@ -4954,6 +5087,14 @@ BEGIN
             );
             IF NOT FOUND THEN
                 v_all_securities_ready := FALSE;
+                PERFORM logic_trade_log(
+                    p_logic_id,
+                    'trade.not_ready',
+                    format('Нет данных на свече %s для security=%s signal=%s', v_closed_bar_dt, v_sec.security_id, v_sig.formula),
+                    jsonb_build_object('closed_bar', v_closed_bar_dt, 'security_id', v_sec.security_id, 'formula', v_sig.formula),
+                    v_sec.security_id,
+                    v_tf_id
+                );
                 EXIT;
             END IF;
         END LOOP;
@@ -4965,6 +5106,15 @@ BEGIN
     IF NOT v_all_securities_ready THEN
         RETURN 0;
     END IF;
+
+    PERFORM logic_trade_log(
+        p_logic_id,
+        'trade.bar_check',
+        format('Проверка сигналов на закрытой свече %s', v_closed_bar_dt),
+        jsonb_build_object('closed_bar', v_closed_bar_dt, 'timeframe_id', v_tf_id),
+        NULL,
+        v_tf_id
+    );
 
     FOR v_sec IN
         SELECT ls.security_id
@@ -4997,8 +5147,37 @@ BEGIN
             v_pp := v_bar_row.close_price;
 
             IF NOT evaluate_signal_condition(v_parsed.condition, v_pp, v_ind_value) THEN
+                PERFORM logic_trade_log(
+                    p_logic_id,
+                    'trade.signal_skip',
+                    format('Условие не выполнено: %s (pp=%s, value=%s)', v_parsed.condition, v_pp, v_ind_value),
+                    jsonb_build_object(
+                        'formula', v_sig.formula,
+                        'signal_kind', v_sig.signal_kind,
+                        'position_side', v_sig.position_side,
+                        'pp', v_pp,
+                        'ind_value', v_ind_value,
+                        'bar_dt', v_ind_dt
+                    ),
+                    v_sec.security_id,
+                    v_tf_id
+                );
                 CONTINUE;
             END IF;
+
+            PERFORM logic_trade_log(
+                p_logic_id,
+                'trade.signal_hit',
+                format('Сигнал %s/%s: %s', v_sig.position_side, v_sig.signal_kind, v_sig.formula),
+                jsonb_build_object(
+                    'formula', v_sig.formula,
+                    'pp', v_pp,
+                    'ind_value', v_ind_value,
+                    'bar_dt', v_ind_dt
+                ),
+                v_sec.security_id,
+                v_tf_id
+            );
 
             v_held_long := CASE WHEN v_sig.position_side = 'long' THEN logic_long_position_qty(p_logic_id, v_sec.security_id) ELSE 0 END;
             v_held_short := CASE WHEN v_sig.position_side = 'short' THEN logic_short_position_qty(p_logic_id, v_sec.security_id) ELSE 0 END;
@@ -5117,6 +5296,23 @@ BEGIN
 
             v_created := v_created + 1;
 
+            PERFORM logic_trade_log(
+                p_logic_id,
+                'trade.created',
+                format('Сделка #%s qty=%s price=%s status=%s', v_trade_id, v_quantity, v_pp, v_status),
+                jsonb_build_object(
+                    'trade_id', v_trade_id,
+                    'quantity', v_quantity,
+                    'price', v_pp,
+                    'status', v_status,
+                    'signal_kind', v_sig.signal_kind,
+                    'formula', v_sig.formula,
+                    'bar_dt', v_ind_dt
+                ),
+                v_sec.security_id,
+                v_tf_id
+            );
+
             IF v_logic.account_type = 'fake' AND v_balance IS NOT NULL AND v_status <> 'rejected' THEN
                 v_notional := v_quantity * v_pp;
                 v_is_open := (v_sig.position_side = 'long' AND v_is_trend)
@@ -5149,6 +5345,17 @@ BEGIN
         'text'
     );
 
+    IF v_created = 0 THEN
+        PERFORM logic_trade_log(
+            p_logic_id,
+            'trade.bar_done',
+            format('Свеча %s проверена, сделок не создано', v_closed_bar_dt),
+            jsonb_build_object('closed_bar', v_closed_bar_dt),
+            NULL,
+            v_tf_id
+        );
+    END IF;
+
     RETURN v_created;
 END;
 $$;
@@ -5167,8 +5374,11 @@ DECLARE
 BEGIN
     v_got_lock := pg_try_advisory_lock(hashtext('multilogictrade_run_trade_cycle'));
     IF NOT v_got_lock THEN
+        PERFORM app_tech_log_event('trade-runner', 'cycle.skip', 'Пропуск: другой цикл уже выполняется', 'postgresql');
         RETURN jsonb_build_object('skipped', TRUE, 'reason', 'locked');
     END IF;
+
+    PERFORM app_tech_log_event('trade-runner', 'cycle.start', 'run_trade_cycle начат', 'postgresql');
 
     FOR v_logic IN
         SELECT l.id
@@ -5182,6 +5392,18 @@ BEGIN
     END LOOP;
 
     PERFORM pg_advisory_unlock(hashtext('multilogictrade_run_trade_cycle'));
+
+    PERFORM app_tech_log_event(
+        'trade-runner',
+        'cycle.end',
+        format('processed=%s created=%s', v_processed, v_total_created),
+        'postgresql',
+        'event',
+        NULL,
+        NULL,
+        NULL,
+        jsonb_build_object('processed', v_processed, 'created', v_total_created)
+    );
 
     RETURN jsonb_build_object(
         'processed', v_processed,

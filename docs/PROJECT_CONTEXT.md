@@ -5,7 +5,7 @@
 > Включать **запросы пользователя текстом** (секция «Запросы пользователя»).
 
 **Репозиторий:** https://github.com/RobinZGit/MultiLogicTradePg  
-**Последнее обновление:** 2026-07-13 (v24: проверка закрытия свечи TF + fix evaluate_signal; БД 00→02)
+**Последнее обновление:** 2026-07-13 (v25: глобальное логирование в шапке + trade runner logs; БД 00→02)
 
 ---
 
@@ -25,7 +25,7 @@
 | Файл | Назначение |
 |------|------------|
 | `00_create_database.sql` | **DROP + CREATE** базы `multilogictrade` (полное пересоздание) |
-| `01_multilogictrade_tables_and_data.sql` | Таблицы, индексы, справочники (идемпотентно, **v24**) |
+| `01_multilogictrade_tables_and_data.sql` | Таблицы, индексы, справочники (идемпотентно, **v25**) |
 | `02_multilogictrade_functions_and_procedures.sql` | Функции и процедуры (идемпотентно) |
 | `03_multilogictrade_examples.sql` | Примеры SELECT (необязательно) |
 
@@ -114,7 +114,7 @@
 22. **T-Bank токен:** `parameter_types.TBANK_API_TOKEN` → `parameter_values`; `get_tbank_token` / `set_tbank_token`; диалог при «Загрузить цены»; API `GET/PUT /api/settings/tbank-token`.
 23. **SMAT3 / график:** локальная свёртка по `period`; sync без зависания при scroll/fullscreen/expand (`verify-chart-sync.mjs`, `userInitiated`, suppress до готовности).
 24. **Logics — сигналы индикаторов:** таблица `logic_indicator_signals`, дефолты `sig_*_def`, UI с inline-редактированием формулы.
-25. **Технический журнал `app_tech_log`:** checkbox **«Логирование»** в шапке «Бумаги» (выкл. по умолчанию); start/end/event по `thread_key` (sec:N:gen:M); API `POST/GET /api/tech-log`.
+25. **Технический журнал `app_tech_log`:** галочка **«Логирование»** в **верхней шапке** (глобально); флаг **`APP_TECH_LOGGING`** в `parameter_values` (Default); `app_tech_log_event` / `logic_trade_log`; логи trade runner (цикл, свеча, сигнал, сделка), enable/disable логики, параметры; API `GET/PUT /api/settings/tech-logging`, `POST/GET /api/tech-log`.
 26. **Fix pan влево (SMAT3):** proactive `loadOlder`, `incremental=false` при сдвиге `end_dt` влево, защита poll от stale gen, debounce по `lastVisibleRange`.
 27. **Logics — стопы:** таблица `logic_stops`, UI блок под сигналами, форма добавления, inline-редактирование строк.
 28. **Fix hang при drag индикатора:** единый `syncGen` для assign/range/poll; блок full sync во время `mergeOnly` assign; отложенный full sync после assign; расширенное `app_tech_log` (poll start/ok, superseded, deferred).
@@ -130,6 +130,7 @@
 38. **Демо SMA v22:** только long trend + short trend (без counter); long выше SMA, short ниже SMA.
 39. **v23 trade runner в PostgreSQL:** `timeframe` в logic_params; `run_trade_cycle` / `process_logic_trades`; pg_cron + Node fallback; UI выбор таймфрейма; `sql/logic_trade_runner.sql`.
 40. **v24 закрытие свечи TF:** job ждёт закрытия бара (`logic_last_closed_bar_dt` + `last_trade_bar_dt`); данные через `logic_bar_data_at`; fix timezone epoch и `\y` в `evaluate_signal_condition` (раньше `pp`/`VALUE` не подставлялись).
+41. **v25 глобальное логирование:** галочка в app-bar; `APP_TECH_LOGGING` в parameter_values; `sql/app_tech_logging.sql`; trade runner + API logics → `app_tech_log`.
 
 ### Автотесты
 
@@ -191,6 +192,7 @@
 
 | Дата | Суть |
 |------|------|
+| 2026-07-13 | v25: глобальное логирование (app-bar, APP_TECH_LOGGING, trade runner logs) |
 | 2026-07-13 | v24: закрытие свечи TF в runner, last_trade_bar_dt, fix evaluate_signal/timezone |
 | 2026-07-13 | v23: run_trade_cycle в PostgreSQL, timeframe, pg_cron; БД 00→02 |
 | 2026-07-13 | v22 demo: только long-trend + short-trend (без counter) |

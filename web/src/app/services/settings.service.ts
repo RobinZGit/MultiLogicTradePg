@@ -26,4 +26,17 @@ export class SettingsService {
       { token }
     );
   }
+
+  getTechLogging(): Observable<{ enabled: boolean }> {
+    return this.http.get<{ enabled: boolean }>(
+      `${this.appConfig.apiUrl}/settings/tech-logging`
+    );
+  }
+
+  saveTechLogging(enabled: boolean): Observable<{ ok: boolean; enabled: boolean }> {
+    return this.http.put<{ ok: boolean; enabled: boolean }>(
+      `${this.appConfig.apiUrl}/settings/tech-logging`,
+      { enabled }
+    );
+  }
 }

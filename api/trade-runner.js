@@ -1,6 +1,7 @@
 'use strict';
 
 const RUNNER_INTERVAL_MS = Number(process.env.TRADE_RUNNER_INTERVAL_MS) || 60000;
+const { writeTechLogEvent } = require('./lib/tech-log');
 
 let running = false;
 
@@ -16,14 +17,29 @@ async function runTradeCycle(pool) {
     const { rows } = await pool.query('SELECT run_trade_cycle() AS result');
     const result = rows[0]?.result ?? {};
     if (result.skipped) {
+      await writeTechLogEvent(pool, {
+        threadKey: 'trade-runner',
+        operation: 'cycle.skip',
+        message: `Node fallback: ${result.reason ?? 'skipped'}`,
+        source: 'node',
+        payload: result,
+      }).catch(() => {});
       return result;
     }
-    return {
+    const out = {
       processed: result.processed ?? 0,
       created: result.created ?? 0,
       at: result.at,
       source: 'postgresql',
     };
+    await writeTechLogEvent(pool, {
+      threadKey: 'trade-runner',
+      operation: 'cycle.node',
+      message: `Node fallback: processed=${out.processed} created=${out.created}`,
+      source: 'node',
+      payload: out,
+    }).catch(() => {});
+    return out;
   } finally {
     running = false;
   }

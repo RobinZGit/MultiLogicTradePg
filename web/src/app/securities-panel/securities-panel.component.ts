@@ -146,9 +146,6 @@ export class SecuritiesPanelComponent implements OnInit {
   tbankTokenDialogOpen = false;
   private pendingPriceLoadRow: SecurityRow | null = null;
 
-  /** Техническое логирование в БД (выключено по умолчанию). */
-  techLoggingEnabled = false;
-
   constructor(
     private readonly refs: ReferencesService,
     private readonly securities: SecuritiesService,
@@ -158,12 +155,7 @@ export class SecuritiesPanelComponent implements OnInit {
   ) {}
 
   ngOnInit(): void {
-    this.techLoggingEnabled = this.techLog.enabled;
     this.loadMeta();
-  }
-
-  onTechLoggingChange(enabled: boolean): void {
-    this.techLog.setEnabled(enabled);
   }
 
   get exchangeName(): string {

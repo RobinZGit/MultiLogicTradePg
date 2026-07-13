@@ -1,6 +1,6 @@
 -- ============================================
 -- MultiLogicTrade — шаг 1: таблицы и справочники
--- Версия: v24 (идемпотентный запуск)
+-- Версия: v25 (идемпотентный запуск)
 -- ============================================
 -- Подключение: база multilogictrade
 -- Можно выполнять многократно: объекты и строки не дублируются.
@@ -448,7 +448,8 @@ INSERT INTO parameter_types (name, short_name, value_type, description, default_
     ('BB период', 'BB_PERIOD', 'integer', 'Период полос Боллинджера', '20', 2, 500),
     ('ATR период', 'ATR_PERIOD', 'integer', 'Период ATR', '14', 2, 100),
     ('STOCH период K', 'STOCH_PERIOD', 'integer', 'Период %K стохастика', '14', 2, 100),
-    ('T-Bank API токен', 'TBANK_API_TOKEN', 'secret', 'Глобальный токен Invest API T-Bank для загрузки цен (не привязан к счёту)', '', NULL, NULL)
+    ('T-Bank API токен', 'TBANK_API_TOKEN', 'secret', 'Глобальный токен Invest API T-Bank для загрузки цен (не привязан к счёту)', '', NULL, NULL),
+    ('Техническое логирование', 'APP_TECH_LOGGING', 'boolean', 'Глобальный журнал app_tech_log: trade runner, сигналы, параметры логики', '0', NULL, NULL)
 ON CONFLICT (short_name) DO NOTHING;
 
 -- ============================================
@@ -1260,21 +1261,26 @@ CREATE TABLE IF NOT EXISTS app_tech_log (
     duration_ms INTEGER,
     security_id INTEGER REFERENCES securities(id) ON DELETE SET NULL,
     timeframe_id INTEGER REFERENCES timeframes(id) ON DELETE SET NULL,
+    logic_id INTEGER REFERENCES logics(id) ON DELETE SET NULL,
     sync_gen INTEGER,
     message TEXT,
     payload JSONB,
     created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
+ALTER TABLE app_tech_log ADD COLUMN IF NOT EXISTS logic_id INTEGER REFERENCES logics(id) ON DELETE SET NULL;
+
 CREATE INDEX IF NOT EXISTS idx_app_tech_log_created_at ON app_tech_log(created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_app_tech_log_trace_id ON app_tech_log(trace_id);
 CREATE INDEX IF NOT EXISTS idx_app_tech_log_thread_key ON app_tech_log(thread_key);
 CREATE INDEX IF NOT EXISTS idx_app_tech_log_security ON app_tech_log(security_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_app_tech_log_logic_id ON app_tech_log(logic_id, created_at DESC);
 
 COMMENT ON TABLE app_tech_log IS
-'Технический журнал: операции sync графика, загрузка свечей, poll индикаторов (многопоточно по thread_key)';
+'Технический журнал проекта: sync графика, trade runner, сигналы, параметры логики (если APP_TECH_LOGGING=1)';
 COMMENT ON COLUMN app_tech_log.trace_id IS 'Цепочка одного жеста пользователя (pan/zoom)';
-COMMENT ON COLUMN app_tech_log.thread_key IS 'Поток: sec:29:gen:3, sec:29:loadOlder и т.п.';
+COMMENT ON COLUMN app_tech_log.thread_key IS 'Поток: sec:29:gen:3, logic:1:trade, trade-runner и т.п.';
+COMMENT ON COLUMN app_tech_log.logic_id IS 'Торговая логика (trade runner, параметры, enable/disable)';
 COMMENT ON COLUMN app_tech_log.phase IS 'start | end | event';
 
 -- ============================================

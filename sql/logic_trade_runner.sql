@@ -443,11 +443,13 @@ BEGIN
       AND a.is_active = TRUE;
 
     IF NOT FOUND THEN
+        PERFORM logic_trade_log(p_logic_id, 'logic.skip', 'Логика выключена или счёт неактивен');
         RETURN 0;
     END IF;
 
     v_tf_id := logic_resolve_timeframe_id(p_logic_id);
     IF v_tf_id IS NULL THEN
+        PERFORM logic_trade_log(p_logic_id, 'logic.skip', 'Не задан timeframe в logic_params');
         RETURN 0;
     END IF;
 
@@ -455,6 +457,7 @@ BEGIN
 
     v_closed_bar_dt := logic_last_closed_bar_dt(v_tf_sec);
     IF v_closed_bar_dt IS NULL THEN
+        PERFORM logic_trade_log(p_logic_id, 'logic.skip', 'Не удалось вычислить закрытую свечу TF', NULL, NULL, v_tf_id);
         RETURN 0;
     END IF;
 
@@ -463,6 +466,14 @@ BEGIN
         BEGIN
             v_last_bar_dt := v_last_bar_raw::TIMESTAMP;
             IF v_closed_bar_dt <= v_last_bar_dt THEN
+                PERFORM logic_trade_log(
+                    p_logic_id,
+                    'trade.bar_skip',
+                    format('Свеча %s уже обработана (last=%s)', v_closed_bar_dt, v_last_bar_dt),
+                    jsonb_build_object('closed_bar', v_closed_bar_dt, 'last_bar', v_last_bar_dt),
+                    NULL,
+                    v_tf_id
+                );
                 RETURN 0;
             END IF;
         EXCEPTION
@@ -493,6 +504,7 @@ BEGIN
         SELECT 1 FROM logic_securities ls
         WHERE ls.logic_id = p_logic_id AND ls.is_active = TRUE
     ) THEN
+        PERFORM logic_trade_log(p_logic_id, 'logic.skip', 'Нет активных сигналов или бумаг');
         RETURN 0;
     END IF;
 
@@ -518,6 +530,14 @@ BEGIN
             );
             IF NOT FOUND THEN
                 v_all_securities_ready := FALSE;
+                PERFORM logic_trade_log(
+                    p_logic_id,
+                    'trade.not_ready',
+                    format('Нет данных на свече %s для security=%s signal=%s', v_closed_bar_dt, v_sec.security_id, v_sig.formula),
+                    jsonb_build_object('closed_bar', v_closed_bar_dt, 'security_id', v_sec.security_id, 'formula', v_sig.formula),
+                    v_sec.security_id,
+                    v_tf_id
+                );
                 EXIT;
             END IF;
         END LOOP;
@@ -529,6 +549,15 @@ BEGIN
     IF NOT v_all_securities_ready THEN
         RETURN 0;
     END IF;
+
+    PERFORM logic_trade_log(
+        p_logic_id,
+        'trade.bar_check',
+        format('Проверка сигналов на закрытой свече %s', v_closed_bar_dt),
+        jsonb_build_object('closed_bar', v_closed_bar_dt, 'timeframe_id', v_tf_id),
+        NULL,
+        v_tf_id
+    );
 
     FOR v_sec IN
         SELECT ls.security_id
@@ -561,8 +590,37 @@ BEGIN
             v_pp := v_bar_row.close_price;
 
             IF NOT evaluate_signal_condition(v_parsed.condition, v_pp, v_ind_value) THEN
+                PERFORM logic_trade_log(
+                    p_logic_id,
+                    'trade.signal_skip',
+                    format('Условие не выполнено: %s (pp=%s, value=%s)', v_parsed.condition, v_pp, v_ind_value),
+                    jsonb_build_object(
+                        'formula', v_sig.formula,
+                        'signal_kind', v_sig.signal_kind,
+                        'position_side', v_sig.position_side,
+                        'pp', v_pp,
+                        'ind_value', v_ind_value,
+                        'bar_dt', v_ind_dt
+                    ),
+                    v_sec.security_id,
+                    v_tf_id
+                );
                 CONTINUE;
             END IF;
+
+            PERFORM logic_trade_log(
+                p_logic_id,
+                'trade.signal_hit',
+                format('Сигнал %s/%s: %s', v_sig.position_side, v_sig.signal_kind, v_sig.formula),
+                jsonb_build_object(
+                    'formula', v_sig.formula,
+                    'pp', v_pp,
+                    'ind_value', v_ind_value,
+                    'bar_dt', v_ind_dt
+                ),
+                v_sec.security_id,
+                v_tf_id
+            );
 
             v_held_long := CASE WHEN v_sig.position_side = 'long' THEN logic_long_position_qty(p_logic_id, v_sec.security_id) ELSE 0 END;
             v_held_short := CASE WHEN v_sig.position_side = 'short' THEN logic_short_position_qty(p_logic_id, v_sec.security_id) ELSE 0 END;
@@ -681,6 +739,23 @@ BEGIN
 
             v_created := v_created + 1;
 
+            PERFORM logic_trade_log(
+                p_logic_id,
+                'trade.created',
+                format('Сделка #%s qty=%s price=%s status=%s', v_trade_id, v_quantity, v_pp, v_status),
+                jsonb_build_object(
+                    'trade_id', v_trade_id,
+                    'quantity', v_quantity,
+                    'price', v_pp,
+                    'status', v_status,
+                    'signal_kind', v_sig.signal_kind,
+                    'formula', v_sig.formula,
+                    'bar_dt', v_ind_dt
+                ),
+                v_sec.security_id,
+                v_tf_id
+            );
+
             IF v_logic.account_type = 'fake' AND v_balance IS NOT NULL AND v_status <> 'rejected' THEN
                 v_notional := v_quantity * v_pp;
                 v_is_open := (v_sig.position_side = 'long' AND v_is_trend)
@@ -713,6 +788,17 @@ BEGIN
         'text'
     );
 
+    IF v_created = 0 THEN
+        PERFORM logic_trade_log(
+            p_logic_id,
+            'trade.bar_done',
+            format('Свеча %s проверена, сделок не создано', v_closed_bar_dt),
+            jsonb_build_object('closed_bar', v_closed_bar_dt),
+            NULL,
+            v_tf_id
+        );
+    END IF;
+
     RETURN v_created;
 END;
 $$;
@@ -731,8 +817,11 @@ DECLARE
 BEGIN
     v_got_lock := pg_try_advisory_lock(hashtext('multilogictrade_run_trade_cycle'));
     IF NOT v_got_lock THEN
+        PERFORM app_tech_log_event('trade-runner', 'cycle.skip', 'Пропуск: другой цикл уже выполняется', 'postgresql');
         RETURN jsonb_build_object('skipped', TRUE, 'reason', 'locked');
     END IF;
+
+    PERFORM app_tech_log_event('trade-runner', 'cycle.start', 'run_trade_cycle начат', 'postgresql');
 
     FOR v_logic IN
         SELECT l.id
@@ -746,6 +835,18 @@ BEGIN
     END LOOP;
 
     PERFORM pg_advisory_unlock(hashtext('multilogictrade_run_trade_cycle'));
+
+    PERFORM app_tech_log_event(
+        'trade-runner',
+        'cycle.end',
+        format('processed=%s created=%s', v_processed, v_total_created),
+        'postgresql',
+        'event',
+        NULL,
+        NULL,
+        NULL,
+        jsonb_build_object('processed', v_processed, 'created', v_total_created)
+    );
 
     RETURN jsonb_build_object(
         'processed', v_processed,

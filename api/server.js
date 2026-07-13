@@ -12,6 +12,7 @@ const {
   ensureDefaultParams,
   getLogicParamsDetailed,
 } = require('./lib/logic-params');
+const { writeTechLogEvent } = require('./lib/tech-log');
 
 const app = express();
 const port = Number(process.env.PORT) || 3000;
@@ -61,6 +62,37 @@ app.put('/api/settings/tbank-token', async (req, res) => {
     res.json({ ok: true, has_token: true });
   } catch (err) {
     console.error('PUT /api/settings/tbank-token', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.get('/api/settings/tech-logging', async (_req, res) => {
+  try {
+    const { rows } = await pool.query(
+      'SELECT app_tech_logging_enabled() AS enabled'
+    );
+    res.json({ enabled: Boolean(rows[0]?.enabled) });
+  } catch (err) {
+    console.error('GET /api/settings/tech-logging', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.put('/api/settings/tech-logging', async (req, res) => {
+  const enabled = Boolean(req.body?.enabled);
+  try {
+    await pool.query('CALL set_app_tech_logging($1)', [enabled]);
+    if (enabled) {
+      await writeTechLogEvent(pool, {
+        threadKey: 'settings',
+        operation: 'logging.enabled',
+        message: 'Техническое логирование включено (UI)',
+        source: 'api',
+      });
+    }
+    res.json({ ok: true, enabled });
+  } catch (err) {
+    console.error('PUT /api/settings/tech-logging', err);
     res.status(500).json({ error: err.message });
   }
 });
@@ -827,6 +859,14 @@ app.put('/api/logic-params', async (req, res) => {
     }
     const trading = await saveTradingParams(pool, logicId, parsed);
     const params = await getLogicParamsDetailed(pool, logicId);
+    await writeTechLogEvent(pool, {
+      threadKey: `logic:${logicId}:params`,
+      operation: 'logic.params.updated',
+      message: 'Параметры логики сохранены',
+      source: 'api',
+      logicId,
+      payload: { trading, params },
+    });
     res.json({ logic_id: logicId, trading, params });
   } catch (err) {
     console.error('PUT /api/logic-params', err);
@@ -1320,6 +1360,14 @@ app.patch('/api/logics/:id', async (req, res) => {
       res.status(404).json({ error: 'Logic not found' });
       return;
     }
+    await writeTechLogEvent(pool, {
+      threadKey: `logic:${id}:control`,
+      operation: is_enabled ? 'logic.enabled' : 'logic.disabled',
+      message: is_enabled ? 'Логика включена' : 'Логика выключена',
+      source: 'api',
+      logicId: id,
+      payload: { is_enabled },
+    });
     res.json(rows[0]);
   } catch (err) {
     console.error('PATCH /api/logics/:id', err);
@@ -1850,6 +1898,13 @@ app.get('/api/logic-trades', async (req, res) => {
 app.post('/api/logic-trades/run', async (_req, res) => {
   try {
     const result = await runTradeCycle(pool);
+    await writeTechLogEvent(pool, {
+      threadKey: 'trade-runner',
+      operation: 'cycle.manual',
+      message: `Ручной запуск: processed=${result.processed ?? 0} created=${result.created ?? 0}`,
+      source: 'api',
+      payload: result,
+    });
     res.json({ ok: true, ...result });
   } catch (err) {
     console.error('POST /api/logic-trades/run', err);
@@ -1870,6 +1925,14 @@ app.post('/api/tech-log', async (req, res) => {
 
   const client = await pool.connect();
   try {
+    const { rows: flagRows } = await client.query(
+      'SELECT app_tech_logging_enabled() AS enabled'
+    );
+    if (!flagRows[0]?.enabled) {
+      res.json({ ok: true, inserted: 0, skipped: true });
+      return;
+    }
+
     let inserted = 0;
     for (const raw of entries) {
       const traceId = btrimStr(raw.trace_id);
@@ -1888,12 +1951,12 @@ app.post('/api/tech-log', async (req, res) => {
         INSERT INTO app_tech_log (
           trace_id, span_id, parent_span_id, thread_key, source, operation, phase,
           started_at, finished_at, duration_ms,
-          security_id, timeframe_id, sync_gen, message, payload
+          security_id, timeframe_id, logic_id, sync_gen, message, payload
         ) VALUES (
           $1::uuid, $2, $3, $4, COALESCE(NULLIF($5, ''), 'web'), $6, $7,
           COALESCE($8::timestamptz, CURRENT_TIMESTAMP),
           $9::timestamptz, $10,
-          $11, $12, $13, $14, $15::jsonb
+          $11, $12, $13, $14, $15, $16::jsonb
         )
         `,
         [
@@ -1909,6 +1972,7 @@ app.post('/api/tech-log', async (req, res) => {
           raw.duration_ms != null ? Number(raw.duration_ms) : null,
           parseId(raw.security_id) || null,
           parseId(raw.timeframe_id) || null,
+          parseId(raw.logic_id) || null,
           parseId(raw.sync_gen) || null,
           raw.message != null ? String(raw.message) : null,
           raw.payload != null ? JSON.stringify(raw.payload) : null,
@@ -1928,6 +1992,7 @@ app.post('/api/tech-log', async (req, res) => {
 app.get('/api/tech-log', async (req, res) => {
   const limit = Math.min(parseId(req.query.limit) || 100, 500);
   const securityId = parseId(req.query.security_id);
+  const logicId = parseId(req.query.logic_id);
   const traceId = req.query.trace_id ? String(req.query.trace_id).trim() : null;
   const since = req.query.since ? String(req.query.since).trim() : null;
 
@@ -1937,6 +2002,10 @@ app.get('/api/tech-log', async (req, res) => {
   if (securityId) {
     where.push(`security_id = $${idx++}`);
     params.push(securityId);
+  }
+  if (logicId) {
+    where.push(`logic_id = $${idx++}`);
+    params.push(logicId);
   }
   if (traceId) {
     where.push(`trace_id::text = $${idx++}`);
@@ -1955,7 +2024,7 @@ app.get('/api/tech-log', async (req, res) => {
       SELECT
         id, trace_id::text AS trace_id, span_id, parent_span_id, thread_key, source,
         operation, phase, started_at, finished_at, duration_ms,
-        security_id, timeframe_id, sync_gen, message, payload, created_at
+        security_id, timeframe_id, logic_id, sync_gen, message, payload, created_at
       FROM app_tech_log
       ${whereSql}
       ORDER BY id DESC

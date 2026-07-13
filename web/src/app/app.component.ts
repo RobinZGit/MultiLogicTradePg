@@ -1,24 +1,35 @@
-import { Component } from '@angular/core';
+import { Component, OnInit } from '@angular/core';
 import { RouterLink, RouterLinkActive, RouterOutlet } from '@angular/router';
+import { FormsModule } from '@angular/forms';
 import { DbSchemaPanelComponent } from './db-schema/db-schema-panel.component';
+import { TechLogService } from './services/tech-log.service';
 
 @Component({
   selector: 'app-root',
   standalone: true,
-  imports: [RouterOutlet, RouterLink, RouterLinkActive, DbSchemaPanelComponent],
+  imports: [RouterOutlet, RouterLink, RouterLinkActive, DbSchemaPanelComponent, FormsModule],
   template: `
     <header class="app-bar">
       <div class="app-bar-left">
         <strong>MultiLogic Trade</strong>
         <span>PostgreSQL + Angular</span>
       </div>
-      <button
-        type="button"
-        class="gear-btn"
-        title="Структура базы данных"
-        aria-label="Структура базы данных"
-        (click)="openSchema()"
-      >
+      <div class="app-bar-right">
+        <label class="tech-log-toggle" title="Журнал app_tech_log: trade runner, сигналы, параметры">
+          <input
+            type="checkbox"
+            [(ngModel)]="techLoggingEnabled"
+            (ngModelChange)="onTechLoggingChange($event)"
+          />
+          <span>Логирование</span>
+        </label>
+        <button
+          type="button"
+          class="gear-btn"
+          title="Структура базы данных"
+          aria-label="Структура базы данных"
+          (click)="openSchema()"
+        >
         <svg class="gear-icon" viewBox="0 0 24 24" width="32" height="32" aria-hidden="true">
           <path
             fill="#ffffff"
@@ -27,6 +38,7 @@ import { DbSchemaPanelComponent } from './db-schema/db-schema-panel.component';
           <circle cx="12" cy="12" r="3.6" fill="#111827" />
         </svg>
       </button>
+      </div>
     </header>
     <nav class="app-tabs">
       <a routerLink="/operations" routerLinkActive="active" [routerLinkActiveOptions]="{ exact: true }">
@@ -59,6 +71,26 @@ import { DbSchemaPanelComponent } from './db-schema/db-schema-panel.component';
         display: flex;
         align-items: center;
         gap: 1rem;
+      }
+      .app-bar-right {
+        display: flex;
+        align-items: center;
+        gap: 0.75rem;
+      }
+      .tech-log-toggle {
+        display: inline-flex;
+        align-items: center;
+        gap: 0.4rem;
+        font-size: 0.88rem;
+        color: #e5e7eb;
+        cursor: pointer;
+        user-select: none;
+        white-space: nowrap;
+      }
+      .tech-log-toggle input {
+        width: 1rem;
+        height: 1rem;
+        cursor: pointer;
       }
       .app-bar span {
         color: #9ca3af;
@@ -112,8 +144,23 @@ import { DbSchemaPanelComponent } from './db-schema/db-schema-panel.component';
     `,
   ],
 })
-export class AppComponent {
+export class AppComponent implements OnInit {
   schemaOpen = false;
+  techLoggingEnabled = false;
+
+  constructor(private readonly techLog: TechLogService) {}
+
+  ngOnInit(): void {
+    this.techLog.loadEnabled().subscribe({
+      next: (r) => {
+        this.techLoggingEnabled = r.enabled;
+      },
+    });
+  }
+
+  onTechLoggingChange(enabled: boolean): void {
+    this.techLog.setEnabled(enabled);
+  }
 
   openSchema(): void {
     this.schemaOpen = true;

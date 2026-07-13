@@ -7,6 +7,7 @@ import { LogicsService } from '../services/logics.service';
 import { ReferencesService } from '../services/references.service';
 import { SecuritiesService } from '../services/securities.service';
 import { SettingsService } from '../services/settings.service';
+import { TechLogService } from '../services/tech-log.service';
 import { LogicIndicatorSignalRow, LogicRow, LogicSecurityRow, LogicStopRow } from '../models/logic.model';
 import { IndicatorRow } from '../models/lookup.model';
 import { SecurityRow } from '../models/market.model';
@@ -148,6 +149,7 @@ export class LogicsComponent implements OnInit, OnDestroy {
     private readonly refs: ReferencesService,
     private readonly securitiesService: SecuritiesService,
     private readonly settings: SettingsService,
+    private readonly techLog: TechLogService,
     private readonly appConfig: AppConfigService
   ) {}
 
@@ -471,6 +473,15 @@ export class LogicsComponent implements OnInit, OnDestroy {
           this.paramsDirtyIds.delete(row.id);
           this.savingParamsIds.delete(row.id);
           this.paramsSaveErrors.delete(row.id);
+          this.techLog.event(
+            this.techLog.logicThreadKey(row.id, 'params'),
+            'logic.params.saved',
+            'Параметры логики сохранены (UI)',
+            {
+              logicId: row.id,
+              payload: { trading: resp.trading, params: resp.params },
+            }
+          );
         },
         error: (err) => {
           this.savingParamsIds.delete(row.id);
@@ -1058,7 +1069,15 @@ export class LogicsComponent implements OnInit, OnDestroy {
     row.is_enabled = checked;
     this.savingIds.add(row.id);
     this.logicsService.updateLogicEnabled(row.id, checked).subscribe({
-      next: () => this.savingIds.delete(row.id),
+      next: () => {
+        this.savingIds.delete(row.id);
+        this.techLog.event(
+          this.techLog.logicThreadKey(row.id, 'control'),
+          checked ? 'logic.enabled' : 'logic.disabled',
+          checked ? 'Логика включена (UI)' : 'Логика выключена (UI)',
+          { logicId: row.id, payload: { is_enabled: checked } }
+        );
+      },
       error: () => {
         row.is_enabled = previous;
         this.savingIds.delete(row.id);
