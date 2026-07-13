@@ -64,7 +64,8 @@ jobs:
 
       - name: Build Angular (GitHub Pages)
         working-directory: web
-        run: npm run build -- --configuration production --base-href "/MultiLogicTradePg/"
+        # prebuild (verify:sql + test:unit) уже выполнен выше; ng build без повторного полного verify (HTTP-блок)
+        run: npx ng build --configuration production --base-href "/MultiLogicTradePg/"
 
       - name: SPA fallback
         working-directory: web
