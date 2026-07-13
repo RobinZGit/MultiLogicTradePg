@@ -1,6 +1,6 @@
 -- ============================================
 -- MultiLogicTrade — шаг 1: таблицы и справочники
--- Версия: v31 (идемпотентный запуск)
+-- Версия: v37 (идемпотентный запуск)
 -- ============================================
 -- Подключение: база multilogictrade
 -- Можно выполнять многократно: объекты и строки не дублируются.
@@ -25,6 +25,18 @@
 -- ============================================
 
 -- ============================================
+
+-- Блок миграции: v36 — стоп-лосс (security_resume), is_shadow, pause/resume по бумаге
+-- ============================================
+DO $$
+BEGIN
+    ALTER TABLE logic_stops DROP CONSTRAINT IF EXISTS logic_stops_scope_type_check;
+    ALTER TABLE logic_stops ADD CONSTRAINT logic_stops_scope_type_check
+        CHECK (scope_type IN ('security', 'security_resume', 'portfolio'));
+EXCEPTION
+    WHEN undefined_table THEN NULL;
+    WHEN duplicate_object THEN NULL;
+END $$;
 
 -- Блок миграции: обновление существующей схемы v16 → v17
 -- ============================================
@@ -53,7 +65,7 @@ DO $$
 BEGIN
     ALTER TABLE logic_stops DROP CONSTRAINT IF EXISTS logic_stops_scope_type_check;
     ALTER TABLE logic_stops ADD CONSTRAINT logic_stops_scope_type_check
-        CHECK (scope_type IN ('security', 'portfolio'));
+        CHECK (scope_type IN ('security', 'security_resume', 'portfolio'));
 EXCEPTION
     WHEN undefined_table THEN NULL;
     WHEN duplicate_object THEN NULL;
@@ -945,6 +957,10 @@ INSERT INTO logic_param_defs (param_key, name_ru, value_type, default_value, des
      'Фейковый счёт: комиссия = текущий депозит × % / 100 (на каждую сделку)', 5),
     ('cost_method', 'Метод расчёта PnL', 'text', 'FIFO',
      'FIFO — по очереди покупок; AVERAGE — по средней цене остатка', 6),
+    ('stop_loss_timeframe', 'Таймфрейм стоп-лосса', 'text', 'M5',
+     'TF для проверки стоп-лоссов (по умолчанию M5)', 7),
+    ('last_stop_bar_dt', 'Последняя свеча стоп-лосса', 'text', '',
+     'Служебный: open time закрытой свечи TF стоп-лосса', 97),
     ('last_trade_check_at', 'Последняя проверка сигналов', 'text', '',
      'Служебный: время последнего run_trade_cycle (не редактировать)', 98),
     ('last_trade_bar_dt', 'Последняя обработанная свеча', 'text', '',
@@ -1024,7 +1040,8 @@ CROSS JOIN (VALUES
     ('initial_balance', '1000000', 'money'),
     ('current_balance', '1000000', 'money'),
     ('commission_pct', '0.05', 'number'),
-    ('cost_method', 'FIFO', 'text')
+    ('cost_method', 'FIFO', 'text'),
+    ('stop_loss_timeframe', 'M5', 'text')
 ) AS v(param_key, param_value, value_type)
 WHERE l.name = 'SMA Price Cross Demo'
 ON CONFLICT (logic_id, param_key) DO UPDATE SET
@@ -1104,7 +1121,7 @@ CREATE TABLE IF NOT EXISTS logic_stops (
     id SERIAL PRIMARY KEY,
     logic_id INTEGER NOT NULL REFERENCES logics(id) ON DELETE CASCADE,
     rule_kind VARCHAR(20) NOT NULL CHECK (rule_kind IN ('stop_loss', 'take_profit')),
-    scope_type VARCHAR(20) NOT NULL CHECK (scope_type IN ('security', 'portfolio')),
+    scope_type VARCHAR(20) NOT NULL CHECK (scope_type IN ('security', 'security_resume', 'portfolio')),
     value NUMERIC(18, 6) NOT NULL CHECK (value > 0),
     value_unit VARCHAR(10) NOT NULL CHECK (value_unit IN ('percent', 'atr')),
     display_order INTEGER NOT NULL DEFAULT 0,
@@ -1118,7 +1135,21 @@ CREATE INDEX IF NOT EXISTS idx_logic_stops_rule_kind ON logic_stops(logic_id, ru
 COMMENT ON TABLE logic_stops IS
 'Стоп-лосс и тейк-профит для logics: security (по бумаге) или portfolio (портфель логики)';
 COMMENT ON COLUMN logic_stops.rule_kind IS 'stop_loss | take_profit';
-COMMENT ON COLUMN logic_stops.scope_type IS 'security — по бумаге; portfolio — по всему портфелю логики';
+COMMENT ON COLUMN logic_stops.scope_type IS
+'stop_loss: security | security_resume | portfolio; take_profit: security | portfolio';
+
+UPDATE logic_stops
+SET scope_type = 'security'
+WHERE rule_kind = 'take_profit' AND scope_type = 'security_resume';
+
+DO $$
+BEGIN
+    ALTER TABLE logic_stops DROP CONSTRAINT IF EXISTS logic_stops_tp_scope_check;
+    ALTER TABLE logic_stops ADD CONSTRAINT logic_stops_tp_scope_check
+        CHECK (rule_kind = 'stop_loss' OR scope_type IN ('security', 'portfolio'));
+EXCEPTION
+    WHEN duplicate_object THEN NULL;
+END $$;
 COMMENT ON COLUMN logic_stops.value_unit IS 'percent | atr';
 
 -- Ценные бумаги, привязанные к торговой логике (портфель логики)
@@ -1128,6 +1159,10 @@ CREATE TABLE IF NOT EXISTS logic_securities (
     security_id INTEGER NOT NULL REFERENCES securities(id) ON DELETE RESTRICT,
     display_order INTEGER NOT NULL DEFAULT 0,
     is_active BOOLEAN NOT NULL DEFAULT TRUE,
+    real_trading_paused BOOLEAN NOT NULL DEFAULT FALSE,
+    stop_resume_equity NUMERIC(20, 6),
+    stop_resume_baseline NUMERIC(20, 6),
+    stop_resume_triggered_at TIMESTAMP,
     created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
     UNIQUE (logic_id, security_id)
 );
@@ -1138,6 +1173,17 @@ CREATE INDEX IF NOT EXISTS idx_logic_securities_security_id ON logic_securities(
 COMMENT ON TABLE logic_securities IS
 'Портфель ценных бумаг торговой логики: одна строка — одна бумага в logics';
 COMMENT ON COLUMN logic_securities.display_order IS 'Порядок отображения в UI';
+COMMENT ON COLUMN logic_securities.real_trading_paused IS
+'TRUE — реальная торговля по бумаге приостановлена (теневой режим после security_resume SL)';
+COMMENT ON COLUMN logic_securities.stop_resume_equity IS
+'Целевая стоимость трека бумаги для возобновления реальной торговли';
+COMMENT ON COLUMN logic_securities.stop_resume_baseline IS
+'Стоимость трека сразу после срабатывания SL (база для теневого восстановления)';
+
+ALTER TABLE logic_securities ADD COLUMN IF NOT EXISTS real_trading_paused BOOLEAN NOT NULL DEFAULT FALSE;
+ALTER TABLE logic_securities ADD COLUMN IF NOT EXISTS stop_resume_equity NUMERIC(20, 6);
+ALTER TABLE logic_securities ADD COLUMN IF NOT EXISTS stop_resume_baseline NUMERIC(20, 6);
+ALTER TABLE logic_securities ADD COLUMN IF NOT EXISTS stop_resume_triggered_at TIMESTAMP;
 
 -- Демо-логика SMA Price Cross Demo: только long-trend и short-trend + SBER
 DELETE FROM logic_indicator_signals lis
@@ -1188,14 +1234,16 @@ CREATE TABLE IF NOT EXISTS logic_trades (
     executed_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
     is_simulated BOOLEAN NOT NULL DEFAULT FALSE,
     is_fictitious BOOLEAN NOT NULL DEFAULT FALSE,
+    is_shadow BOOLEAN NOT NULL DEFAULT FALSE,
+    is_test BOOLEAN NOT NULL DEFAULT FALSE,
     broker_order_id VARCHAR(100),
     status VARCHAR(20) NOT NULL DEFAULT 'filled'
         CHECK (status IN ('pending', 'submitted', 'filled', 'rejected', 'cancelled')),
     commission NUMERIC(18, 6) NOT NULL DEFAULT 0,
     financial_result NUMERIC(20, 6),
     note TEXT,
-    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    UNIQUE (logic_id, security_id, signal_kind, bar_dt)
+    trade_reason TEXT,
+    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
 CREATE INDEX IF NOT EXISTS idx_logic_trades_logic_id ON logic_trades(logic_id);
@@ -1204,14 +1252,73 @@ CREATE INDEX IF NOT EXISTS idx_logic_trades_security_id ON logic_trades(security
 
 ALTER TABLE logic_trades ADD COLUMN IF NOT EXISTS commission NUMERIC(18, 6) NOT NULL DEFAULT 0;
 ALTER TABLE logic_trades ADD COLUMN IF NOT EXISTS financial_result NUMERIC(20, 6);
+ALTER TABLE logic_trades ADD COLUMN IF NOT EXISTS is_shadow BOOLEAN NOT NULL DEFAULT FALSE;
+ALTER TABLE logic_trades ADD COLUMN IF NOT EXISTS is_test BOOLEAN NOT NULL DEFAULT FALSE;
+ALTER TABLE logic_trades ADD COLUMN IF NOT EXISTS trade_reason TEXT;
+
+ALTER TABLE logic_trades DROP CONSTRAINT IF EXISTS logic_trades_logic_id_security_id_signal_kind_bar_dt_key;
+DROP INDEX IF EXISTS logic_trades_logic_id_security_id_signal_kind_bar_dt_key;
+CREATE UNIQUE INDEX IF NOT EXISTS idx_logic_trades_signal_bar_book
+    ON logic_trades (logic_id, security_id, signal_kind, bar_dt, is_test, is_shadow);
+
+CREATE INDEX IF NOT EXISTS idx_logic_trades_test ON logic_trades(logic_id) WHERE is_test;
 
 COMMENT ON TABLE logic_trades IS
 'Сделки logics: исполнение по logic_indicator_signals; is_simulated — фейковый счёт; is_fictitious — резерв';
 COMMENT ON COLUMN logic_trades.is_simulated IS 'TRUE — сделка на фейковом счёте (бумажная торговля)';
 COMMENT ON COLUMN logic_trades.is_fictitious IS 'Фиктивная сделка (резерв, заполнение позже)';
+COMMENT ON COLUMN logic_trades.is_shadow IS
+'Теневая сделка: не влияет на реальный депозит; режим возобновления после стоп-лосса по бумаге';
+COMMENT ON COLUMN logic_trades.is_test IS
+'TRUE — сделка исторического тестирования (отдельная книга, не смешивается с боевыми и live-теневыми)';
+COMMENT ON COLUMN logic_trades.trade_reason IS
+'Причина сделки: сигнал индикатора, stop_loss/take_profit (тип), market:close_all и т.п.';
 COMMENT ON COLUMN logic_trades.bar_dt IS 'Свеча, на которой сработал сигнал';
 COMMENT ON COLUMN logic_trades.commission IS 'Комиссия по сделке (фейк: % от депозита; реал: с биржи)';
 COMMENT ON COLUMN logic_trades.financial_result IS 'Итог PnL закрывающей сделки (сумма пакетов); NULL для открытия';
+
+CREATE TABLE IF NOT EXISTS logic_backtest_runs (
+    id BIGSERIAL PRIMARY KEY,
+    logic_id INTEGER NOT NULL REFERENCES logics(id) ON DELETE CASCADE,
+    date_from DATE NOT NULL,
+    date_to DATE NOT NULL,
+    status VARCHAR(30) NOT NULL DEFAULT 'pending'
+        CHECK (status IN (
+            'pending', 'loading_prices', 'loading_indicators', 'running',
+            'completed', 'cancelled', 'failed'
+        )),
+    progress_pct NUMERIC(5, 2) NOT NULL DEFAULT 0,
+    phase_message TEXT,
+    phase_detail TEXT,
+    current_bar_dt TIMESTAMP,
+    total_bars INTEGER NOT NULL DEFAULT 0,
+    processed_bars INTEGER NOT NULL DEFAULT 0,
+    trades_created INTEGER NOT NULL DEFAULT 0,
+    test_balance NUMERIC(20, 6),
+    financial_result NUMERIC(20, 6),
+    cancel_requested BOOLEAN NOT NULL DEFAULT FALSE,
+    error_message TEXT,
+    started_at TIMESTAMP,
+    finished_at TIMESTAMP,
+    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS idx_logic_backtest_runs_logic ON logic_backtest_runs(logic_id, created_at DESC);
+
+COMMENT ON TABLE logic_backtest_runs IS
+'Историческое тестирование: прогресс, период, итог (сделки is_test=TRUE)';
+
+CREATE TABLE IF NOT EXISTS logic_backtest_security_state (
+    run_id BIGINT NOT NULL REFERENCES logic_backtest_runs(id) ON DELETE CASCADE,
+    security_id INTEGER NOT NULL REFERENCES securities(id) ON DELETE CASCADE,
+    real_trading_paused BOOLEAN NOT NULL DEFAULT FALSE,
+    stop_resume_equity NUMERIC(20, 6),
+    stop_resume_baseline NUMERIC(20, 6),
+    PRIMARY KEY (run_id, security_id)
+);
+
+COMMENT ON TABLE logic_backtest_security_state IS
+'Пауза security_resume внутри backtest (не меняет live logic_securities)';
 
 -- Пакеты закрытия (FIFO / средняя): связь продажи с покупками
 CREATE TABLE IF NOT EXISTS logic_trade_lots (

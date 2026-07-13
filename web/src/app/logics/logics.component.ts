@@ -29,13 +29,13 @@ import {
   SignalKind,
 } from '../shared/signal-formula';
 import {
-  LOGIC_STOP_SCOPES,
   LOGIC_STOP_UNITS,
   LogicStopRuleKind,
   LogicStopScopeType,
   LogicStopValueUnit,
   ruleKindLabel,
   scopeTypeLabel,
+  stopScopesForRuleKind,
   valueUnitLabel,
 } from '../shared/logic-stop';
 import {
@@ -47,6 +47,10 @@ import {
   LogicTradeLotRow,
   LogicTradeRow,
 } from '../shared/logic-trade';
+import {
+  BacktestRunStatus,
+  LogicPositionsPanelComponent,
+} from './logic-positions-panel.component';
 
 const POLL_INTERVAL_MS = 2000;
 
@@ -70,7 +74,7 @@ type StopFormDraft = {
 @Component({
   selector: 'app-logics',
   standalone: true,
-  imports: [CommonModule, FormsModule, LogicEditorComponent, TbankTokenDialogComponent],
+  imports: [CommonModule, FormsModule, LogicEditorComponent, TbankTokenDialogComponent, LogicPositionsPanelComponent],
   templateUrl: './logics.component.html',
   styleUrl: './logics.component.css',
 })
@@ -90,6 +94,7 @@ export class LogicsComponent implements OnInit, OnDestroy {
   expandedStopsBlocks = new Set<number>();
   expandedSecuritiesBlocks = new Set<number>();
   expandedTradesBlocks = new Set<number>();
+  expandedTestTradesBlocks = new Set<number>();
   expandedOpenPositionsBlocks = new Set<number>();
   expandedClosedPositionsBlocks = new Set<number>();
   expandedTradeRows = new Set<number>();
@@ -97,6 +102,9 @@ export class LogicsComponent implements OnInit, OnDestroy {
   logicStops = new Map<number, LogicStopRow[]>();
   logicSecurities = new Map<number, LogicSecurityRow[]>();
   logicTrades = new Map<number, LogicTradeRow[]>();
+  logicTradesTest = new Map<number, LogicTradeRow[]>();
+  backtestRuns = new Map<number, BacktestRunStatus>();
+  private backtestPollIds = new Set<number>();
   logicTradeLots = new Map<number, LogicTradeLotRow[]>();
   signalsLoading = new Set<number>();
   stopsLoading = new Set<number>();
@@ -131,8 +139,8 @@ export class LogicsComponent implements OnInit, OnDestroy {
     value_unit: 'percent',
   };
 
-  readonly stopScopes = LOGIC_STOP_SCOPES;
   readonly stopUnits = LOGIC_STOP_UNITS;
+  stopScopesFor = stopScopesForRuleKind;
 
   tbankTokenDialogOpen = false;
   tbankTokenDialogContext: 'prices' | 'logic' | 'trades' = 'logic';
@@ -140,6 +148,8 @@ export class LogicsComponent implements OnInit, OnDestroy {
   /** Постоянное предупреждение у блока «Сделки», пока токен невалиден и логика включена. */
   tbankTokenAlert: { reason: 'missing' | 'invalid'; message: string } | null = null;
   private pendingEnableLogic: LogicRow | null = null;
+  private pendingBacktest: { logicId: number; period: { date_from: string; date_to: string } } | null =
+    null;
   private lastTbankTokenCheckAt = 0;
   private readonly tbankTokenCheckMs = 30000;
 
@@ -158,6 +168,7 @@ export class LogicsComponent implements OnInit, OnDestroy {
       initial_balance: string;
       commission_pct: string;
       cost_method: 'FIFO' | 'AVERAGE';
+      stop_loss_timeframe: string;
       reset_balance: boolean;
     }
   >();
@@ -277,6 +288,7 @@ export class LogicsComponent implements OnInit, OnDestroy {
       this.expandedStopsBlocks.delete(row.id);
       this.expandedSecuritiesBlocks.delete(row.id);
       this.expandedTradesBlocks.delete(row.id);
+      this.expandedTestTradesBlocks.delete(row.id);
       this.closeSignalPicker();
       this.closeStopForm();
       this.closeSecurityPicker();
@@ -298,6 +310,12 @@ export class LogicsComponent implements OnInit, OnDestroy {
 
   onParamsTimeframeChange(logicId: number, value: string): void {
     this.getParamsDraft(logicId).timeframe = value;
+    this.paramsDirtyIds.add(logicId);
+    this.paramsSaveErrors.delete(logicId);
+  }
+
+  onParamsStopLossTimeframeChange(logicId: number, value: string): void {
+    this.getParamsDraft(logicId).stop_loss_timeframe = value;
     this.paramsDirtyIds.add(logicId);
     this.paramsSaveErrors.delete(logicId);
   }
@@ -411,6 +429,7 @@ export class LogicsComponent implements OnInit, OnDestroy {
       current_balance: number | null;
       commission_pct?: number;
       cost_method?: 'FIFO' | 'AVERAGE';
+      stop_loss_timeframe?: string;
     }
   ): void {
     const idx = this.logics.findIndex((l) => l.id === logicId);
@@ -427,6 +446,7 @@ export class LogicsComponent implements OnInit, OnDestroy {
     current_balance: number | null;
     commission_pct?: number;
     cost_method?: 'FIFO' | 'AVERAGE';
+    stop_loss_timeframe?: string;
   }): {
     timeframe: string;
     position_size_pct: string;
@@ -434,6 +454,7 @@ export class LogicsComponent implements OnInit, OnDestroy {
     initial_balance: string;
     commission_pct: string;
     cost_method: 'FIFO' | 'AVERAGE';
+    stop_loss_timeframe: string;
     reset_balance: boolean;
   } {
     const method: 'FIFO' | 'AVERAGE' =
@@ -445,6 +466,7 @@ export class LogicsComponent implements OnInit, OnDestroy {
       initial_balance: this.formatBalanceDraft(trading.initial_balance),
       commission_pct: this.formatPctParam(trading.commission_pct ?? 0.05),
       cost_method: method,
+      stop_loss_timeframe: (trading.stop_loss_timeframe ?? 'M5').toUpperCase(),
       reset_balance: false,
     };
   }
@@ -478,6 +500,7 @@ export class LogicsComponent implements OnInit, OnDestroy {
       current_balance: row.current_balance,
       commission_pct: row.commission_pct,
       cost_method: row.cost_method,
+      stop_loss_timeframe: row.stop_loss_timeframe,
     });
   }
 
@@ -525,6 +548,7 @@ export class LogicsComponent implements OnInit, OnDestroy {
         initial_balance,
         commission_pct,
         cost_method: draft.cost_method,
+        stop_loss_timeframe: draft.stop_loss_timeframe,
         reset_balance: draft.reset_balance,
       })
       .subscribe({
@@ -598,9 +622,25 @@ export class LogicsComponent implements OnInit, OnDestroy {
     }
   }
 
-  toggleTradesBlock(logicId: number, event: Event): void {
-    event.preventDefault();
-    event.stopPropagation();
+  isTestTradesBlockExpanded(id: number): boolean {
+    return this.expandedTestTradesBlocks.has(id);
+  }
+
+  toggleTestTradesBlock(logicId: number, event?: Event): void {
+    event?.preventDefault();
+    event?.stopPropagation();
+    if (this.expandedTestTradesBlocks.has(logicId)) {
+      this.expandedTestTradesBlocks.delete(logicId);
+    } else {
+      this.expandedTestTradesBlocks.add(logicId);
+      this.loadTestTradesForLogic(logicId);
+      this.refreshBacktestStatus(logicId);
+    }
+  }
+
+  toggleTradesBlock(logicId: number, event?: Event): void {
+    event?.preventDefault();
+    event?.stopPropagation();
     if (this.expandedTradesBlocks.has(logicId)) {
       this.expandedTradesBlocks.delete(logicId);
       this.expandedOpenPositionsBlocks.delete(logicId);
@@ -645,8 +685,8 @@ export class LogicsComponent implements OnInit, OnDestroy {
     return this.expandedClosedPositionsBlocks.has(logicId);
   }
 
-  openPositionTrades(logicId: number): LogicTradeRow[] {
-    return this.tradesFor(logicId)
+  openPositionTrades(logicId: number, isTest = false): LogicTradeRow[] {
+    return this.tradesFor(logicId, isTest)
       .filter((t) => this.isOpenPositionTrade(t))
       .sort(
         (a, b) =>
@@ -679,14 +719,16 @@ export class LogicsComponent implements OnInit, OnDestroy {
     );
   }
 
-  totalFinancialResult(logicId: number): number {
-    return this.tradesFor(logicId).reduce(
-      (sum, t) =>
-        t.financial_result != null && Number.isFinite(Number(t.financial_result))
-          ? sum + Number(t.financial_result)
-          : sum,
-      0
-    );
+  totalFinancialResult(logicId: number, isTest = false): number {
+    return this.tradesFor(logicId, isTest)
+      .filter((t) => !t.is_shadow)
+      .reduce(
+        (sum, t) =>
+          t.financial_result != null && Number.isFinite(Number(t.financial_result))
+            ? sum + Number(t.financial_result)
+            : sum,
+        0
+      );
   }
 
   hasOpenPositions(logicId: number): boolean {
@@ -697,9 +739,9 @@ export class LogicsComponent implements OnInit, OnDestroy {
     return this.closeAllLoading.has(logicId);
   }
 
-  closeAllPositionsAtMarket(logicId: number, event: Event): void {
-    event.preventDefault();
-    event.stopPropagation();
+  closeAllPositionsAtMarket(logicId: number, event?: Event): void {
+    event?.preventDefault();
+    event?.stopPropagation();
     if (this.closeAllLoading.has(logicId) || !this.hasOpenPositions(logicId)) {
       return;
     }
@@ -801,6 +843,10 @@ export class LogicsComponent implements OnInit, OnDestroy {
     return formatted;
   }
 
+  requestTradeLots(tradeId: number): void {
+    this.loadTradeLots(tradeId);
+  }
+
   private loadTradeLots(tradeId: number): void {
     if (this.tradeLotsLoading.has(tradeId)) return;
     this.tradeLotsLoading.add(tradeId);
@@ -815,8 +861,17 @@ export class LogicsComponent implements OnInit, OnDestroy {
     });
   }
 
-  tradesFor(logicId: number): LogicTradeRow[] {
-    return this.logicTrades.get(logicId) ?? [];
+  tradesFor(logicId: number, isTest = false): LogicTradeRow[] {
+    return isTest ? this.logicTradesTest.get(logicId) ?? [] : this.logicTrades.get(logicId) ?? [];
+  }
+
+  backtestFor(logicId: number): BacktestRunStatus | null {
+    return this.backtestRuns.get(logicId) ?? null;
+  }
+
+  isBacktestRunning(logicId: number): boolean {
+    const s = this.backtestRuns.get(logicId)?.status;
+    return s === 'pending' || s === 'loading_prices' || s === 'loading_indicators' || s === 'running';
   }
 
   isTradesLoading(logicId: number): boolean {
@@ -1328,12 +1383,17 @@ export class LogicsComponent implements OnInit, OnDestroy {
     this.tbankTokenDialogOpen = false;
     this.lastTbankTokenCheckAt = Date.now();
     const row = this.pendingEnableLogic;
+    const pendingBt = this.pendingBacktest;
     this.pendingEnableLogic = null;
+    this.pendingBacktest = null;
     this.settings.getTbankTokenStatus(true).subscribe({
       next: (status) => {
         this.applyTbankTokenStatus(status);
         if (row && status.valid) {
           this.applyEnabledChange(row, true);
+        }
+        if (pendingBt && status.valid) {
+          this.doStartBacktestRun(pendingBt.logicId, pendingBt.period);
         }
       },
       error: () => {},
@@ -1343,11 +1403,12 @@ export class LogicsComponent implements OnInit, OnDestroy {
   onTbankTokenCancelledForLogic(): void {
     this.tbankTokenDialogOpen = false;
     this.pendingEnableLogic = null;
+    this.pendingBacktest = null;
   }
 
-  openTbankTokenDialogFromAlert(event: Event): void {
-    event.preventDefault();
-    event.stopPropagation();
+  openTbankTokenDialogFromAlert(event?: Event): void {
+    event?.preventDefault();
+    event?.stopPropagation();
     if (this.tbankTokenDialogOpen) return;
     const alert = this.tbankTokenAlert;
     this.tbankTokenDialogContext = 'trades';
@@ -1501,12 +1562,70 @@ export class LogicsComponent implements OnInit, OnDestroy {
     });
   }
 
+  startBacktestRun(logicId: number, period: { date_from: string; date_to: string }): void {
+    this.settings.getTbankTokenStatus(true).subscribe({
+      next: (status) => {
+        if (!status.has_token || !status.valid) {
+          this.pendingBacktest = { logicId, period };
+          this.tbankTokenDialogContext = 'logic';
+          this.tbankTokenDialogReason = status.has_token ? 'invalid' : 'missing';
+          this.tbankTokenDialogOpen = true;
+          return;
+        }
+        this.doStartBacktestRun(logicId, period);
+      },
+      error: () => this.doStartBacktestRun(logicId, period),
+    });
+  }
+
+  private doStartBacktestRun(logicId: number, period: { date_from: string; date_to: string }): void {
+    this.logicsService
+      .startBacktest({ logic_id: logicId, date_from: period.date_from, date_to: period.date_to })
+      .subscribe({
+        next: () => {
+          this.backtestPollIds.add(logicId);
+          this.expandedTestTradesBlocks.add(logicId);
+          this.refreshBacktestStatus(logicId);
+        },
+        error: (err) => alert(err?.error?.error || 'Не удалось запустить тест'),
+      });
+  }
+
+  cancelBacktestRun(logicId: number): void {
+    const run = this.backtestRuns.get(logicId);
+    if (!run?.id) return;
+    this.logicsService.cancelBacktest(run.id).subscribe({
+      next: () => this.refreshBacktestStatus(logicId),
+      error: (err) => alert(err?.error?.error || 'Не удалось остановить тест'),
+    });
+  }
+
+  private refreshBacktestStatus(logicId: number): void {
+    this.logicsService.getBacktestStatus(logicId).subscribe({
+      next: (row) => {
+        if (row) {
+          this.backtestRuns.set(logicId, row);
+          const st = String(row.status ?? '');
+          if (['pending', 'loading_prices', 'loading_indicators', 'running'].includes(st)) {
+            this.backtestPollIds.add(logicId);
+          } else {
+            this.backtestPollIds.delete(logicId);
+            this.loadTestTradesForLogic(logicId, true);
+          }
+        } else {
+          this.backtestRuns.delete(logicId);
+          this.backtestPollIds.delete(logicId);
+        }
+      },
+    });
+  }
+
   private loadTradesForLogic(logicId: number, silent = false): void {
     if (!silent && this.tradesLoading.has(logicId)) return;
     if (!silent) {
       this.tradesLoading.add(logicId);
     }
-    this.logicsService.getLogicTrades(logicId).subscribe({
+    this.logicsService.getLogicTrades(logicId, 200, false).subscribe({
       next: (rows) => {
         this.logicTrades.set(logicId, rows);
         this.tradesLoading.delete(logicId);
@@ -1515,11 +1634,23 @@ export class LogicsComponent implements OnInit, OnDestroy {
         this.tradesLoading.delete(logicId);
       },
     });
+    this.loadTestTradesForLogic(logicId, true);
+  }
+
+  private loadTestTradesForLogic(logicId: number, _silent = false): void {
+    this.logicsService.getLogicTrades(logicId, 200, true).subscribe({
+      next: (rows) => {
+        this.logicTradesTest.set(logicId, rows);
+      },
+    });
   }
 
   private refreshAllTradesSummaries(): void {
     for (const row of this.logics) {
       this.loadTradesForLogic(row.id, true);
+    }
+    for (const logicId of this.backtestPollIds) {
+      this.refreshBacktestStatus(logicId);
     }
   }
 

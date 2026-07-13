@@ -730,230 +730,14 @@ tbody tr:hover {
   margin: 0.25rem 0.5rem 0.5rem;
 }
 
-.trades-block {
-  margin-top: 0;
-}
-
-.trades-live-badge {
-  font-size: 0.78rem;
-  font-weight: 600;
-  color: #15803d;
-  background: #dcfce7;
-  border: 1px solid #86efac;
-  border-radius: 999px;
-  padding: 0.15rem 0.55rem;
-}
-
-.trades-paused-badge {
-  font-size: 0.78rem;
-  font-weight: 600;
-  color: #6b7280;
-  background: #f3f4f6;
-  border: 1px solid #d1d5db;
-  border-radius: 999px;
-  padding: 0.15rem 0.55rem;
-}
-
-.trades-table {
-  font-size: 0.82rem;
-}
-
-.trades-scroll {
-  max-height: min(420px, 55vh);
-  overflow: auto;
-  border: 1px solid #e2e8f0;
-  border-radius: 6px;
-  -webkit-overflow-scrolling: touch;
-}
-
-.trades-scroll .trades-table {
-  margin: 0;
-  width: 100%;
-  border-collapse: collapse;
-}
-
-.trades-scroll .trades-table thead th {
-  position: sticky;
-  top: 0;
-  z-index: 1;
-  background: #f8fafc;
-  box-shadow: 0 1px 0 #e2e8f0;
-}
-
-.trade-rejected {
-  background: #fef2f2;
-}
-
-.trade-row {
-  cursor: pointer;
-}
-
-.trade-row:hover {
-  background: #f1f5f9;
-}
-
-.trade-expand-cell {
-  width: 1.5rem;
-  text-align: center;
-  padding-left: 0.25rem;
-  padding-right: 0;
-}
-
-.trade-row-chevron {
-  display: inline-block;
-  font-size: 0.95rem;
-  color: #64748b;
-  transition: transform 0.15s ease;
-}
-
-.trade-row-chevron.open {
-  transform: rotate(90deg);
-}
-
-.trade-lots-row td {
-  background: #f8fafc;
-  padding: 0.5rem 0.75rem 0.65rem 1.5rem;
-}
-
-.trade-lots-table {
-  font-size: 0.78rem;
-}
-
-.trade-lots-loading,
-.trade-lots-empty {
-  margin: 0.25rem 0;
-  font-size: 0.82rem;
-  color: #64748b;
-}
-
-.trade-pnl-pos {
-  color: #15803d;
-  font-weight: 600;
-}
-
-.trade-pnl-neg {
-  color: #b91c1c;
-  font-weight: 600;
-}
-
-.trades-summary {
-  cursor: pointer;
-}
-
-.positions-summary-pnl {
-  display: inline-flex;
-  align-items: baseline;
-  gap: 0.35rem;
-  margin-left: 0.75rem;
-}
-
-.positions-total-label {
-  font-size: 0.78rem;
-  font-weight: 600;
-  color: #64748b;
-}
-
-.positions-total-value {
-  font-size: 0.95rem;
-  font-weight: 700;
-}
-
-.btn-close-all-positions {
-  margin-right: 0.5rem;
-  padding: 0.2rem 0.55rem;
-  font-size: 0.78rem;
-  font-weight: 600;
-  color: #991b1b;
-  background: #fef2f2;
-  border: 1px solid #fecaca;
-  border-radius: 6px;
-  cursor: pointer;
-}
-
-.btn-close-all-positions:hover:not(:disabled) {
-  background: #fee2e2;
-}
-
-.btn-close-all-positions:disabled {
-  opacity: 0.6;
-  cursor: wait;
-}
-
-.positions-sub-block {
-  margin-top: 0.5rem;
-}
-
-.positions-sub-hint {
-  margin-left: 0.35rem;
-  font-size: 0.75rem;
-  font-weight: 500;
-  color: #64748b;
-}
-
-.trade-row-expandable {
-  cursor: pointer;
-}
-
-.trade-row-expandable:hover {
-  background: #f8fafc;
-}
-
-.trade-lots-detail-row td {
-  padding: 0 !important;
-  border-bottom: 1px solid #e2e8f0;
-}
-
-.trade-lots-panel {
-  padding: 0.5rem 0.65rem 0.65rem 2rem;
-  background: #f8fafc;
-}
-
-.trade-lots-panel-title {
-  margin: 0 0 0.4rem;
-  font-size: 0.78rem;
-  font-weight: 600;
-  color: #475569;
-}
-
-.trade-lots-table {
-  font-size: 0.78rem;
-}
-
-.trade-lots-table th,
-.trade-lots-table td {
-  padding: 0.25rem 0.4rem;
-}
-
-.trades-token-alert,
-.trades-token-banner {
-  border: 1px solid #dc2626;
-  background: #fee2e2;
-  color: #991b1b;
-  font-weight: 700;
-  cursor: pointer;
-  text-align: left;
-}
-
-.trades-token-alert {
-  display: inline-flex;
-  align-items: center;
-  gap: 0.35rem;
-  max-width: min(100%, 22rem);
-  padding: 0.25rem 0.5rem;
-  border-radius: 6px;
-  font-size: 0.78rem;
-}
-
-.trades-token-banner {
+.logic-trades-stack {
   display: flex;
-  gap: 0.5rem;
-  width: 100%;
-  margin-bottom: 0.65rem;
-  padding: 0.5rem 0.75rem;
-  border-width: 2px;
-  border-radius: 8px;
-  font-size: 0.84rem;
-  line-height: 1.35;
+  flex-direction: column;
+  gap: 0.65rem;
+}
+
+.logic-trades-stack > app-logic-positions-panel {
+  display: block;
 }
 
 .params-table .params-input {
@@ -996,4 +780,19 @@ tbody tr:hover {
 
 .params-block {
   border-color: #93c5fd;
+}
+
+.sec-paused-badge {
+  display: inline-block;
+  margin-left: 0.35rem;
+  padding: 0.05rem 0.35rem;
+  font-size: 0.72rem;
+  font-weight: 600;
+  line-height: 1.2;
+  border-radius: 0.25rem;
+  vertical-align: middle;
+  white-space: nowrap;
+  color: #92400e;
+  background: #fef3c7;
+  border: 1px solid #fcd34d;
 }

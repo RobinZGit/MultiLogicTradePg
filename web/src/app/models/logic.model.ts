@@ -11,6 +11,7 @@ export interface LogicRow {
   current_balance: number | null;
   commission_pct?: number;
   cost_method?: 'FIFO' | 'AVERAGE';
+  stop_loss_timeframe?: string;
   account_code: string;
   account_name: string;
   account_type: 'real' | 'fake';
@@ -27,6 +28,7 @@ export interface LogicTradingParamsPayload {
   reset_balance?: boolean;
   commission_pct?: number;
   cost_method?: 'FIFO' | 'AVERAGE';
+  stop_loss_timeframe?: string;
 }
 
 export interface LogicTradingParamsResponse {
@@ -37,6 +39,7 @@ export interface LogicTradingParamsResponse {
   current_balance: number | null;
   commission_pct: number;
   cost_method: 'FIFO' | 'AVERAGE';
+  stop_loss_timeframe: string;
 }
 
 export interface LogicParamRow {
@@ -73,7 +76,7 @@ export interface LogicStopRow {
   id: number;
   logic_id: number;
   rule_kind: 'stop_loss' | 'take_profit';
-  scope_type: 'security' | 'portfolio';
+  scope_type: 'security' | 'security_resume' | 'portfolio';
   value: number;
   value_unit: 'percent' | 'atr';
   display_order: number;
@@ -94,4 +97,8 @@ export interface LogicSecurityRow {
   instrument_market: string | null;
   exchange_id: number | null;
   exchange_name: string | null;
+  real_trading_paused?: boolean;
+  stop_resume_equity?: number | null;
+  stop_resume_baseline?: number | null;
+  stop_resume_triggered_at?: string | null;
 }

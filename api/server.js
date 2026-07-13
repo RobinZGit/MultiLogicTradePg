@@ -5,6 +5,7 @@ const { Pool } = require('pg');
 const {
   hashToken,
 } = require('./tbank');
+const { startBacktest, getBacktestStatus, cancelBacktest } = require('./logic-backtest');
 const { runTradeCycle, startTradeRunner } = require('./trade-runner');
 const {
   touchUiHeartbeatDb,
@@ -18,6 +19,15 @@ const {
   getLogicParamsDetailed,
 } = require('./lib/logic-params');
 const { writeTechLogEvent } = require('./lib/tech-log');
+
+const VALID_STOP_SCOPES = new Set(['security', 'security_resume', 'portfolio']);
+const TAKE_PROFIT_SCOPES = new Set(['security', 'portfolio']);
+
+function isScopeValidForRuleKind(ruleKind, scopeType) {
+  if (!VALID_STOP_SCOPES.has(scopeType)) return false;
+  if (ruleKind === 'take_profit') return TAKE_PROFIT_SCOPES.has(scopeType);
+  return true;
+}
 
 const app = express();
 const port = Number(process.env.PORT) || 3000;
@@ -1633,8 +1643,13 @@ app.post('/api/logic-stops', async (req, res) => {
     res.status(400).json({ error: 'rule_kind must be stop_loss or take_profit' });
     return;
   }
-  if (scopeType !== 'security' && scopeType !== 'portfolio') {
-    res.status(400).json({ error: 'scope_type must be security or portfolio' });
+  if (!isScopeValidForRuleKind(ruleKind, scopeType)) {
+    res.status(400).json({
+      error:
+        ruleKind === 'take_profit'
+          ? 'scope_type for take_profit must be security or portfolio'
+          : 'scope_type must be security, security_resume or portfolio',
+    });
     return;
   }
   if (valueUnit !== 'percent' && valueUnit !== 'atr') {
@@ -1679,10 +1694,6 @@ app.put('/api/logic-stops/:id', async (req, res) => {
     res.status(400).json({ error: 'Invalid id' });
     return;
   }
-  if (scopeType && scopeType !== 'security' && scopeType !== 'portfolio') {
-    res.status(400).json({ error: 'scope_type must be security or portfolio' });
-    return;
-  }
   if (valueUnit && valueUnit !== 'percent' && valueUnit !== 'atr') {
     res.status(400).json({ error: 'value_unit must be percent or atr' });
     return;
@@ -1692,6 +1703,26 @@ app.put('/api/logic-stops/:id', async (req, res) => {
     return;
   }
   try {
+    if (scopeType) {
+      const { rows: kindRows } = await pool.query(
+        'SELECT rule_kind FROM logic_stops WHERE id = $1',
+        [id]
+      );
+      if (kindRows.length === 0) {
+        res.status(404).json({ error: 'Stop rule not found' });
+        return;
+      }
+      const ruleKind = kindRows[0].rule_kind;
+      if (!isScopeValidForRuleKind(ruleKind, scopeType)) {
+        res.status(400).json({
+          error:
+            ruleKind === 'take_profit'
+              ? 'scope_type for take_profit must be security or portfolio'
+              : 'scope_type must be security, security_resume or portfolio',
+        });
+        return;
+      }
+    }
     const { rows } = await pool.query(
       `
       UPDATE logic_stops
@@ -1749,6 +1780,10 @@ const LOGIC_SECURITY_SELECT = `
     ls.display_order,
     ls.is_active,
     ls.created_at,
+    ls.real_trading_paused,
+    ls.stop_resume_equity::float8 AS stop_resume_equity,
+    ls.stop_resume_baseline::float8 AS stop_resume_baseline,
+    ls.stop_resume_triggered_at,
     s.name AS security_name,
     st.name AS security_type,
     sp.prefix,
@@ -1890,6 +1925,9 @@ const LOGIC_TRADE_SELECT = `
     lt.executed_at,
     lt.is_simulated,
     lt.is_fictitious,
+    lt.is_shadow,
+    lt.is_test,
+    lt.trade_reason,
     lt.broker_order_id,
     lt.status,
     lt.commission,
@@ -1922,13 +1960,28 @@ app.get('/api/logic-trades', async (req, res) => {
     return;
   }
   const limit = Math.min(Math.max(Number(req.query.limit) || 100, 1), 500);
+  const isTestRaw = req.query.is_test;
+  const isTest =
+    isTestRaw === '1' || isTestRaw === 'true'
+      ? true
+      : isTestRaw === '0' || isTestRaw === 'false'
+        ? false
+        : null;
   try {
+    const params = [logicId];
+    let where = 'WHERE lt.logic_id = $1';
+    if (isTest === true) {
+      where += ' AND lt.is_test = TRUE';
+    } else if (isTest === false) {
+      where += ' AND lt.is_test = FALSE';
+    }
+    params.push(limit);
     const { rows } = await pool.query(
       `${LOGIC_TRADE_SELECT}
-       WHERE lt.logic_id = $1
+       ${where}
        ORDER BY lt.executed_at DESC, lt.id DESC
        LIMIT $2`,
-      [logicId, limit]
+      params
     );
     res.json(rows);
   } catch (err) {
@@ -2041,6 +2094,76 @@ app.post('/api/logic-trades/close-all', async (req, res) => {
     res.json({ ok: true, ...result });
   } catch (err) {
     console.error('POST /api/logic-trades/close-all', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/api/logic-backtest/start', async (req, res) => {
+  const logicId = Number(req.body?.logic_id);
+  const dateFrom = btrimStr(req.body?.date_from);
+  const dateTo = btrimStr(req.body?.date_to);
+  if (!Number.isInteger(logicId) || logicId <= 0) {
+    res.status(400).json({ error: 'logic_id required' });
+    return;
+  }
+  if (!dateFrom || !dateTo) {
+    res.status(400).json({ error: 'date_from and date_to required (YYYY-MM-DD)' });
+    return;
+  }
+  try {
+    const { rows: active } = await pool.query(
+      `SELECT id FROM logic_backtest_runs
+       WHERE logic_id = $1 AND status IN ('pending','loading_prices','loading_indicators','running')
+       LIMIT 1`,
+      [logicId]
+    );
+    if (active.length > 0) {
+      res.status(409).json({ error: 'Тестирование уже выполняется', run_id: active[0].id });
+      return;
+    }
+    const runId = await startBacktest(pool, logicId, dateFrom, dateTo);
+    res.status(202).json({ ok: true, run_id: runId });
+  } catch (err) {
+    console.error('POST /api/logic-backtest/start', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.get('/api/logic-backtest/status', async (req, res) => {
+  const logicId = Number(req.query.logic_id);
+  const runId = req.query.run_id != null ? Number(req.query.run_id) : null;
+  if (!Number.isInteger(logicId) || logicId <= 0) {
+    res.status(400).json({ error: 'logic_id required' });
+    return;
+  }
+  try {
+    const row = await getBacktestStatus(pool, logicId, runId);
+    if (!row) {
+      res.status(404).json({ error: 'Run not found' });
+      return;
+    }
+    res.json(row);
+  } catch (err) {
+    console.error('GET /api/logic-backtest/status', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/api/logic-backtest/cancel', async (req, res) => {
+  const runId = Number(req.body?.run_id);
+  if (!Number.isInteger(runId) || runId <= 0) {
+    res.status(400).json({ error: 'run_id required' });
+    return;
+  }
+  try {
+    const ok = await cancelBacktest(pool, runId);
+    if (!ok) {
+      res.status(404).json({ error: 'Run not found or already finished' });
+      return;
+    }
+    res.json({ ok: true, run_id: runId });
+  } catch (err) {
+    console.error('POST /api/logic-backtest/cancel', err);
     res.status(500).json({ error: err.message });
   }
 });
@@ -2415,6 +2538,15 @@ function parseLogicTradingParams(body) {
       return { error: 'Метод PnL: FIFO или AVERAGE' };
     }
     out.cost_method = m;
+    hasField = true;
+  }
+
+  if (body?.stop_loss_timeframe !== undefined) {
+    const tf = String(body.stop_loss_timeframe).trim().toUpperCase();
+    if (!/^[A-Z0-9]+$/.test(tf)) {
+      return { error: 'Таймфрейм SL: код вида M5, M15, H1' };
+    }
+    out.stop_loss_timeframe = tf;
     hasField = true;
   }
 

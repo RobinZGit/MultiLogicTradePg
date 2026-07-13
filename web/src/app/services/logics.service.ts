@@ -4,6 +4,7 @@ import { Observable, map } from 'rxjs';
 import { AppConfigService } from './app-config.service';
 import { LogicIndicatorSignalRow, LogicRow, LogicParamsResponse, LogicSecurityRow, LogicStopRow, LogicTradingParamsPayload, LogicTradingParamsResponse } from '../models/logic.model';
 import { LogicTradeLotRow, LogicTradeRow } from '../shared/logic-trade';
+import type { BacktestRunStatus } from '../logics/logic-positions-panel.component';
 import { LogicPayload } from '../models/lookup.model';
 
 @Injectable({ providedIn: 'root' })
@@ -120,7 +121,7 @@ export class LogicsService {
   createLogicStop(body: {
     logic_id: number;
     rule_kind: 'stop_loss' | 'take_profit';
-    scope_type: 'security' | 'portfolio';
+    scope_type: 'security' | 'security_resume' | 'portfolio';
     value: number;
     value_unit: 'percent' | 'atr';
   }): Observable<LogicStopRow> {
@@ -133,7 +134,7 @@ export class LogicsService {
   updateLogicStop(
     id: number,
     body: {
-      scope_type?: 'security' | 'portfolio';
+      scope_type?: 'security' | 'security_resume' | 'portfolio';
       value?: number;
       value_unit?: 'percent' | 'atr';
       is_active?: boolean;
@@ -174,11 +175,14 @@ export class LogicsService {
     );
   }
 
-  getLogicTrades(logicId: number, limit = 100): Observable<LogicTradeRow[]> {
-    return this.http.get<LogicTradeRow[]>(
-      `${this.appConfig.apiUrl}/logic-trades`,
-      { params: { logic_id: String(logicId), limit: String(limit) } }
-    );
+  getLogicTrades(logicId: number, limit = 100, isTest?: boolean): Observable<LogicTradeRow[]> {
+    const params: Record<string, string> = {
+      logic_id: String(logicId),
+      limit: String(limit),
+    };
+    if (isTest === true) params['is_test'] = '1';
+    else if (isTest === false) params['is_test'] = '0';
+    return this.http.get<LogicTradeRow[]>(`${this.appConfig.apiUrl}/logic-trades`, { params });
   }
 
   getLogicTradeLots(tradeId: number): Observable<LogicTradeLotRow[]> {
@@ -202,5 +206,32 @@ export class LogicsService {
       errors?: unknown[];
       error?: string;
     }>(`${this.appConfig.apiUrl}/logic-trades/close-all`, { logic_id: logicId });
+  }
+
+  startBacktest(body: {
+    logic_id: number;
+    date_from: string;
+    date_to: string;
+  }): Observable<{ ok: boolean; run_id: number }> {
+    return this.http.post<{ ok: boolean; run_id: number }>(
+      `${this.appConfig.apiUrl}/logic-backtest/start`,
+      body
+    );
+  }
+
+  getBacktestStatus(logicId: number, runId?: number): Observable<BacktestRunStatus | null> {
+    const params: Record<string, string> = { logic_id: String(logicId) };
+    if (runId != null) params['run_id'] = String(runId);
+    return this.http.get<BacktestRunStatus | null>(
+      `${this.appConfig.apiUrl}/logic-backtest/status`,
+      { params }
+    );
+  }
+
+  cancelBacktest(runId: number): Observable<{ ok: boolean; run_id: number }> {
+    return this.http.post<{ ok: boolean; run_id: number }>(
+      `${this.appConfig.apiUrl}/logic-backtest/cancel`,
+      { run_id: runId }
+    );
   }
 }

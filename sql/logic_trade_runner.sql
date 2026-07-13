@@ -263,64 +263,8 @@ BEGIN
 END;
 $$;
 
-CREATE OR REPLACE FUNCTION logic_long_position_qty(p_logic_id INTEGER, p_security_id INTEGER)
-RETURNS NUMERIC
-LANGUAGE sql STABLE AS $$
-    SELECT GREATEST(COALESCE(SUM(
-        CASE
-            WHEN s.name = 'Open' AND a.name = 'Long' THEN lt.quantity
-            WHEN s.name = 'Close' AND a.name = 'Long' THEN -lt.quantity
-            ELSE 0
-        END
-    ), 0), 0)
-    FROM logic_trades lt
-    JOIN sides s ON s.id = lt.side_id
-    JOIN actions a ON a.id = lt.action_id
-    WHERE lt.logic_id = p_logic_id
-      AND lt.security_id = p_security_id
-      AND lt.status IN ('filled', 'submitted');
-$$;
-
-CREATE OR REPLACE FUNCTION logic_short_position_qty(p_logic_id INTEGER, p_security_id INTEGER)
-RETURNS NUMERIC
-LANGUAGE sql STABLE AS $$
-    SELECT GREATEST(COALESCE(SUM(
-        CASE
-            WHEN s.name = 'Open' AND a.name = 'Short' THEN lt.quantity
-            WHEN s.name = 'Close' AND a.name = 'Short' THEN -lt.quantity
-            ELSE 0
-        END
-    ), 0), 0)
-    FROM logic_trades lt
-    JOIN sides s ON s.id = lt.side_id
-    JOIN actions a ON a.id = lt.action_id
-    WHERE lt.logic_id = p_logic_id
-      AND lt.security_id = p_security_id
-      AND lt.status IN ('filled', 'submitted');
-$$;
-
-CREATE OR REPLACE FUNCTION logic_count_open_positions(p_logic_id INTEGER)
-RETURNS INTEGER
-LANGUAGE sql STABLE AS $$
-    SELECT COUNT(*)::INTEGER FROM (
-        SELECT lt.security_id
-        FROM logic_trades lt
-        JOIN sides s ON s.id = lt.side_id
-        JOIN actions a ON a.id = lt.action_id
-        WHERE lt.logic_id = p_logic_id
-          AND lt.status IN ('filled', 'submitted')
-        GROUP BY lt.security_id
-        HAVING COALESCE(SUM(
-            CASE
-                WHEN s.name = 'Open' AND a.name = 'Long' THEN lt.quantity
-                WHEN s.name = 'Close' AND a.name = 'Long' THEN -lt.quantity
-                WHEN s.name = 'Open' AND a.name = 'Short' THEN lt.quantity
-                WHEN s.name = 'Close' AND a.name = 'Short' THEN -lt.quantity
-                ELSE 0
-            END
-        ), 0) > 0
-    ) q;
-$$;
+-- logic_long_position_qty / logic_short_position_qty / logic_count_open_positions
+-- определены в sql/logic_stop_runner.sql (поддержка is_shadow)
 
 CREATE OR REPLACE FUNCTION logic_calc_open_quantity(
     p_balance NUMERIC,
@@ -586,6 +530,7 @@ DECLARE
     v_action_id INTEGER;
     v_direction TEXT;
     v_is_simulated BOOLEAN;
+    v_is_shadow BOOLEAN;
     v_broker_order_id TEXT;
     v_status TEXT;
     v_note TEXT;
@@ -685,10 +630,12 @@ BEGIN
     );
 
     FOR v_sec IN
-        SELECT ls.security_id
+        SELECT ls.security_id, COALESCE(ls.real_trading_paused, FALSE) AS real_trading_paused
         FROM logic_securities ls
         WHERE ls.logic_id = p_logic_id AND ls.is_active = TRUE
     LOOP
+        v_is_shadow := v_sec.real_trading_paused;
+
         FOR v_sig IN
             SELECT lis.id, lis.position_side, lis.signal_kind, lis.formula, lis.indicator_id
             FROM logic_indicator_signals lis
@@ -755,13 +702,13 @@ BEGIN
                 v_tf_id
             );
 
-            v_held_long := CASE WHEN v_sig.position_side = 'long' THEN logic_long_position_qty(p_logic_id, v_sec.security_id) ELSE 0 END;
-            v_held_short := CASE WHEN v_sig.position_side = 'short' THEN logic_short_position_qty(p_logic_id, v_sec.security_id) ELSE 0 END;
+            v_held_long := CASE WHEN v_sig.position_side = 'long' THEN logic_long_position_qty(p_logic_id, v_sec.security_id, v_is_shadow) ELSE 0 END;
+            v_held_short := CASE WHEN v_sig.position_side = 'short' THEN logic_short_position_qty(p_logic_id, v_sec.security_id, v_is_shadow) ELSE 0 END;
             v_is_trend := v_sig.signal_kind = 'trend';
 
             IF v_sig.position_side = 'long' THEN
                 IF v_is_trend THEN
-                    IF v_held_long > 0 OR v_open_positions >= v_max_positions THEN
+                    IF v_held_long > 0 OR (NOT v_is_shadow AND v_open_positions >= v_max_positions) THEN
                         CONTINUE;
                     END IF;
                     v_quantity := logic_calc_open_quantity(v_balance, v_position_size_pct, v_pp);
@@ -784,7 +731,7 @@ BEGIN
                     v_direction := 'SELL';
                 END IF;
             ELSIF v_is_trend THEN
-                IF v_held_short > 0 OR v_open_positions >= v_max_positions THEN
+                IF v_held_short > 0 OR (NOT v_is_shadow AND v_open_positions >= v_max_positions) THEN
                     CONTINUE;
                 END IF;
                 v_quantity := logic_calc_open_quantity(v_balance, v_position_size_pct, v_pp);
@@ -854,16 +801,16 @@ BEGIN
             INSERT INTO logic_trades (
                 logic_id, account_id, security_id, timeframe_id,
                 side_id, action_id, signal_kind, signal_formula,
-                quantity, price, bar_dt, is_simulated, is_fictitious,
+                quantity, price, bar_dt, is_simulated, is_fictitious, is_shadow, is_test,
                 broker_order_id, status, note
             )
             VALUES (
                 p_logic_id, v_logic.account_id, v_sec.security_id, v_tf_id,
                 v_side_id, v_action_id, v_sig.signal_kind, v_sig.formula,
-                v_quantity, v_pp, v_ind_dt, v_is_simulated, FALSE,
+                v_quantity, v_pp, v_ind_dt, v_is_simulated, FALSE, v_is_shadow, FALSE,
                 v_broker_order_id, v_status, v_note
             )
-            ON CONFLICT (logic_id, security_id, signal_kind, bar_dt) DO NOTHING
+            ON CONFLICT (logic_id, security_id, signal_kind, bar_dt, is_test, is_shadow) DO NOTHING
             RETURNING id INTO v_trade_id;
 
             IF v_trade_id IS NULL THEN
@@ -872,7 +819,7 @@ BEGIN
 
             v_created := v_created + 1;
 
-            IF v_logic.account_type = 'fake' AND v_balance IS NOT NULL AND v_status <> 'rejected' THEN
+            IF NOT v_is_shadow AND v_logic.account_type = 'fake' AND v_balance IS NOT NULL AND v_status <> 'rejected' THEN
                 v_balance := logic_trade_finalize(v_trade_id, v_balance);
                 v_notional := v_quantity * v_pp;
                 v_is_open := (v_sig.position_side = 'long' AND v_is_trend)
@@ -882,14 +829,16 @@ BEGIN
                 ELSE
                     v_balance := v_balance + CASE WHEN v_is_open THEN v_notional ELSE -v_notional END;
                 END IF;
-                IF v_is_open THEN
+                IF v_is_open AND NOT v_is_shadow THEN
                     v_open_positions := v_open_positions + 1;
-                ELSE
+                ELSIF NOT v_is_open AND NOT v_is_shadow THEN
                     v_open_positions := GREATEST(0, v_open_positions - 1);
                 END IF;
                 PERFORM logic_upsert_param(p_logic_id, 'current_balance', v_balance::TEXT, 'money');
-            ELSE
+            ELSIF NOT v_is_shadow THEN
                 PERFORM logic_trade_finalize(v_trade_id, v_balance);
+            ELSE
+                PERFORM logic_trade_finalize(v_trade_id, NULL);
             END IF;
 
             PERFORM logic_trade_log(
@@ -948,6 +897,7 @@ LANGUAGE plpgsql AS $$
 DECLARE
     v_logic RECORD;
     v_total_created INTEGER := 0;
+    v_total_stops INTEGER := 0;
     v_processed INTEGER := 0;
     v_got_lock BOOLEAN;
 BEGIN
@@ -978,6 +928,7 @@ BEGIN
         ORDER BY l.id
     LOOP
         v_processed := v_processed + 1;
+        v_total_stops := v_total_stops + process_logic_stops(v_logic.id);
         v_total_created := v_total_created + process_logic_trades(v_logic.id);
     END LOOP;
 
@@ -986,17 +937,18 @@ BEGIN
     PERFORM app_tech_log_event(
         'trade-runner',
         'cycle.end',
-        format('processed=%s created=%s', v_processed, v_total_created),
+        format('processed=%s stops=%s created=%s', v_processed, v_total_stops, v_total_created),
         'postgresql',
         'event',
         NULL,
         NULL,
         NULL,
-        jsonb_build_object('processed', v_processed, 'created', v_total_created)
+        jsonb_build_object('processed', v_processed, 'stops', v_total_stops, 'created', v_total_created)
     );
 
     RETURN jsonb_build_object(
         'processed', v_processed,
+        'stops', v_total_stops,
         'created', v_total_created,
         'at', CURRENT_TIMESTAMP
     );

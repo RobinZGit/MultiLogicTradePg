@@ -9,6 +9,7 @@ const PARAM_KEYS = {
   CURRENT_BALANCE: 'current_balance',
   COMMISSION_PCT: 'commission_pct',
   COST_METHOD: 'cost_method',
+  STOP_LOSS_TIMEFRAME: 'stop_loss_timeframe',
 };
 
 const DEFAULTS = {
@@ -19,6 +20,7 @@ const DEFAULTS = {
   [PARAM_KEYS.CURRENT_BALANCE]: { value: '', type: 'money' },
   [PARAM_KEYS.COMMISSION_PCT]: { value: '0.05', type: 'number' },
   [PARAM_KEYS.COST_METHOD]: { value: 'FIFO', type: 'text' },
+  [PARAM_KEYS.STOP_LOSS_TIMEFRAME]: { value: 'M5', type: 'text' },
 };
 
 function parseParamValue(paramKey, raw, valueType) {
@@ -78,6 +80,11 @@ function rowsToTradingParams(rows) {
       String(map[PARAM_KEYS.COST_METHOD]).trim() !== ''
         ? String(map[PARAM_KEYS.COST_METHOD]).trim().toUpperCase()
         : 'FIFO',
+    stop_loss_timeframe:
+      map[PARAM_KEYS.STOP_LOSS_TIMEFRAME] != null &&
+      String(map[PARAM_KEYS.STOP_LOSS_TIMEFRAME]).trim() !== ''
+        ? String(map[PARAM_KEYS.STOP_LOSS_TIMEFRAME]).trim().toUpperCase()
+        : 'M5',
   };
 }
 
@@ -196,6 +203,14 @@ async function saveTradingParams(pool, logicId, payload) {
       throw new Error('Метод PnL: FIFO или AVERAGE');
     }
     await upsertParam(pool, logicId, PARAM_KEYS.COST_METHOD, m, 'text');
+  }
+
+  if (payload.stop_loss_timeframe !== undefined) {
+    const tf = String(payload.stop_loss_timeframe).trim().toUpperCase();
+    if (!tf) {
+      throw new Error('stop_loss_timeframe required');
+    }
+    await upsertParam(pool, logicId, PARAM_KEYS.STOP_LOSS_TIMEFRAME, tf, 'text');
   }
 
   return getTradingParams(pool, logicId);

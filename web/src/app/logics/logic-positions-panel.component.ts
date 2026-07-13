@@ -1,0 +1,523 @@
+import { Component, EventEmitter, HostBinding, Input, Output } from '@angular/core';
+
+import { CommonModule } from '@angular/common';
+
+import { FormsModule } from '@angular/forms';
+
+import {
+
+  costMethodLabel,
+
+  LogicTradeLotRow,
+
+  LogicTradeRow,
+
+  tradeOperationHint,
+
+  tradeOperationLabel,
+
+  tradeStatusLabel,
+
+} from '../shared/logic-trade';
+
+import { LogicRow } from '../models/logic.model';
+
+
+
+export interface BacktestRunStatus {
+
+  id: number;
+
+  logic_id: number;
+
+  date_from: string;
+
+  date_to: string;
+
+  status: string;
+
+  progress_pct: number;
+
+  phase_message: string | null;
+
+  phase_detail: string | null;
+
+  total_bars: number;
+
+  processed_bars: number;
+
+  test_balance: number | null;
+
+  financial_result: number | null;
+
+  error_message: string | null;
+
+}
+
+
+
+@Component({
+
+  selector: 'app-logic-positions-panel',
+
+  standalone: true,
+
+  imports: [CommonModule, FormsModule],
+
+  templateUrl: './logic-positions-panel.component.html',
+
+  styleUrl: './logic-positions-panel.component.css',
+
+})
+
+export class LogicPositionsPanelComponent {
+
+  @Input({ required: true }) logicRow!: LogicRow;
+
+  @Input({ required: true }) mode: 'live' | 'test' = 'live';
+
+  @Input() trades: LogicTradeRow[] = [];
+
+  @Input() tradeLots = new Map<number, LogicTradeLotRow[]>();
+
+  @Input() lotsLoading = new Set<number>();
+
+  @Input() loading = false;
+
+  @Input() closeAllLoading = false;
+
+  @Input() disabled = false;
+  @Input() dimmed = false;
+  @Input() blockExpanded = false;
+
+  @Input() backtestRun: BacktestRunStatus | null = null;
+
+  @Input() tbankTokenAlert: { message: string } | null = null;
+
+
+
+  @Output() closeAll = new EventEmitter<void>();
+
+  @Output() startBacktest = new EventEmitter<{ date_from: string; date_to: string }>();
+
+  @Output() cancelBacktest = new EventEmitter<void>();
+
+  @Output() openTokenDialog = new EventEmitter<void>();
+
+  @Output() toggleBlock = new EventEmitter<void>();
+
+  @Output() requestLots = new EventEmitter<number>();
+
+
+
+  expandedOpen = true;
+
+  expandedClosed = false;
+
+  expandedTradeIds = new Set<number>();
+
+
+
+  showPeriodDialog = false;
+
+  periodFrom = '';
+
+  periodTo = '';
+
+
+
+  tradeOperationLabel = tradeOperationLabel;
+
+  tradeOperationHint = tradeOperationHint;
+
+  tradeStatusLabel = tradeStatusLabel;
+
+  costMethodLabel = costMethodLabel;
+
+
+
+  @HostBinding('class.positions-panel-dimmed')
+  get hostDimmed(): boolean {
+    return this.dimmed && !this.isTest;
+  }
+
+  get title(): string {
+
+    return this.mode === 'live' ? 'Позиции' : 'Тестирование';
+
+  }
+
+
+
+  get isTest(): boolean {
+
+    return this.mode === 'test';
+
+  }
+
+
+
+  get isBacktestRunning(): boolean {
+
+    const s = this.backtestRun?.status;
+
+    return s === 'pending' || s === 'loading_prices' || s === 'loading_indicators' || s === 'running';
+
+  }
+
+
+
+  get periodLabel(): string {
+
+    if (!this.backtestRun) return '';
+
+    return `${this.backtestRun.date_from} — ${this.backtestRun.date_to}`;
+
+  }
+
+
+
+  onToggleBlock(event: Event): void {
+
+    event.preventDefault();
+
+    event.stopPropagation();
+
+    this.toggleBlock.emit();
+
+  }
+
+
+
+  displayFinancialResult(): number {
+
+    if (this.isTest && this.backtestRun?.financial_result != null) {
+
+      const n = Number(this.backtestRun.financial_result);
+
+      if (Number.isFinite(n)) return n;
+
+    }
+
+    return this.totalFinancialResult();
+
+  }
+
+
+
+  openPositionTrades(): LogicTradeRow[] {
+
+    return this.trades
+
+      .filter((t) => this.isOpenPositionTrade(t))
+
+      .sort((a, b) => new Date(b.executed_at).getTime() - new Date(a.executed_at).getTime());
+
+  }
+
+
+
+  closePositionTrades(): LogicTradeRow[] {
+
+    return this.trades
+
+      .filter((t) => t.side_name === 'Close' && (t.status === 'filled' || t.status === 'submitted'))
+
+      .sort((a, b) => new Date(b.executed_at).getTime() - new Date(a.executed_at).getTime());
+
+  }
+
+
+
+  totalFinancialResult(): number {
+
+    return this.trades
+
+      .filter((t) => !t.is_shadow)
+
+      .reduce(
+
+        (sum, t) =>
+
+          t.financial_result != null && Number.isFinite(Number(t.financial_result))
+
+            ? sum + Number(t.financial_result)
+
+            : sum,
+
+        0
+
+      );
+
+  }
+
+
+
+  hasOpenPositions(): boolean {
+
+    return this.openPositionTrades().length > 0;
+
+  }
+
+
+
+  isOpenPositionTrade(trade: LogicTradeRow): boolean {
+
+    if (trade.side_name !== 'Open') return false;
+
+    const rem = trade.remaining_qty;
+
+    if (rem == null) return true;
+
+    return Number(rem) > 0;
+
+  }
+
+
+
+  openTradeHasPartialCloses(trade: LogicTradeRow): boolean {
+
+    const rem = trade.remaining_qty ?? trade.quantity;
+
+    return Number(trade.quantity) > Number(rem);
+
+  }
+
+
+
+  closedPartialLotsForOpen(openTradeId: number): LogicTradeLotRow[] {
+
+    return (this.tradeLots.get(openTradeId) ?? []).filter((l) => l.open_trade_id === openTradeId);
+
+  }
+
+
+
+  closedLotsForClose(closeTradeId: number): LogicTradeLotRow[] {
+
+    return (this.tradeLots.get(closeTradeId) ?? []).filter((l) => l.close_trade_id === closeTradeId);
+
+  }
+
+
+
+  isLotsLoading(tradeId: number): boolean {
+
+    return this.lotsLoading.has(tradeId);
+
+  }
+
+
+
+  formatPnl(value: number | null | undefined): string {
+
+    if (value == null || !Number.isFinite(Number(value))) return '—';
+
+    const n = Number(value);
+
+    const sign = n > 0 ? '+' : '';
+
+    return `${sign}${n.toFixed(2)}`;
+
+  }
+
+
+
+  formatTradeDt(iso: string): string {
+
+    if (!iso) return '—';
+
+    const d = new Date(iso);
+
+    return Number.isNaN(d.getTime()) ? iso : d.toLocaleString('ru-RU');
+
+  }
+
+
+
+  formatMoney(v: number | null | undefined): string {
+
+    if (v == null || !Number.isFinite(Number(v))) return '—';
+
+    return Number(v).toFixed(2);
+
+  }
+
+
+
+  toggleOpenBlock(event: Event): void {
+
+    event.preventDefault();
+
+    event.stopPropagation();
+
+    this.expandedOpen = !this.expandedOpen;
+
+  }
+
+
+
+  toggleClosedBlock(event: Event): void {
+
+    event.preventDefault();
+
+    event.stopPropagation();
+
+    this.expandedClosed = !this.expandedClosed;
+
+    if (this.expandedClosed) {
+
+      for (const tr of this.closePositionTrades()) {
+
+        this.ensureLotsLoaded(tr.id);
+
+      }
+
+    }
+
+  }
+
+
+
+  toggleTradeRow(trade: LogicTradeRow, event: Event): void {
+
+    event.stopPropagation();
+
+    if (this.expandedTradeIds.has(trade.id)) {
+
+      this.expandedTradeIds.delete(trade.id);
+
+    } else {
+
+      this.expandedTradeIds.add(trade.id);
+
+      this.ensureLotsLoaded(trade.id);
+
+    }
+
+  }
+
+
+
+  isTradeRowExpanded(id: number): boolean {
+
+    return this.expandedTradeIds.has(id);
+
+  }
+
+
+
+  private ensureLotsLoaded(tradeId: number): void {
+
+    if (this.tradeLots.has(tradeId) || this.lotsLoading.has(tradeId)) return;
+
+    this.requestLots.emit(tradeId);
+
+  }
+
+
+
+  onCloseAll(event: Event): void {
+
+    event.stopPropagation();
+
+    this.closeAll.emit();
+
+  }
+
+
+
+  onOpenTokenDialog(event: Event): void {
+
+    event.stopPropagation();
+
+    this.openTokenDialog.emit();
+
+  }
+
+
+
+  openRunDialog(event: Event): void {
+
+    event.stopPropagation();
+
+    const { from, to } = defaultBacktestWeek();
+
+    this.periodFrom = from;
+
+    this.periodTo = to;
+
+    this.showPeriodDialog = true;
+
+  }
+
+
+
+  closeRunDialog(): void {
+
+    this.showPeriodDialog = false;
+
+  }
+
+
+
+  confirmRunDialog(): void {
+
+    this.showPeriodDialog = false;
+
+    this.startBacktest.emit({ date_from: this.periodFrom, date_to: this.periodTo });
+
+  }
+
+
+
+  onCancelBacktest(event: Event): void {
+
+    event.stopPropagation();
+
+    this.cancelBacktest.emit();
+
+  }
+
+
+
+  onPlayOrStop(event: Event): void {
+    event.preventDefault();
+    event.stopPropagation();
+    if (this.isBacktestRunning) {
+      this.cancelBacktest.emit();
+    } else {
+      this.openRunDialog(event);
+    }
+  }
+
+}
+
+
+
+function defaultBacktestWeek(): { from: string; to: string } {
+
+  const now = new Date();
+
+  const day = now.getDay();
+
+  const monday = new Date(now);
+
+  monday.setDate(now.getDate() - ((day + 6) % 7));
+
+  const sunday = new Date(monday);
+
+  sunday.setDate(monday.getDate() + 6);
+
+  return { from: fmtDate(monday), to: fmtDate(sunday) };
+
+}
+
+
+
+function fmtDate(d: Date): string {
+
+  return d.toISOString().slice(0, 10);
+
+}
+

@@ -191,10 +191,12 @@ BEGIN
         SELECT DISTINCT lt.security_id
         FROM logic_trades lt
         WHERE lt.logic_id = p_logic_id
+          AND NOT lt.is_shadow
+          AND NOT lt.is_test
           AND lt.status IN ('filled', 'submitted')
     LOOP
-        v_long_qty := logic_long_position_qty(p_logic_id, v_sec.security_id);
-        v_short_qty := logic_short_position_qty(p_logic_id, v_sec.security_id);
+        v_long_qty := logic_long_position_qty(p_logic_id, v_sec.security_id, FALSE);
+        v_short_qty := logic_short_position_qty(p_logic_id, v_sec.security_id, FALSE);
 
         IF v_long_qty <= 0 AND v_short_qty <= 0 THEN
             CONTINUE;
@@ -268,13 +270,13 @@ BEGIN
             INSERT INTO logic_trades (
                 logic_id, account_id, security_id, timeframe_id,
                 side_id, action_id, signal_kind, signal_formula,
-                quantity, price, bar_dt, is_simulated, is_fictitious,
+                quantity, price, bar_dt, is_simulated, is_fictitious, is_shadow, is_test,
                 broker_order_id, status, note
             )
             VALUES (
                 p_logic_id, v_logic.account_id, v_sec.security_id, v_tf_id,
                 v_side_close_id, v_action_id, 'counter', v_formula,
-                v_quantity, v_price, v_bar_dt, v_is_simulated, FALSE,
+                v_quantity, v_price, v_bar_dt, v_is_simulated, FALSE, FALSE, FALSE,
                 v_broker_order_id, v_status, v_note
             )
             RETURNING id INTO v_trade_id;
@@ -372,13 +374,13 @@ BEGIN
             INSERT INTO logic_trades (
                 logic_id, account_id, security_id, timeframe_id,
                 side_id, action_id, signal_kind, signal_formula,
-                quantity, price, bar_dt, is_simulated, is_fictitious,
+                quantity, price, bar_dt, is_simulated, is_fictitious, is_shadow, is_test,
                 broker_order_id, status, note
             )
             VALUES (
                 p_logic_id, v_logic.account_id, v_sec.security_id, v_tf_id,
                 v_side_close_id, v_action_id, 'counter', v_formula,
-                v_quantity, v_price, v_bar_dt, v_is_simulated, FALSE,
+                v_quantity, v_price, v_bar_dt, v_is_simulated, FALSE, FALSE, FALSE,
                 v_broker_order_id, v_status, v_note
             )
             RETURNING id INTO v_trade_id;

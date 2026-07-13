@@ -20,7 +20,10 @@ export interface LogicTradeRow {
   bar_dt: string;
   executed_at: string;
   is_simulated: boolean;
-  is_fictitious: boolean;
+  is_fictitious?: boolean;
+  is_shadow: boolean;
+  is_test: boolean;
+  trade_reason: string | null;
   broker_order_id: string | null;
   status: LogicTradeStatus;
   commission: number;
