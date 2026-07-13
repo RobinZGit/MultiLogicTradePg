@@ -9,6 +9,8 @@ export interface LogicRow {
   max_open_positions: number;
   initial_balance: number | null;
   current_balance: number | null;
+  commission_pct?: number;
+  cost_method?: 'FIFO' | 'AVERAGE';
   account_code: string;
   account_name: string;
   account_type: 'real' | 'fake';
@@ -23,6 +25,8 @@ export interface LogicTradingParamsPayload {
   max_open_positions?: number;
   initial_balance?: number | null;
   reset_balance?: boolean;
+  commission_pct?: number;
+  cost_method?: 'FIFO' | 'AVERAGE';
 }
 
 export interface LogicTradingParamsResponse {
@@ -31,6 +35,8 @@ export interface LogicTradingParamsResponse {
   max_open_positions: number;
   initial_balance: number | null;
   current_balance: number | null;
+  commission_pct: number;
+  cost_method: 'FIFO' | 'AVERAGE';
 }
 
 export interface LogicParamRow {

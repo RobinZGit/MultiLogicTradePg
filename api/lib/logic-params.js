@@ -7,6 +7,8 @@ const PARAM_KEYS = {
   MAX_OPEN_POSITIONS: 'max_open_positions',
   INITIAL_BALANCE: 'initial_balance',
   CURRENT_BALANCE: 'current_balance',
+  COMMISSION_PCT: 'commission_pct',
+  COST_METHOD: 'cost_method',
 };
 
 const DEFAULTS = {
@@ -15,6 +17,8 @@ const DEFAULTS = {
   [PARAM_KEYS.MAX_OPEN_POSITIONS]: { value: '5', type: 'integer' },
   [PARAM_KEYS.INITIAL_BALANCE]: { value: '', type: 'money' },
   [PARAM_KEYS.CURRENT_BALANCE]: { value: '', type: 'money' },
+  [PARAM_KEYS.COMMISSION_PCT]: { value: '0.05', type: 'number' },
+  [PARAM_KEYS.COST_METHOD]: { value: 'FIFO', type: 'text' },
 };
 
 function parseParamValue(paramKey, raw, valueType) {
@@ -65,6 +69,15 @@ function rowsToTradingParams(rows) {
         : 5,
     initial_balance: map[PARAM_KEYS.INITIAL_BALANCE],
     current_balance: map[PARAM_KEYS.CURRENT_BALANCE],
+    commission_pct:
+      map[PARAM_KEYS.COMMISSION_PCT] != null
+        ? Number(map[PARAM_KEYS.COMMISSION_PCT])
+        : 0.05,
+    cost_method:
+      map[PARAM_KEYS.COST_METHOD] != null &&
+      String(map[PARAM_KEYS.COST_METHOD]).trim() !== ''
+        ? String(map[PARAM_KEYS.COST_METHOD]).trim().toUpperCase()
+        : 'FIFO',
   };
 }
 
@@ -161,6 +174,28 @@ async function saveTradingParams(pool, logicId, payload) {
         'money'
       );
     }
+  }
+
+  if (payload.commission_pct !== undefined) {
+    const v = Number(payload.commission_pct);
+    if (!Number.isFinite(v) || v < 0 || v > 100) {
+      throw new Error('% комиссии: число от 0 до 100');
+    }
+    await upsertParam(
+      pool,
+      logicId,
+      PARAM_KEYS.COMMISSION_PCT,
+      v,
+      'number'
+    );
+  }
+
+  if (payload.cost_method !== undefined) {
+    const m = String(payload.cost_method).trim().toUpperCase();
+    if (m !== 'FIFO' && m !== 'AVERAGE') {
+      throw new Error('Метод PnL: FIFO или AVERAGE');
+    }
+    await upsertParam(pool, logicId, PARAM_KEYS.COST_METHOD, m, 'text');
   }
 
   return getTradingParams(pool, logicId);

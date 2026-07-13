@@ -907,6 +907,26 @@ BEGIN
 
             v_created := v_created + 1;
 
+            IF v_logic.account_type = 'fake' AND v_balance IS NOT NULL AND v_status <> 'rejected' THEN
+                v_balance := logic_trade_finalize(v_trade_id, v_balance);
+                v_notional := v_quantity * v_pp;
+                v_is_open := (v_sig.position_side = 'long' AND v_is_trend)
+                           OR (v_sig.position_side = 'short' AND v_is_trend);
+                IF v_sig.position_side = 'long' THEN
+                    v_balance := v_balance + CASE WHEN v_is_open THEN -v_notional ELSE v_notional END;
+                ELSE
+                    v_balance := v_balance + CASE WHEN v_is_open THEN v_notional ELSE -v_notional END;
+                END IF;
+                IF v_is_open THEN
+                    v_open_positions := v_open_positions + 1;
+                ELSE
+                    v_open_positions := GREATEST(0, v_open_positions - 1);
+                END IF;
+                PERFORM logic_upsert_param(p_logic_id, 'current_balance', v_balance::TEXT, 'money');
+            ELSE
+                PERFORM logic_trade_finalize(v_trade_id, v_balance);
+            END IF;
+
             PERFORM logic_trade_log(
                 p_logic_id,
                 'trade.created',
@@ -923,23 +943,6 @@ BEGIN
                 v_sec.security_id,
                 v_tf_id
             );
-
-            IF v_logic.account_type = 'fake' AND v_balance IS NOT NULL AND v_status <> 'rejected' THEN
-                v_notional := v_quantity * v_pp;
-                v_is_open := (v_sig.position_side = 'long' AND v_is_trend)
-                           OR (v_sig.position_side = 'short' AND v_is_trend);
-                IF v_sig.position_side = 'long' THEN
-                    v_balance := v_balance + CASE WHEN v_is_open THEN -v_notional ELSE v_notional END;
-                ELSE
-                    v_balance := v_balance + CASE WHEN v_is_open THEN v_notional ELSE -v_notional END;
-                END IF;
-                IF v_is_open THEN
-                    v_open_positions := v_open_positions + 1;
-                ELSE
-                    v_open_positions := GREATEST(0, v_open_positions - 1);
-                END IF;
-                PERFORM logic_upsert_param(p_logic_id, 'current_balance', v_balance::TEXT, 'money');
-            END IF;
         END LOOP;
     END LOOP;
 

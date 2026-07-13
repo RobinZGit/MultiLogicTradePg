@@ -1861,6 +1861,8 @@ const LOGIC_TRADE_SELECT = `
     lt.is_fictitious,
     lt.broker_order_id,
     lt.status,
+    lt.commission,
+    lt.financial_result,
     lt.note,
     lt.created_at,
     s.name AS security_name,
@@ -1896,6 +1898,50 @@ app.get('/api/logic-trades', async (req, res) => {
     res.json(rows);
   } catch (err) {
     console.error('GET /api/logic-trades', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.get('/api/logic-trade-lots', async (req, res) => {
+  const tradeId = Number(req.query.trade_id);
+  if (!Number.isInteger(tradeId) || tradeId <= 0) {
+    res.status(400).json({ error: 'trade_id required' });
+    return;
+  }
+  try {
+    const { rows } = await pool.query(
+      `
+      SELECT
+        l.id,
+        l.logic_id,
+        l.close_trade_id,
+        l.open_trade_id,
+        l.action_id,
+        l.cost_method,
+        l.quantity,
+        l.close_amount,
+        l.open_amount,
+        l.close_commission,
+        l.open_commission,
+        l.financial_result,
+        l.created_at,
+        ac.name AS action_name,
+        ot.executed_at AS open_executed_at,
+        ot.price AS open_price,
+        ct.executed_at AS close_executed_at,
+        ct.price AS close_price
+      FROM logic_trade_lots l
+      JOIN actions ac ON ac.id = l.action_id
+      JOIN logic_trades ct ON ct.id = l.close_trade_id
+      LEFT JOIN logic_trades ot ON ot.id = l.open_trade_id
+      WHERE l.close_trade_id = $1 OR l.open_trade_id = $1
+      ORDER BY l.id ASC
+      `,
+      [tradeId]
+    );
+    res.json(rows);
+  } catch (err) {
+    console.error('GET /api/logic-trade-lots', err);
     res.status(500).json({ error: err.message });
   }
 });
@@ -2289,6 +2335,24 @@ function parseLogicTradingParams(body) {
       }
       out.initial_balance = v;
     }
+    hasField = true;
+  }
+
+  if (body?.commission_pct !== undefined) {
+    const v = Number(body.commission_pct);
+    if (!Number.isFinite(v) || v < 0 || v > 100) {
+      return { error: '% комиссии: число от 0 до 100' };
+    }
+    out.commission_pct = v;
+    hasField = true;
+  }
+
+  if (body?.cost_method !== undefined) {
+    const m = String(body.cost_method).trim().toUpperCase();
+    if (m !== 'FIFO' && m !== 'AVERAGE') {
+      return { error: 'Метод PnL: FIFO или AVERAGE' };
+    }
+    out.cost_method = m;
     hasField = true;
   }
 

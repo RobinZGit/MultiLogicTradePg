@@ -1,6 +1,6 @@
 -- ============================================
 -- MultiLogicTrade — шаг 1: таблицы и справочники
--- Версия: v30 (идемпотентный запуск)
+-- Версия: v31 (идемпотентный запуск)
 -- ============================================
 -- Подключение: база multilogictrade
 -- Можно выполнять многократно: объекты и строки не дублируются.
@@ -941,6 +941,10 @@ INSERT INTO logic_param_defs (param_key, name_ru, value_type, default_value, des
      'Стартовый депозит бумажной торговли / эталон для расчёта лота', 3),
     ('current_balance', 'Текущий остаток', 'money', '',
      'Обновляется trade runner после симулированных сделок', 4),
+    ('commission_pct', '% комиссии от депозита', 'number', '0.05',
+     'Фейковый счёт: комиссия = текущий депозит × % / 100 (на каждую сделку)', 5),
+    ('cost_method', 'Метод расчёта PnL', 'text', 'FIFO',
+     'FIFO — по очереди покупок; AVERAGE — по средней цене остатка', 6),
     ('last_trade_check_at', 'Последняя проверка сигналов', 'text', '',
      'Служебный: время последнего run_trade_cycle (не редактировать)', 98),
     ('last_trade_bar_dt', 'Последняя обработанная свеча', 'text', '',
@@ -1018,7 +1022,9 @@ CROSS JOIN (VALUES
     ('position_size_pct', '10', 'number'),
     ('max_open_positions', '3', 'integer'),
     ('initial_balance', '1000000', 'money'),
-    ('current_balance', '1000000', 'money')
+    ('current_balance', '1000000', 'money'),
+    ('commission_pct', '0.05', 'number'),
+    ('cost_method', 'FIFO', 'text')
 ) AS v(param_key, param_value, value_type)
 WHERE l.name = 'SMA Price Cross Demo'
 ON CONFLICT (logic_id, param_key) DO UPDATE SET
@@ -1185,6 +1191,8 @@ CREATE TABLE IF NOT EXISTS logic_trades (
     broker_order_id VARCHAR(100),
     status VARCHAR(20) NOT NULL DEFAULT 'filled'
         CHECK (status IN ('pending', 'submitted', 'filled', 'rejected', 'cancelled')),
+    commission NUMERIC(18, 6) NOT NULL DEFAULT 0,
+    financial_result NUMERIC(20, 6),
     note TEXT,
     created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
     UNIQUE (logic_id, security_id, signal_kind, bar_dt)
@@ -1194,11 +1202,42 @@ CREATE INDEX IF NOT EXISTS idx_logic_trades_logic_id ON logic_trades(logic_id);
 CREATE INDEX IF NOT EXISTS idx_logic_trades_executed_at ON logic_trades(executed_at DESC);
 CREATE INDEX IF NOT EXISTS idx_logic_trades_security_id ON logic_trades(security_id);
 
+ALTER TABLE logic_trades ADD COLUMN IF NOT EXISTS commission NUMERIC(18, 6) NOT NULL DEFAULT 0;
+ALTER TABLE logic_trades ADD COLUMN IF NOT EXISTS financial_result NUMERIC(20, 6);
+
 COMMENT ON TABLE logic_trades IS
 'Сделки logics: исполнение по logic_indicator_signals; is_simulated — фейковый счёт; is_fictitious — резерв';
 COMMENT ON COLUMN logic_trades.is_simulated IS 'TRUE — сделка на фейковом счёте (бумажная торговля)';
 COMMENT ON COLUMN logic_trades.is_fictitious IS 'Фиктивная сделка (резерв, заполнение позже)';
 COMMENT ON COLUMN logic_trades.bar_dt IS 'Свеча, на которой сработал сигнал';
+COMMENT ON COLUMN logic_trades.commission IS 'Комиссия по сделке (фейк: % от депозита; реал: с биржи)';
+COMMENT ON COLUMN logic_trades.financial_result IS 'Итог PnL закрывающей сделки (сумма пакетов); NULL для открытия';
+
+-- Пакеты закрытия (FIFO / средняя): связь продажи с покупками
+CREATE TABLE IF NOT EXISTS logic_trade_lots (
+    id BIGSERIAL PRIMARY KEY,
+    logic_id INTEGER NOT NULL REFERENCES logics(id) ON DELETE CASCADE,
+    close_trade_id BIGINT NOT NULL REFERENCES logic_trades(id) ON DELETE CASCADE,
+    open_trade_id BIGINT REFERENCES logic_trades(id) ON DELETE SET NULL,
+    action_id INTEGER NOT NULL REFERENCES actions(id) ON DELETE RESTRICT,
+    cost_method VARCHAR(10) NOT NULL DEFAULT 'FIFO'
+        CHECK (cost_method IN ('FIFO', 'AVERAGE')),
+    quantity NUMERIC(20, 6) NOT NULL CHECK (quantity > 0),
+    close_amount NUMERIC(20, 6) NOT NULL,
+    open_amount NUMERIC(20, 6) NOT NULL,
+    close_commission NUMERIC(18, 6) NOT NULL DEFAULT 0,
+    open_commission NUMERIC(18, 6) NOT NULL DEFAULT 0,
+    financial_result NUMERIC(20, 6) NOT NULL,
+    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS idx_logic_trade_lots_close ON logic_trade_lots(close_trade_id);
+CREATE INDEX IF NOT EXISTS idx_logic_trade_lots_open ON logic_trade_lots(open_trade_id);
+CREATE INDEX IF NOT EXISTS idx_logic_trade_lots_logic ON logic_trade_lots(logic_id);
+
+COMMENT ON TABLE logic_trade_lots IS
+'Пакеты по сделкам: закрытие → открытие; PnL = доход − расход − комиссии';
+COMMENT ON COLUMN logic_trade_lots.open_trade_id IS 'NULL при методе AVERAGE (средняя цена)';
 
 -- ============================================
 -- Таблица: futures_expirations (контракты фьючерсов)

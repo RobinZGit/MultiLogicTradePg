@@ -3,7 +3,7 @@ import { HttpClient } from '@angular/common/http';
 import { Observable, map } from 'rxjs';
 import { AppConfigService } from './app-config.service';
 import { LogicIndicatorSignalRow, LogicRow, LogicParamsResponse, LogicSecurityRow, LogicStopRow, LogicTradingParamsPayload, LogicTradingParamsResponse } from '../models/logic.model';
-import { LogicTradeRow } from '../shared/logic-trade';
+import { LogicTradeLotRow, LogicTradeRow } from '../shared/logic-trade';
 import { LogicPayload } from '../models/lookup.model';
 
 @Injectable({ providedIn: 'root' })
@@ -178,6 +178,13 @@ export class LogicsService {
     return this.http.get<LogicTradeRow[]>(
       `${this.appConfig.apiUrl}/logic-trades`,
       { params: { logic_id: String(logicId), limit: String(limit) } }
+    );
+  }
+
+  getLogicTradeLots(tradeId: number): Observable<LogicTradeLotRow[]> {
+    return this.http.get<LogicTradeLotRow[]>(
+      `${this.appConfig.apiUrl}/logic-trade-lots`,
+      { params: { trade_id: String(tradeId) } }
     );
   }
 }

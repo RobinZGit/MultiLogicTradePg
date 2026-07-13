@@ -23,6 +23,8 @@ export interface LogicTradeRow {
   is_fictitious: boolean;
   broker_order_id: string | null;
   status: LogicTradeStatus;
+  commission: number;
+  financial_result: number | null;
   note: string | null;
   created_at?: string;
   security_name: string;
@@ -30,6 +32,38 @@ export interface LogicTradeRow {
   side_name: string;
   action_name: string;
   timeframe_tf: string;
+}
+
+export interface LogicTradeLotRow {
+  id: number;
+  logic_id: number;
+  close_trade_id: number;
+  open_trade_id: number | null;
+  action_id: number;
+  cost_method: 'FIFO' | 'AVERAGE';
+  quantity: number;
+  close_amount: number;
+  open_amount: number;
+  close_commission: number;
+  open_commission: number;
+  financial_result: number;
+  created_at?: string;
+  action_name: string;
+  open_executed_at: string | null;
+  open_price: number | null;
+  close_executed_at: string;
+  close_price: number;
+}
+
+export function costMethodLabel(method: string): string {
+  switch (method?.toUpperCase()) {
+    case 'FIFO':
+      return 'FIFO';
+    case 'AVERAGE':
+      return 'Средняя';
+    default:
+      return method;
+  }
 }
 
 export function tradeStatusLabel(status: LogicTradeStatus): string {

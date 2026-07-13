@@ -377,6 +377,52 @@
 
                             <tr>
 
+                              <td>% комиссии от депозита</td>
+
+                              <td>
+
+                                <input
+                                  type="text"
+                                  inputmode="decimal"
+                                  class="params-input params-input-short"
+                                  [ngModel]="getParamsDraft(row.id).commission_pct"
+                                  (ngModelChange)="onParamsCommissionPctChange(row.id, $event)"
+                                  (click)="$event.stopPropagation()"
+                                />
+
+                              </td>
+
+                              <td class="params-hint">
+                                Фейковый счёт: комиссия = текущий депозит × % / 100 на каждую сделку
+                              </td>
+
+                            </tr>
+
+                            <tr>
+
+                              <td>Метод расчёта PnL</td>
+
+                              <td>
+
+                                <select
+                                  class="params-input"
+                                  [ngModel]="getParamsDraft(row.id).cost_method"
+                                  (ngModelChange)="onParamsCostMethodChange(row.id, $event)"
+                                  (click)="$event.stopPropagation()"
+                                >
+                                  @for (opt of costMethodOptions; track opt.value) {
+                                    <option [value]="opt.value">{{ opt.label }}</option>
+                                  }
+                                </select>
+
+                              </td>
+
+                              <td class="params-hint">FIFO — по очереди покупок; средняя — по средней цене остатка</td>
+
+                            </tr>
+
+                            <tr>
+
                               <td>Текущий остаток</td>
 
                               <td><strong>{{ formatMoney(row.current_balance) }}</strong></td>
@@ -1230,12 +1276,12 @@
 
                     <details class="signals-block trades-block" [open]="isTradesBlockExpanded(row.id)">
 
-                      <summary class="signals-summary">
+                      <summary
+                        class="signals-summary trades-summary"
+                        (click)="toggleTradesBlock(row.id, $event)"
+                      >
 
-                        <span
-                          class="signals-summary-head"
-                          (click)="toggleTradesBlock(row.id, $event)"
-                        >
+                        <span class="signals-summary-head">
 
                           <span
                             class="signals-chevron"
@@ -1253,7 +1299,7 @@
 
                         </span>
 
-                        <span class="signals-summary-actions">
+                        <span class="signals-summary-actions" (click)="$event.stopPropagation()">
 
                           @if (row.is_enabled) {
 
@@ -1279,6 +1325,8 @@
 
                             <tr>
 
+                              <th></th>
+
                               <th>Время</th>
 
                               <th>Бумага</th>
@@ -1293,9 +1341,9 @@
 
                               <th>Сумма</th>
 
-                              <th>Симуляция</th>
+                              <th>Комиссия</th>
 
-                              <th>Фиктивная</th>
+                              <th>Фин. результат</th>
 
                               <th>Статус</th>
 
@@ -1307,7 +1355,19 @@
 
                             @for (tr of tradesFor(row.id); track tr.id) {
 
-                              <tr [class.trade-rejected]="tr.status === 'rejected'">
+                              <tr
+                                class="trade-row"
+                                [class.trade-rejected]="tr.status === 'rejected'"
+                                (click)="toggleTradeRow(tr, $event)"
+                              >
+
+                                <td class="trade-expand-cell">
+                                  <span
+                                    class="trade-row-chevron"
+                                    [class.open]="isTradeRowExpanded(tr.id)"
+                                    aria-hidden="true"
+                                  >▸</span>
+                                </td>
 
                                 <td>{{ formatTradeDt(tr.executed_at) }}</td>
 
@@ -1337,19 +1397,139 @@
 
                                 <td>{{ formatMoney(tr.quantity * tr.price) }}</td>
 
-                                <td>{{ yesNoLabel(tr.is_simulated) }}</td>
+                                <td>{{ formatMoney(tr.commission) }}</td>
 
-                                <td>{{ yesNoLabel(tr.is_fictitious) }}</td>
+                                <td>
+                                  @if (tr.side_name === 'Close') {
+                                    <span
+                                      class="trade-pnl"
+                                      [class.trade-pnl-pos]="(tr.financial_result ?? 0) > 0"
+                                      [class.trade-pnl-neg]="(tr.financial_result ?? 0) < 0"
+                                    >
+                                      {{ formatPnl(tr.financial_result) }}
+                                    </span>
+                                  } @else {
+                                    —
+                                  }
+                                </td>
 
                                 <td>{{ tradeStatusLabel(tr.status) }}</td>
 
                               </tr>
 
+                              @if (isTradeRowExpanded(tr.id)) {
+
+                                <tr class="trade-lots-row">
+
+                                  <td colspan="11">
+
+                                    @if (isTradeLotsLoading(tr.id)) {
+
+                                      <p class="trade-lots-loading">Загрузка пакетов…</p>
+
+                                    } @else if (tradeLotsFor(tr.id).length === 0) {
+
+                                      <p class="trade-lots-empty">
+                                        @if (tr.side_name === 'Open') {
+                                          Пакетов пока нет — части позиции ещё не закрывались
+                                        } @else if (tr.side_name === 'Close') {
+                                          Пакеты не рассчитаны (пересоздайте сделки или дождитесь новых закрытий)
+                                        } @else {
+                                          Нет пакетов
+                                        }
+                                      </p>
+
+                                    } @else {
+
+                                      <table class="signals-table trade-lots-table">
+
+                                        <thead>
+
+                                          <tr>
+
+                                            <th>Метод</th>
+
+                                            @if (tr.side_name === 'Close') {
+                                              <th>Покупка #</th>
+                                              <th>Цена покупки</th>
+                                            } @else {
+                                              <th>Продажа #</th>
+                                              <th>Цена продажи</th>
+                                            }
+
+                                            <th>Кол-во</th>
+
+                                            <th>Сумма продажи</th>
+
+                                            <th>Сумма покупки</th>
+
+                                            <th>Ком. продажи</th>
+
+                                            <th>Ком. покупки</th>
+
+                                            <th>Фин. результат</th>
+
+                                          </tr>
+
+                                        </thead>
+
+                                        <tbody>
+
+                                          @for (lot of tradeLotsFor(tr.id); track lot.id) {
+
+                                            <tr>
+
+                                              <td>{{ costMethodLabel(lot.cost_method) }}</td>
+
+                                              @if (tr.side_name === 'Close') {
+                                                <td>#{{ lot.open_trade_id ?? '—' }}</td>
+                                                <td>{{ lot.open_price ?? '—' }}</td>
+                                              } @else {
+                                                <td>#{{ lot.close_trade_id }}</td>
+                                                <td>{{ lot.close_price }}</td>
+                                              }
+
+                                              <td>{{ lot.quantity }}</td>
+
+                                              <td>{{ formatMoney(lot.close_amount) }}</td>
+
+                                              <td>{{ formatMoney(lot.open_amount) }}</td>
+
+                                              <td>{{ formatMoney(lot.close_commission) }}</td>
+
+                                              <td>{{ formatMoney(lot.open_commission) }}</td>
+
+                                              <td>
+                                                <span
+                                                  class="trade-pnl"
+                                                  [class.trade-pnl-pos]="lot.financial_result > 0"
+                                                  [class.trade-pnl-neg]="lot.financial_result < 0"
+                                                >
+                                                  {{ formatPnl(lot.financial_result) }}
+                                                </span>
+                                              </td>
+
+                                            </tr>
+
+                                          }
+
+                                        </tbody>
+
+                                      </table>
+
+                                    }
+
+                                  </td>
+
+                                </tr>
+
+                              }
+
                             } @empty {
 
                               <tr>
 
-                                <td colspan="10" class="empty">
+                                <td colspan="11" class="empty">
 
                                   @if (row.is_enabled) {
 
@@ -1375,7 +1555,7 @@
 
                         <p class="signals-help">
                           Сделки по <strong>выбранным сигналам индикаторов</strong> на бумагах логики.
-                          Робот работает только пока открыт UI. Фейковый счёт → симуляция; реальный → T-Bank.
+                          Робот работает только пока открыт UI. Клик по строке — пакеты закрытия (FIFO / средняя).
                         </p>
 
                       </div>

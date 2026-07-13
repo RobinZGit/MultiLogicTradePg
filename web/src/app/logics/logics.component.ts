@@ -39,8 +39,10 @@ import {
   valueUnitLabel,
 } from '../shared/logic-stop';
 import {
+  costMethodLabel,
   tradeStatusLabel,
   yesNoLabel,
+  LogicTradeLotRow,
   LogicTradeRow,
 } from '../shared/logic-trade';
 
@@ -86,14 +88,22 @@ export class LogicsComponent implements OnInit, OnDestroy {
   expandedStopsBlocks = new Set<number>();
   expandedSecuritiesBlocks = new Set<number>();
   expandedTradesBlocks = new Set<number>();
+  expandedTradeRows = new Set<number>();
   logicSignals = new Map<number, LogicIndicatorSignalRow[]>();
   logicStops = new Map<number, LogicStopRow[]>();
   logicSecurities = new Map<number, LogicSecurityRow[]>();
   logicTrades = new Map<number, LogicTradeRow[]>();
+  logicTradeLots = new Map<number, LogicTradeLotRow[]>();
   signalsLoading = new Set<number>();
   stopsLoading = new Set<number>();
   securitiesLoading = new Set<number>();
   tradesLoading = new Set<number>();
+  tradeLotsLoading = new Set<number>();
+
+  readonly costMethodOptions: Array<{ value: 'FIFO' | 'AVERAGE'; label: string }> = [
+    { value: 'FIFO', label: 'FIFO (первая покупка — первая продажа)' },
+    { value: 'AVERAGE', label: 'Средняя цена остатка' },
+  ];
 
   indicatorsCatalog: IndicatorRow[] = [];
   indicatorsLoaded = false;
@@ -135,6 +145,8 @@ export class LogicsComponent implements OnInit, OnDestroy {
       position_size_pct: string;
       max_open_positions: string;
       initial_balance: string;
+      commission_pct: string;
+      cost_method: 'FIFO' | 'AVERAGE';
       reset_balance: boolean;
     }
   >();
@@ -296,6 +308,18 @@ export class LogicsComponent implements OnInit, OnDestroy {
     this.paramsSaveErrors.delete(logicId);
   }
 
+  onParamsCommissionPctChange(logicId: number, value: string): void {
+    this.getParamsDraft(logicId).commission_pct = value;
+    this.paramsDirtyIds.add(logicId);
+    this.paramsSaveErrors.delete(logicId);
+  }
+
+  onParamsCostMethodChange(logicId: number, value: 'FIFO' | 'AVERAGE'): void {
+    this.getParamsDraft(logicId).cost_method = value;
+    this.paramsDirtyIds.add(logicId);
+    this.paramsSaveErrors.delete(logicId);
+  }
+
   onParamsResetBalanceChange(logicId: number, value: boolean): void {
     this.getParamsDraft(logicId).reset_balance = value;
     this.paramsDirtyIds.add(logicId);
@@ -373,6 +397,8 @@ export class LogicsComponent implements OnInit, OnDestroy {
       max_open_positions: number;
       initial_balance: number | null;
       current_balance: number | null;
+      commission_pct?: number;
+      cost_method?: 'FIFO' | 'AVERAGE';
     }
   ): void {
     const idx = this.logics.findIndex((l) => l.id === logicId);
@@ -387,12 +413,26 @@ export class LogicsComponent implements OnInit, OnDestroy {
     max_open_positions: number;
     initial_balance: number | null;
     current_balance: number | null;
-  }) {
+    commission_pct?: number;
+    cost_method?: 'FIFO' | 'AVERAGE';
+  }): {
+    timeframe: string;
+    position_size_pct: string;
+    max_open_positions: string;
+    initial_balance: string;
+    commission_pct: string;
+    cost_method: 'FIFO' | 'AVERAGE';
+    reset_balance: boolean;
+  } {
+    const method: 'FIFO' | 'AVERAGE' =
+      trading.cost_method === 'AVERAGE' ? 'AVERAGE' : 'FIFO';
     return {
       timeframe: (trading.timeframe ?? 'M15').toUpperCase(),
       position_size_pct: this.formatPctParam(trading.position_size_pct),
       max_open_positions: this.formatIntParam(trading.max_open_positions, 5),
       initial_balance: this.formatBalanceDraft(trading.initial_balance),
+      commission_pct: this.formatPctParam(trading.commission_pct ?? 0.05),
+      cost_method: method,
       reset_balance: false,
     };
   }
@@ -424,6 +464,8 @@ export class LogicsComponent implements OnInit, OnDestroy {
       max_open_positions: row.max_open_positions,
       initial_balance: row.initial_balance,
       current_balance: row.current_balance,
+      commission_pct: row.commission_pct,
+      cost_method: row.cost_method,
     });
   }
 
@@ -439,6 +481,7 @@ export class LogicsComponent implements OnInit, OnDestroy {
     const initialRaw = draft.initial_balance.trim();
     const initial_balance =
       initialRaw === '' ? null : this.parseDecimalInput(initialRaw.replace(',', '.'));
+    const commission_pct = this.parseDecimalInput(draft.commission_pct);
 
     if (!Number.isFinite(position_size_pct) || position_size_pct <= 0 || position_size_pct > 100) {
       this.paramsSaveErrors.set(
@@ -455,6 +498,10 @@ export class LogicsComponent implements OnInit, OnDestroy {
       this.paramsSaveErrors.set(row.id, 'Начальный остаток: число ≥ 0 или пусто');
       return;
     }
+    if (!Number.isFinite(commission_pct) || commission_pct < 0 || commission_pct > 100) {
+      this.paramsSaveErrors.set(row.id, '% комиссии: число от 0 до 100');
+      return;
+    }
 
     this.paramsSaveErrors.delete(row.id);
     this.savingParamsIds.add(row.id);
@@ -464,6 +511,8 @@ export class LogicsComponent implements OnInit, OnDestroy {
         position_size_pct,
         max_open_positions,
         initial_balance,
+        commission_pct,
+        cost_method: draft.cost_method,
         reset_balance: draft.reset_balance,
       })
       .subscribe({
@@ -542,10 +591,65 @@ export class LogicsComponent implements OnInit, OnDestroy {
     event.stopPropagation();
     if (this.expandedTradesBlocks.has(logicId)) {
       this.expandedTradesBlocks.delete(logicId);
+      for (const tr of this.tradesFor(logicId)) {
+        this.expandedTradeRows.delete(tr.id);
+      }
     } else {
       this.expandedTradesBlocks.add(logicId);
       this.loadTradesForLogic(logicId);
     }
+  }
+
+  toggleTradeRow(trade: LogicTradeRow, event: Event): void {
+    event.preventDefault();
+    event.stopPropagation();
+    if (this.expandedTradeRows.has(trade.id)) {
+      this.expandedTradeRows.delete(trade.id);
+    } else {
+      this.expandedTradeRows.add(trade.id);
+      this.loadTradeLots(trade.id);
+    }
+  }
+
+  isTradeRowExpanded(tradeId: number): boolean {
+    return this.expandedTradeRows.has(tradeId);
+  }
+
+  isTradeLotsLoading(tradeId: number): boolean {
+    return this.tradeLotsLoading.has(tradeId);
+  }
+
+  tradeLotsFor(tradeId: number): LogicTradeLotRow[] {
+    return this.logicTradeLots.get(tradeId) ?? [];
+  }
+
+  tradeHasPackages(trade: LogicTradeRow): boolean {
+    return trade.side_name === 'Close' || trade.side_name === 'Open';
+  }
+
+  costMethodLabel = costMethodLabel;
+
+  formatPnl(value: number | null | undefined): string {
+    if (value == null || !Number.isFinite(Number(value))) return '—';
+    const n = Number(value);
+    const formatted = this.formatMoney(Math.abs(n));
+    if (n > 0) return `+${formatted}`;
+    if (n < 0) return `−${formatted}`;
+    return formatted;
+  }
+
+  private loadTradeLots(tradeId: number): void {
+    if (this.tradeLotsLoading.has(tradeId)) return;
+    this.tradeLotsLoading.add(tradeId);
+    this.logicsService.getLogicTradeLots(tradeId).subscribe({
+      next: (rows) => {
+        this.logicTradeLots.set(tradeId, rows);
+        this.tradeLotsLoading.delete(tradeId);
+      },
+      error: () => {
+        this.tradeLotsLoading.delete(tradeId);
+      },
+    });
   }
 
   tradesFor(logicId: number): LogicTradeRow[] {

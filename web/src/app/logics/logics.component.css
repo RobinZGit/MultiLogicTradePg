@@ -784,6 +784,62 @@ tbody tr:hover {
   background: #fef2f2;
 }
 
+.trade-row {
+  cursor: pointer;
+}
+
+.trade-row:hover {
+  background: #f1f5f9;
+}
+
+.trade-expand-cell {
+  width: 1.5rem;
+  text-align: center;
+  padding-left: 0.25rem;
+  padding-right: 0;
+}
+
+.trade-row-chevron {
+  display: inline-block;
+  font-size: 0.95rem;
+  color: #64748b;
+  transition: transform 0.15s ease;
+}
+
+.trade-row-chevron.open {
+  transform: rotate(90deg);
+}
+
+.trade-lots-row td {
+  background: #f8fafc;
+  padding: 0.5rem 0.75rem 0.65rem 1.5rem;
+}
+
+.trade-lots-table {
+  font-size: 0.78rem;
+}
+
+.trade-lots-loading,
+.trade-lots-empty {
+  margin: 0.25rem 0;
+  font-size: 0.82rem;
+  color: #64748b;
+}
+
+.trade-pnl-pos {
+  color: #15803d;
+  font-weight: 600;
+}
+
+.trade-pnl-neg {
+  color: #b91c1c;
+  font-weight: 600;
+}
+
+.trades-summary {
+  cursor: pointer;
+}
+
 .params-table .params-input {
   width: 100%;
   max-width: 10rem;
