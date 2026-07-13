@@ -23,6 +23,14 @@ export interface LogicTradingParamsPayload {
   reset_balance?: boolean;
 }
 
+export interface LogicTradingParamsResponse {
+  id: number;
+  position_size_pct: number;
+  max_open_positions: number;
+  initial_balance: number | null;
+  current_balance: number | null;
+}
+
 export interface LogicIndicatorSignalRow {
   id: number;
   logic_id: number;

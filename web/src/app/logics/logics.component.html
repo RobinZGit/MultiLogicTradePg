@@ -282,8 +282,8 @@
                                   type="text"
                                   inputmode="decimal"
                                   class="params-input"
-                                  [ngModel]="paramsDraft(row.id).position_size_pct"
-                                  (ngModelChange)="paramsDraft(row.id).position_size_pct = $event"
+                                  [ngModel]="getParamsDraft(row.id).position_size_pct"
+                                  (ngModelChange)="onParamsPctChange(row.id, $event)"
                                   (click)="$event.stopPropagation()"
                                 />
 
@@ -303,8 +303,8 @@
                                   type="text"
                                   inputmode="numeric"
                                   class="params-input params-input-short"
-                                  [ngModel]="paramsDraft(row.id).max_open_positions"
-                                  (ngModelChange)="paramsDraft(row.id).max_open_positions = $event"
+                                  [ngModel]="getParamsDraft(row.id).max_open_positions"
+                                  (ngModelChange)="onParamsMaxPositionsChange(row.id, $event)"
                                   (click)="$event.stopPropagation()"
                                 />
 
@@ -324,8 +324,8 @@
                                   type="text"
                                   inputmode="decimal"
                                   class="params-input"
-                                  [ngModel]="paramsDraft(row.id).initial_balance"
-                                  (ngModelChange)="paramsDraft(row.id).initial_balance = $event"
+                                  [ngModel]="getParamsDraft(row.id).initial_balance"
+                                  (ngModelChange)="onParamsInitialBalanceChange(row.id, $event)"
                                   (click)="$event.stopPropagation()"
                                   [placeholder]="row.account_type === 'fake' ? '1000000' : 'необязательно'"
                                 />
@@ -366,13 +366,17 @@
 
                                   <input
                                     type="checkbox"
-                                    [ngModel]="paramsDraft(row.id).reset_balance"
-                                    (ngModelChange)="paramsDraft(row.id).reset_balance = $event"
+                                    [ngModel]="getParamsDraft(row.id).reset_balance"
+                                    (ngModelChange)="onParamsResetBalanceChange(row.id, $event)"
                                   />
 
                                   Сбросить текущий остаток к начальному при сохранении
 
                                 </label>
+
+                                @if (paramsSaveError(row.id)) {
+                                  <p class="params-save-error">{{ paramsSaveError(row.id) }}</p>
+                                }
 
                                 <button
                                   type="button"
@@ -1378,6 +1382,13 @@
 
     (saved)="onEditorSaved()"
 
+  />
+
+  <app-tbank-token-dialog
+    [open]="tbankTokenDialogOpen"
+    context="logic"
+    (saved)="onTbankTokenSavedForLogic()"
+    (cancelled)="onTbankTokenCancelledForLogic()"
   />
 
 </section>

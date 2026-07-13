@@ -2,7 +2,7 @@ import { Injectable } from '@angular/core';
 import { HttpClient } from '@angular/common/http';
 import { Observable } from 'rxjs';
 import { AppConfigService } from './app-config.service';
-import { LogicIndicatorSignalRow, LogicRow, LogicSecurityRow, LogicStopRow, LogicTradingParamsPayload } from '../models/logic.model';
+import { LogicIndicatorSignalRow, LogicRow, LogicSecurityRow, LogicStopRow, LogicTradingParamsPayload, LogicTradingParamsResponse } from '../models/logic.model';
 import { LogicTradeRow } from '../shared/logic-trade';
 import { LogicPayload } from '../models/lookup.model';
 
@@ -41,14 +41,8 @@ export class LogicsService {
   updateLogicTradingParams(
     id: number,
     payload: LogicTradingParamsPayload
-  ): Observable<{
-    id: number;
-    position_size_pct: number;
-    max_open_positions: number;
-    initial_balance: number | null;
-    current_balance: number | null;
-  }> {
-    return this.http.patch(
+  ): Observable<LogicTradingParamsResponse> {
+    return this.http.patch<LogicTradingParamsResponse>(
       `${this.appConfig.apiUrl}/logics/${id}/trading-params`,
       payload
     );

@@ -775,7 +775,19 @@ app.get('/api/logics', async (_req, res) => {
       JOIN brokers b ON b.id = a.broker_id
       ORDER BY l.id
     `);
-    res.json(rows);
+    res.json(
+      rows.map((r) => ({
+        ...r,
+        position_size_pct:
+          r.position_size_pct != null ? Number(r.position_size_pct) : 10,
+        max_open_positions:
+          r.max_open_positions != null ? Number(r.max_open_positions) : 5,
+        initial_balance:
+          r.initial_balance != null ? Number(r.initial_balance) : null,
+        current_balance:
+          r.current_balance != null ? Number(r.current_balance) : null,
+      }))
+    );
   } catch (err) {
     console.error('GET /api/logics', err);
     res.status(500).json({ error: err.message });
@@ -1326,7 +1338,16 @@ app.patch('/api/logics/:id/trading-params', async (req, res) => {
       res.status(404).json({ error: 'Logic not found' });
       return;
     }
-    res.json(rows[0]);
+    const row = rows[0];
+    res.json({
+      ...row,
+      position_size_pct: Number(row.position_size_pct),
+      max_open_positions: Number(row.max_open_positions),
+      initial_balance:
+        row.initial_balance != null ? Number(row.initial_balance) : null,
+      current_balance:
+        row.current_balance != null ? Number(row.current_balance) : null,
+    });
   } catch (err) {
     console.error('PATCH /api/logics/:id/trading-params', err);
     if (err.code === '23514') {

@@ -13,6 +13,8 @@ import { AppConfigService, apiErrorMessage } from '../services/app-config.servic
 })
 export class TbankTokenDialogComponent {
   @Input() open = false;
+  /** prices — загрузка цен; logic — включение торговли на фейковом счёте */
+  @Input() context: 'prices' | 'logic' = 'prices';
   @Output() saved = new EventEmitter<void>();
   @Output() cancelled = new EventEmitter<void>();
 

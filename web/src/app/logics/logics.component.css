@@ -736,6 +736,13 @@ tbody tr:hover {
   cursor: pointer;
 }
 
+.params-save-error {
+  display: block;
+  margin: 0.5rem 0 0;
+  font-size: 0.82rem;
+  color: #b91c1c;
+}
+
 .params-block {
   border-color: #93c5fd;
 }
