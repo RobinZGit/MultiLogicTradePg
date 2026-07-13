@@ -7,6 +7,11 @@ const {
 } = require('./tbank');
 const { runTradeCycle, startTradeRunner } = require('./trade-runner');
 const {
+  touchUiHeartbeatDb,
+  clearUiHeartbeatDb,
+  isUiSessionActive,
+} = require('./lib/trade-runner-session');
+const {
   getTradingParams,
   saveTradingParams,
   ensureDefaultParams,
@@ -1897,7 +1902,7 @@ app.get('/api/logic-trades', async (req, res) => {
 
 app.post('/api/logic-trades/run', async (_req, res) => {
   try {
-    const result = await runTradeCycle(pool);
+    const result = await runTradeCycle(pool, { manual: true });
     await writeTechLogEvent(pool, {
       threadKey: 'trade-runner',
       operation: 'cycle.manual',
@@ -1908,6 +1913,26 @@ app.post('/api/logic-trades/run', async (_req, res) => {
     res.json({ ok: true, ...result });
   } catch (err) {
     console.error('POST /api/logic-trades/run', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/api/logic-trades/heartbeat', async (_req, res) => {
+  try {
+    await touchUiHeartbeatDb(pool);
+    res.json({ ok: true, active: isUiSessionActive() });
+  } catch (err) {
+    console.error('POST /api/logic-trades/heartbeat', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/api/logic-trades/heartbeat/end', async (_req, res) => {
+  try {
+    await clearUiHeartbeatDb(pool);
+    res.json({ ok: true, active: false });
+  } catch (err) {
+    console.error('POST /api/logic-trades/heartbeat/end', err);
     res.status(500).json({ error: err.message });
   }
 });

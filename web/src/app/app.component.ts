@@ -1,8 +1,9 @@
-import { Component, OnInit } from '@angular/core';
+import { Component, OnDestroy, OnInit } from '@angular/core';
 import { RouterLink, RouterLinkActive, RouterOutlet } from '@angular/router';
 import { FormsModule } from '@angular/forms';
 import { DbSchemaPanelComponent } from './db-schema/db-schema-panel.component';
 import { TechLogService } from './services/tech-log.service';
+import { TradeRunnerSessionService } from './services/trade-runner-session.service';
 
 @Component({
   selector: 'app-root',
@@ -144,13 +145,17 @@ import { TechLogService } from './services/tech-log.service';
     `,
   ],
 })
-export class AppComponent implements OnInit {
+export class AppComponent implements OnInit, OnDestroy {
   schemaOpen = false;
   techLoggingEnabled = false;
 
-  constructor(private readonly techLog: TechLogService) {}
+  constructor(
+    private readonly techLog: TechLogService,
+    private readonly tradeRunnerSession: TradeRunnerSessionService
+  ) {}
 
   ngOnInit(): void {
+    this.tradeRunnerSession.start();
     this.techLog.loadEnabled().subscribe({
       next: (r) => {
         this.techLoggingEnabled = r.enabled;
@@ -160,6 +165,10 @@ export class AppComponent implements OnInit {
 
   onTechLoggingChange(enabled: boolean): void {
     this.techLog.setEnabled(enabled);
+  }
+
+  ngOnDestroy(): void {
+    this.tradeRunnerSession.stop();
   }
 
   openSchema(): void {

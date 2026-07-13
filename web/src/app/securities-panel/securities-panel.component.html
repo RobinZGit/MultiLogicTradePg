@@ -228,11 +228,15 @@
 
                       [title]="row.name"
 
+                      [securityId]="row.id"
+
                       [candles]="chartState(row.id).candles"
 
                       [indicatorSeries]="chartIndicatorsForDisplay(row.id)"
 
-                      [loading]="chartState(row.id).loading || chartState(row.id).loadingOlder"
+                      [loading]="chartState(row.id).loading"
+
+                      [loadingOlder]="chartState(row.id).loadingOlder"
 
                       [error]="chartState(row.id).error"
 
@@ -416,11 +420,15 @@
 
                       [title]="row.name"
 
+                      [securityId]="row.id"
+
                       [candles]="chartState(row.id).candles"
 
                       [indicatorSeries]="chartIndicatorsForDisplay(row.id)"
 
-                      [loading]="chartState(row.id).loading || chartState(row.id).loadingOlder"
+                      [loading]="chartState(row.id).loading"
+
+                      [loadingOlder]="chartState(row.id).loadingOlder"
 
                       [error]="chartState(row.id).error"
 

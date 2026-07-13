@@ -1,5 +1,6 @@
 import { ComponentFixture, TestBed } from '@angular/core/testing';
 import { PriceChartComponent } from './price-chart.component';
+import { TechLogService } from '../services/tech-log.service';
 
 describe('PriceChartComponent', () => {
   let fixture: ComponentFixture<PriceChartComponent>;
@@ -8,6 +9,16 @@ describe('PriceChartComponent', () => {
   beforeEach(async () => {
     await TestBed.configureTestingModule({
       imports: [PriceChartComponent],
+      providers: [
+        {
+          provide: TechLogService,
+          useValue: {
+            enabled: false,
+            event: jasmine.createSpy('event'),
+            threadKey: () => 'sec:0:chart',
+          },
+        },
+      ],
     }).compileComponents();
 
     fixture = TestBed.createComponent(PriceChartComponent);
@@ -78,6 +89,27 @@ describe('PriceChartComponent', () => {
     ];
     component.onPointerLeave(new PointerEvent('pointerleave'));
     expect(spy).not.toHaveBeenCalled();
+  });
+
+  it('allows pan while loadingOlder (initial load still blocks)', () => {
+    component.candles = [
+      { dt: '2026-01-01T10:00:00', open_price: 1, high_price: 1, low_price: 1, close_price: 1, volume: 1 },
+    ];
+    component.loading = false;
+    component.loadingOlder = true;
+
+    const down = new PointerEvent('pointerdown', { clientX: 50, pointerId: 1 });
+    Object.defineProperty(down, 'target', {
+      value: { setPointerCapture: () => {}, releasePointerCapture: () => {} },
+    });
+    component.onPointerDown(down);
+    expect((component as unknown as { dragging: boolean }).dragging).toBeTrue();
+
+    (component as unknown as { dragging: boolean }).dragging = false;
+    component.loading = true;
+    component.loadingOlder = false;
+    component.onPointerDown(down);
+    expect((component as unknown as { dragging: boolean }).dragging).toBeFalse();
   });
 
   it('anchors zero on price scale for PACC', () => {

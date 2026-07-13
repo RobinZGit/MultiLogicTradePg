@@ -10,6 +10,7 @@ import {
   Output,
   SimpleChanges,
   ViewChild,
+  inject,
 } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import {
@@ -17,6 +18,7 @@ import {
   ChartVisibleRange,
   PriceCandle,
 } from '../models/market.model';
+import { TechLogService } from '../services/tech-log.service';
 
 @Component({
   selector: 'app-price-chart',
@@ -32,8 +34,14 @@ export class PriceChartComponent implements AfterViewInit, OnChanges, OnDestroy 
   @Input() candles: PriceCandle[] = [];
   @Input() indicatorSeries: ChartIndicatorSeries[] = [];
   @Input() loading = false;
+  /** Фоновая подгрузка истории — не блокирует перемотку. */
+  @Input() loadingOlder = false;
   @Input() error: string | null = null;
   @Input() title = '';
+  /** Для app_tech_log (sec:N). */
+  @Input() securityId: number | null = null;
+
+  private readonly techLog = inject(TechLogService);
 
   @Output() loadOlder = new EventEmitter<void>();
   @Output() visibleRangeChange = new EventEmitter<ChartVisibleRange>();
@@ -52,6 +60,10 @@ export class PriceChartComponent implements AfterViewInit, OnChanges, OnDestroy 
   private prevCandlesLen = 0;
   private loadOlderPending = false;
   private emitRangeTimer: ReturnType<typeof setTimeout> | null = null;
+  private redrawScheduled = false;
+  private redrawRafId: number | null = null;
+  private seriesPointIndex = new Map<ChartIndicatorSeries, Map<string, number>>();
+  private panStartedAt = 0;
 
   private pinchActive = false;
   private pinchStartDist = 0;
@@ -79,12 +91,15 @@ export class PriceChartComponent implements AfterViewInit, OnChanges, OnDestroy 
   ngAfterViewInit(): void {
     const body = this.chartBodyRef?.nativeElement;
     if (!body) return;
-    this.resizeObserver = new ResizeObserver(() => this.redraw());
+    this.resizeObserver = new ResizeObserver(() => this.scheduleRedraw());
     this.resizeObserver.observe(body);
-    this.redraw();
+    this.scheduleRedraw();
   }
 
   ngOnChanges(changes: SimpleChanges): void {
+    if (changes['indicatorSeries']) {
+      this.rebuildSeriesPointIndex();
+    }
     if (changes['candles']) {
       const added = this.candles.length - this.prevCandlesLen;
       if (added > 0 && this.prevCandlesLen > 0 && this.viewStart > 0) {
@@ -97,11 +112,14 @@ export class PriceChartComponent implements AfterViewInit, OnChanges, OnDestroy 
         this.scheduleEmitVisibleRange();
       }
     }
-    queueMicrotask(() => this.redraw());
+    queueMicrotask(() => this.scheduleRedraw());
   }
 
   ngOnDestroy(): void {
     this.resizeObserver?.disconnect();
+    if (this.redrawRafId != null) {
+      cancelAnimationFrame(this.redrawRafId);
+    }
     if (this.emitRangeTimer) clearTimeout(this.emitRangeTimer);
     if (this.fullscreen) {
       document.body.style.overflow = '';
@@ -122,7 +140,7 @@ export class PriceChartComponent implements AfterViewInit, OnChanges, OnDestroy 
     document.body.style.overflow = 'hidden';
     queueMicrotask(() => {
       this.clampViewStart();
-      this.redraw();
+      this.scheduleRedraw();
       requestAnimationFrame(() => this.scheduleEmitVisibleRange(false));
     });
   }
@@ -132,7 +150,7 @@ export class PriceChartComponent implements AfterViewInit, OnChanges, OnDestroy 
     document.body.style.overflow = '';
     queueMicrotask(() => {
       this.clampViewStart();
-      this.redraw();
+      this.scheduleRedraw();
       requestAnimationFrame(() => this.scheduleEmitVisibleRange(false));
     });
   }
@@ -166,20 +184,25 @@ export class PriceChartComponent implements AfterViewInit, OnChanges, OnDestroy 
   }
 
   onWheel(event: WheelEvent): void {
-    if (this.loading || this.candles.length === 0) return;
+    if (!this.canInteract()) return;
     event.preventDefault();
     const factor = event.deltaY < 0 ? 1.12 : 1 / 1.12;
     this.applyZoom(this.zoom * factor);
   }
 
   onPointerDown(event: PointerEvent): void {
-    if (this.loading || this.candles.length === 0) return;
+    if (!this.canInteract()) return;
     if (this.pinchActive) return;
 
     this.dragging = true;
+    this.panStartedAt = performance.now();
     this.dragStartX = event.clientX;
     this.dragStartView = this.viewStart;
     (event.target as HTMLElement).setPointerCapture(event.pointerId);
+    this.logChartEvent('chart.pan.start', 'pointer down', {
+      viewStart: this.viewStart,
+      candles: this.candles.length,
+    });
   }
 
   onPointerMove(event: PointerEvent): void {
@@ -191,15 +214,16 @@ export class PriceChartComponent implements AfterViewInit, OnChanges, OnDestroy 
     const maxStart = Math.max(0, this.candles.length - this.viewCount());
     this.viewStart = Math.min(maxStart, Math.max(0, this.dragStartView + shift));
 
-    if (this.viewStart <= 8 && !this.loading && !this.loadOlderPending) {
+    if (this.viewStart <= 8 && !this.loadOlderPending) {
       this.loadOlderPending = true;
       this.loadOlder.emit();
     }
-    this.redraw();
+    this.scheduleRedraw();
   }
 
   onPointerUp(event: PointerEvent): void {
     const moved = this.dragging && this.viewStart !== this.dragStartView;
+    const panMs = this.panStartedAt > 0 ? Math.round(performance.now() - this.panStartedAt) : 0;
     this.dragging = false;
     try {
       (event.target as HTMLElement).releasePointerCapture(event.pointerId);
@@ -207,8 +231,16 @@ export class PriceChartComponent implements AfterViewInit, OnChanges, OnDestroy 
       /* ignore */
     }
     if (moved) {
+      this.logChartEvent('chart.pan.end', `shift ${this.viewStart - this.dragStartView} bars`, {
+        panMs,
+        viewStart: this.viewStart,
+        loadingOlder: this.loadingOlder,
+      });
       this.scheduleEmitVisibleRange(true);
+    } else if (this.panStartedAt > 0) {
+      this.logChartEvent('chart.pan.cancel', 'no movement', { panMs });
     }
+    this.panStartedAt = 0;
   }
 
   onPointerLeave(event: PointerEvent): void {
@@ -253,19 +285,58 @@ export class PriceChartComponent implements AfterViewInit, OnChanges, OnDestroy 
     this.zoom = Math.min(3.5, Math.max(0.45, next));
     if (Math.abs(this.zoom - prev) < 0.001) return;
     this.clampViewStart();
-    this.redraw();
+    this.scheduleRedraw();
     if (emit) this.scheduleEmitVisibleRange(true);
   }
 
   private shiftView(delta: number): void {
     const maxStart = Math.max(0, this.candles.length - this.viewCount());
     this.viewStart = Math.min(maxStart, Math.max(0, this.viewStart + delta));
-    if (this.viewStart <= 8 && !this.loading && !this.loadOlderPending) {
+    if (this.viewStart <= 8 && !this.loadOlderPending) {
       this.loadOlderPending = true;
       this.loadOlder.emit();
     }
-    this.redraw();
+    this.scheduleRedraw();
     this.scheduleEmitVisibleRange(true);
+  }
+
+  private canInteract(): boolean {
+    return !this.loading && this.candles.length > 0;
+  }
+
+  private scheduleRedraw(): void {
+    if (this.redrawScheduled) return;
+    this.redrawScheduled = true;
+    this.redrawRafId = requestAnimationFrame(() => {
+      this.redrawScheduled = false;
+      this.redrawRafId = null;
+      this.redrawNow();
+    });
+  }
+
+  private rebuildSeriesPointIndex(): void {
+    this.seriesPointIndex.clear();
+    for (const series of this.indicatorSeries) {
+      const byDt = new Map<string, number>();
+      for (const point of series.points) {
+        byDt.set(point.dt, point.value);
+      }
+      this.seriesPointIndex.set(series, byDt);
+    }
+  }
+
+  private logChartEvent(
+    operation: string,
+    message: string,
+    payload?: Record<string, unknown>
+  ): void {
+    if (!this.techLog.enabled || this.securityId == null) return;
+    this.techLog.event(
+      this.techLog.threadKey(this.securityId, null, 'chart'),
+      operation,
+      message,
+      { securityId: this.securityId, payload }
+    );
   }
 
   private clampViewStart(): void {
@@ -350,11 +421,12 @@ export class PriceChartComponent implements AfterViewInit, OnChanges, OnDestroy 
   }
 
   private valueAtDt(series: ChartIndicatorSeries, dt: string): number | null {
-    const point = series.points.find((p) => p.dt === dt);
-    return point != null ? point.value : null;
+    const value = this.seriesPointIndex.get(series)?.get(dt);
+    return value != null ? value : null;
   }
 
-  private redraw(): void {
+  private redrawNow(): void {
+    const t0 = performance.now();
     const canvas = this.canvasRef?.nativeElement;
     const body = this.chartBodyRef?.nativeElement;
     if (!canvas || !body) return;
@@ -569,7 +641,23 @@ export class PriceChartComponent implements AfterViewInit, OnChanges, OnDestroy 
       ctx.fillRect(0, 0, cssW, cssH);
       ctx.fillStyle = '#374151';
       ctx.font = `${this.px(12)}px system-ui, sans-serif`;
-      ctx.fillText('Обновление…', cssW / 2 - this.px(40), cssH / 2);
+      ctx.fillText('Загрузка свечей…', cssW / 2 - this.px(48), cssH / 2);
+    } else if (this.loadingOlder) {
+      ctx.fillStyle = 'rgba(255,255,255,0.55)';
+      ctx.fillRect(0, 0, Math.min(120, cssW * 0.35), this.px(22));
+      ctx.fillStyle = '#374151';
+      ctx.font = `${this.px(10)}px system-ui, sans-serif`;
+      ctx.fillText('История…', 8, this.px(14));
+    }
+
+    const drawMs = performance.now() - t0;
+    if (drawMs > 32) {
+      this.logChartEvent('chart.redraw.slow', `${Math.round(drawMs)}ms`, {
+        drawMs: Math.round(drawMs),
+        visible: visible.length,
+        series: this.indicatorSeries.length,
+        dragging: this.dragging,
+      });
     }
   }
 

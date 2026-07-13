@@ -758,6 +758,28 @@ tbody tr:hover {
   font-size: 0.82rem;
 }
 
+.trades-scroll {
+  max-height: min(420px, 55vh);
+  overflow: auto;
+  border: 1px solid #e2e8f0;
+  border-radius: 6px;
+  -webkit-overflow-scrolling: touch;
+}
+
+.trades-scroll .trades-table {
+  margin: 0;
+  width: 100%;
+  border-collapse: collapse;
+}
+
+.trades-scroll .trades-table thead th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  background: #f8fafc;
+  box-shadow: 0 1px 0 #e2e8f0;
+}
+
 .trade-rejected {
   background: #fef2f2;
 }

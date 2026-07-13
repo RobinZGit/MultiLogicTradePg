@@ -1,7 +1,8 @@
 'use strict';
 
-const RUNNER_INTERVAL_MS = Number(process.env.TRADE_RUNNER_INTERVAL_MS) || 60000;
+const RUNNER_INTERVAL_MS = Number(process.env.TRADE_RUNNER_INTERVAL_MS) || 15000;
 const { writeTechLogEvent } = require('./lib/tech-log');
+const { isUiSessionActive } = require('./lib/trade-runner-session');
 
 let running = false;
 
@@ -9,9 +10,13 @@ let running = false;
  * Цикл сделок выполняется в PostgreSQL: run_trade_cycle().
  * Node — fallback, если pg_cron недоступен (Windows).
  * TRADE_RUNNER_ENABLED=0 — отключить fallback.
+ * Автозапуск только при активной сессии Angular (heartbeat).
  */
-async function runTradeCycle(pool) {
+async function runTradeCycle(pool, opts = {}) {
   if (running) return { skipped: true, reason: 'node_busy' };
+  if (!opts.manual && !isUiSessionActive()) {
+    return { skipped: true, reason: 'ui_inactive' };
+  }
   running = true;
   try {
     const { rows } = await pool.query('SELECT run_trade_cycle() AS result');
@@ -53,16 +58,11 @@ function startTradeRunner(pool) {
   }
 
   console.log(
-    `Trade runner fallback: every ${RUNNER_INTERVAL_MS}ms → SELECT run_trade_cycle() (pg_cron preferred on Linux)`
+    `Trade runner fallback: every ${RUNNER_INTERVAL_MS}ms when UI is open (heartbeat from Angular)`
   );
 
-  setTimeout(() => {
-    runTradeCycle(pool).catch((err) => {
-      console.error('Trade runner cycle error', err.message);
-    });
-  }, 5000);
-
   setInterval(() => {
+    if (!isUiSessionActive()) return;
     runTradeCycle(pool).catch((err) => {
       console.error('Trade runner cycle error', err.message);
     });

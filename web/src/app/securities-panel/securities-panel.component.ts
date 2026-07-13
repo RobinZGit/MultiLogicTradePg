@@ -183,9 +183,11 @@ export class SecuritiesPanelComponent implements OnInit {
   }
 
   /** Индикаторы для отрисовки: скрыты во время перемотки до завершения sync. */
+  private static readonly EMPTY_CHART_SERIES: ChartIndicatorSeries[] = [];
+
   chartIndicatorsForDisplay(id: number): ChartIndicatorSeries[] {
     if (this.suppressIndicatorDraw.get(id)) {
-      return [];
+      return SecuritiesPanelComponent.EMPTY_CHART_SERIES;
     }
     return this.chartIndicatorSeries(id);
   }
@@ -870,7 +872,19 @@ export class SecuritiesPanelComponent implements OnInit {
         `loading=${state.loading}, older=${state.loadingOlder}`,
         { retry }
       );
+      if (state.loadingOlder && !state.loading) {
+        return;
+      }
       if (retry < this.indicatorRangeMaxRetries) {
+        if (retry > 0 && retry % 12 === 0) {
+          this.logSyncEvent(
+            securityId,
+            syncGen,
+            'indicator.rangeSync.retryStorm',
+            `waitCandles retry=${retry}/${this.indicatorRangeMaxRetries}`,
+            { retry, loading: state.loading, loadingOlder: state.loadingOlder }
+          );
+        }
         setTimeout(
           () =>
             this.scheduleIndicatorRangeSync(
@@ -882,6 +896,13 @@ export class SecuritiesPanelComponent implements OnInit {
           this.indicatorRangeRetryMs
         );
       } else {
+        this.logSyncEvent(
+          securityId,
+          syncGen,
+          'ui.sync.blocked',
+          'Таймаут ожидания свечей',
+          { retry }
+        );
         this.finishIndicatorRecalc(securityId, 'Таймаут ожидания свечей', syncGen);
       }
       return;
@@ -931,7 +952,24 @@ export class SecuritiesPanelComponent implements OnInit {
           needOlder,
         }
       );
+      if (state.loadingOlder) {
+        return;
+      }
       if (retry < this.indicatorRangeMaxRetries) {
+        if (retry > 0 && retry % 12 === 0) {
+          this.logSyncEvent(
+            securityId,
+            syncGen,
+            'indicator.rangeSync.retryStorm',
+            `waitHistory retry=${retry}/${this.indicatorRangeMaxRetries}`,
+            {
+              retry,
+              needStart: liveRange.startDt,
+              needEnd: liveRange.endDt,
+              haveStart: state.candles[0]?.dt ?? null,
+            }
+          );
+        }
         setTimeout(
           () =>
             this.scheduleIndicatorRangeSync(
@@ -943,6 +981,13 @@ export class SecuritiesPanelComponent implements OnInit {
           this.indicatorRangeRetryMs
         );
       } else {
+        this.logSyncEvent(
+          securityId,
+          syncGen,
+          'ui.sync.blocked',
+          'Недостаточно свечей для расчёта индикаторов',
+          { retry, needStart: liveRange.startDt, needEnd: liveRange.endDt }
+        );
         this.finishIndicatorRecalc(
           securityId,
           'Недостаточно свечей для расчёта индикаторов',

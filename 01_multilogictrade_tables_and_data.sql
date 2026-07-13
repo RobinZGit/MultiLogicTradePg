@@ -1,6 +1,6 @@
 -- ============================================
 -- MultiLogicTrade — шаг 1: таблицы и справочники
--- Версия: v25 (идемпотентный запуск)
+-- Версия: v30 (идемпотентный запуск)
 -- ============================================
 -- Подключение: база multilogictrade
 -- Можно выполнять многократно: объекты и строки не дублируются.
@@ -449,7 +449,8 @@ INSERT INTO parameter_types (name, short_name, value_type, description, default_
     ('ATR период', 'ATR_PERIOD', 'integer', 'Период ATR', '14', 2, 100),
     ('STOCH период K', 'STOCH_PERIOD', 'integer', 'Период %K стохастика', '14', 2, 100),
     ('T-Bank API токен', 'TBANK_API_TOKEN', 'secret', 'Глобальный токен Invest API T-Bank для загрузки цен (не привязан к счёту)', '', NULL, NULL),
-    ('Техническое логирование', 'APP_TECH_LOGGING', 'boolean', 'Глобальный журнал app_tech_log: trade runner, сигналы, параметры логики', '0', NULL, NULL)
+    ('Техническое логирование', 'APP_TECH_LOGGING', 'boolean', 'Глобальный журнал app_tech_log: trade runner, сигналы, параметры логики', '0', NULL, NULL),
+    ('Heartbeat UI trade runner', 'APP_TRADE_RUNNER_HB', 'text', 'Последний heartbeat Angular; без него run_trade_cycle пропускается', '', NULL, NULL)
 ON CONFLICT (short_name) DO NOTHING;
 
 -- ============================================

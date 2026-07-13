@@ -170,6 +170,17 @@ $$;
 COMMENT ON FUNCTION tbank_iso_utc(DATE, TIME) IS
 'Дата/время в формате 2026-07-05T00:00:00Z для T-Bank Invest API';
 
+-- ISO-8601 UTC из T-Bank/MOEX → локальная wall-clock (prices.dt, logic_last_closed_bar_dt)
+CREATE OR REPLACE FUNCTION market_candle_dt_from_iso(p_iso TEXT)
+RETURNS TIMESTAMP
+LANGUAGE sql
+STABLE AS $$
+    SELECT timezone(current_setting('TimeZone'), p_iso::timestamptz)::timestamp;
+$$;
+
+COMMENT ON FUNCTION market_candle_dt_from_iso(TEXT) IS
+'UTC ISO из API (…Z) → TIMESTAMP в session TimeZone (Europe/Moscow)';
+
 -- Вечные фьючерсы MOEX (CNYRUBF, USDRUBF …) — без rollover по контрактам
 CREATE OR REPLACE FUNCTION is_perpetual_future_group(
     p_group_prefix VARCHAR,
@@ -432,6 +443,94 @@ $$;
 
 COMMENT ON PROCEDURE set_app_tech_logging(BOOLEAN) IS
 'Вкл/выкл глобальное техническое логирование (галочка в шапке UI)';
+
+CREATE OR REPLACE FUNCTION trade_runner_ui_heartbeat_ttl_sec()
+RETURNS INTEGER
+LANGUAGE sql
+IMMUTABLE AS $$
+    SELECT 90;
+$$;
+
+COMMENT ON FUNCTION trade_runner_ui_heartbeat_ttl_sec() IS
+'Сколько секунд heartbeat Angular считается активным';
+
+CREATE OR REPLACE FUNCTION trade_runner_ui_is_active()
+RETURNS BOOLEAN
+LANGUAGE plpgsql STABLE AS $$
+DECLARE
+    v_raw TEXT;
+    v_ts TIMESTAMP;
+    v_ttl INTEGER;
+BEGIN
+    SELECT btrim(pv.value)
+    INTO v_raw
+    FROM parameter_values pv
+    JOIN parameter_types pt ON pt.id = pv.parameter_type_id
+    JOIN parameter_sets ps ON ps.id = pv.parameter_set_id
+    WHERE ps.name = 'Default'
+      AND pt.short_name = 'APP_TRADE_RUNNER_HB'
+    LIMIT 1;
+
+    IF COALESCE(v_raw, '') = '' THEN
+        RETURN FALSE;
+    END IF;
+
+    BEGIN
+        v_ts := v_raw::TIMESTAMP;
+    EXCEPTION
+        WHEN OTHERS THEN
+            RETURN FALSE;
+    END;
+
+    v_ttl := trade_runner_ui_heartbeat_ttl_sec();
+    RETURN v_ts >= (LOCALTIMESTAMP - make_interval(secs => v_ttl));
+END;
+$$;
+
+COMMENT ON FUNCTION trade_runner_ui_is_active() IS
+'TRUE, если Angular недавно слал heartbeat (APP_TRADE_RUNNER_HB)';
+
+CREATE OR REPLACE PROCEDURE touch_trade_runner_ui_heartbeat()
+LANGUAGE plpgsql AS $$
+DECLARE
+    v_set_id INTEGER;
+    v_type_id INTEGER;
+BEGIN
+    SELECT id INTO v_set_id FROM parameter_sets WHERE name = 'Default' LIMIT 1;
+    SELECT id INTO v_type_id FROM parameter_types WHERE short_name = 'APP_TRADE_RUNNER_HB' LIMIT 1;
+    IF v_set_id IS NULL OR v_type_id IS NULL THEN
+        RAISE EXCEPTION 'APP_TRADE_RUNNER_HB not found in parameter_types';
+    END IF;
+    INSERT INTO parameter_values (parameter_set_id, parameter_type_id, value)
+    VALUES (v_set_id, v_type_id, to_char(CURRENT_TIMESTAMP, 'YYYY-MM-DD"T"HH24:MI:SS'))
+    ON CONFLICT (parameter_set_id, parameter_type_id)
+    DO UPDATE SET value = EXCLUDED.value, record_date = CURRENT_TIMESTAMP;
+END;
+$$;
+
+COMMENT ON PROCEDURE touch_trade_runner_ui_heartbeat() IS
+'Обновляет heartbeat UI (Angular открыт)';
+
+CREATE OR REPLACE PROCEDURE clear_trade_runner_ui_heartbeat()
+LANGUAGE plpgsql AS $$
+DECLARE
+    v_set_id INTEGER;
+    v_type_id INTEGER;
+BEGIN
+    SELECT id INTO v_set_id FROM parameter_sets WHERE name = 'Default' LIMIT 1;
+    SELECT id INTO v_type_id FROM parameter_types WHERE short_name = 'APP_TRADE_RUNNER_HB' LIMIT 1;
+    IF v_set_id IS NULL OR v_type_id IS NULL THEN
+        RETURN;
+    END IF;
+    INSERT INTO parameter_values (parameter_set_id, parameter_type_id, value)
+    VALUES (v_set_id, v_type_id, '')
+    ON CONFLICT (parameter_set_id, parameter_type_id)
+    DO UPDATE SET value = '', record_date = CURRENT_TIMESTAMP;
+END;
+$$;
+
+COMMENT ON PROCEDURE clear_trade_runner_ui_heartbeat() IS
+'Сбрасывает heartbeat UI (Angular закрыт)';
 
 CREATE OR REPLACE FUNCTION app_tech_log_event(
     p_thread_key TEXT,
@@ -4946,6 +5045,172 @@ BEGIN
 END;
 $$;
 
+CREATE OR REPLACE FUNCTION logic_trade_load_date_from(
+    p_tf_sec INTEGER,
+    p_point_count INTEGER,
+    p_closed_bar_dt TIMESTAMP
+)
+RETURNS DATE
+LANGUAGE plpgsql IMMUTABLE AS $$
+DECLARE
+    v_date_to DATE;
+    v_need_days INTEGER;
+    v_max_days INTEGER;
+    v_span INTEGER;
+BEGIN
+    v_date_to := GREATEST(p_closed_bar_dt::date, CURRENT_DATE);
+    v_need_days := GREATEST(1, CEIL(GREATEST(COALESCE(p_point_count, 100), 30) * COALESCE(NULLIF(p_tf_sec, 0), 900) / 86400.0)::INTEGER);
+
+    v_max_days := CASE
+        WHEN COALESCE(p_tf_sec, 0) <= 120 THEN 0
+        WHEN p_tf_sec <= 600 THEN 3
+        WHEN p_tf_sec <= 1800 THEN 7
+        WHEN p_tf_sec <= 3600 THEN 14
+        ELSE 30
+    END;
+
+    IF v_max_days = 0 THEN
+        RETURN v_date_to;
+    END IF;
+
+    v_span := LEAST(GREATEST(v_need_days, 1), v_max_days);
+    RETURN v_date_to - v_span;
+END;
+$$;
+
+COMMENT ON FUNCTION logic_trade_load_date_from(INTEGER, INTEGER, TIMESTAMP) IS
+'date_from для load_prices с учётом лимитов T-Bank по TF (M1/M2 — только текущий день)';
+
+CREATE OR REPLACE FUNCTION logic_trade_sync_point_count(p_tf_sec INTEGER)
+RETURNS INTEGER
+LANGUAGE sql
+IMMUTABLE AS $$
+    SELECT CASE
+        WHEN COALESCE(p_tf_sec, 0) <= 60 THEN 400
+        WHEN p_tf_sec <= 120 THEN 300
+        WHEN p_tf_sec <= 300 THEN 200
+        ELSE 150
+    END;
+$$;
+
+COMMENT ON FUNCTION logic_trade_sync_point_count(INTEGER) IS
+'Число свечей для sync индикаторов в runner: больше на M1/M2/M5';
+
+CREATE OR REPLACE PROCEDURE logic_refresh_market_data(
+    p_logic_id INTEGER,
+    p_timeframe_id INTEGER,
+    p_closed_bar_dt TIMESTAMP
+)
+LANGUAGE plpgsql AS $$
+DECLARE
+    v_sec RECORD;
+    v_sig RECORD;
+    v_date_from DATE;
+    v_date_to DATE;
+    v_point_count INTEGER;
+    v_tf_sec INTEGER;
+    v_err TEXT;
+BEGIN
+    SELECT t.sec INTO v_tf_sec FROM timeframes t WHERE t.id = p_timeframe_id;
+
+    v_point_count := logic_trade_sync_point_count(v_tf_sec);
+    v_date_to := GREATEST(p_closed_bar_dt::date, CURRENT_DATE);
+    v_date_from := logic_trade_load_date_from(v_tf_sec, v_point_count, p_closed_bar_dt);
+
+    FOR v_sec IN
+        SELECT ls.security_id
+        FROM logic_securities ls
+        WHERE ls.logic_id = p_logic_id AND ls.is_active = TRUE
+    LOOP
+        BEGIN
+            CALL load_prices(v_sec.security_id, p_timeframe_id, v_date_from, v_date_to);
+            PERFORM logic_trade_log(
+                p_logic_id,
+                'trade.prices.loaded',
+                format('Цены подгружены sec=%s (%s .. %s)', v_sec.security_id, v_date_from, v_date_to),
+                jsonb_build_object(
+                    'security_id', v_sec.security_id,
+                    'date_from', v_date_from,
+                    'date_to', v_date_to,
+                    'timeframe_id', p_timeframe_id
+                ),
+                v_sec.security_id,
+                p_timeframe_id
+            );
+        EXCEPTION
+            WHEN undefined_function THEN
+                PERFORM logic_trade_log(
+                    p_logic_id,
+                    'trade.prices.error',
+                    'load_prices недоступен (нет HTTP-расширения)',
+                    jsonb_build_object('security_id', v_sec.security_id),
+                    v_sec.security_id,
+                    p_timeframe_id
+                );
+            WHEN OTHERS THEN
+                v_err := SQLERRM;
+                PERFORM logic_trade_log(
+                    p_logic_id,
+                    'trade.prices.error',
+                    format('Ошибка загрузки цен sec=%s: %s', v_sec.security_id, v_err),
+                    jsonb_build_object('security_id', v_sec.security_id, 'error', v_err),
+                    v_sec.security_id,
+                    p_timeframe_id
+                );
+        END;
+
+        FOR v_sig IN
+            SELECT DISTINCT lis.indicator_id
+            FROM logic_indicator_signals lis
+            WHERE lis.logic_id = p_logic_id AND lis.is_active = TRUE
+        LOOP
+            BEGIN
+                CALL ensure_security_indicator_series(v_sec.security_id, v_sig.indicator_id);
+                CALL sync_security_indicator_series_for_indicator(
+                    v_sec.security_id,
+                    v_sig.indicator_id,
+                    p_timeframe_id,
+                    p_closed_bar_dt,
+                    v_point_count,
+                    TRUE
+                );
+                PERFORM logic_trade_log(
+                    p_logic_id,
+                    'trade.indicator.synced',
+                    format('Индикатор id=%s пересчитан sec=%s', v_sig.indicator_id, v_sec.security_id),
+                    jsonb_build_object(
+                        'security_id', v_sec.security_id,
+                        'indicator_id', v_sig.indicator_id,
+                        'closed_bar', p_closed_bar_dt,
+                        'point_count', v_point_count
+                    ),
+                    v_sec.security_id,
+                    p_timeframe_id
+                );
+            EXCEPTION
+                WHEN OTHERS THEN
+                    v_err := SQLERRM;
+                    PERFORM logic_trade_log(
+                        p_logic_id,
+                        'trade.indicator.error',
+                        format('Ошибка расчёта индикатора id=%s sec=%s: %s', v_sig.indicator_id, v_sec.security_id, v_err),
+                        jsonb_build_object(
+                            'security_id', v_sec.security_id,
+                            'indicator_id', v_sig.indicator_id,
+                            'error', v_err
+                        ),
+                        v_sec.security_id,
+                        p_timeframe_id
+                    );
+            END;
+        END LOOP;
+    END LOOP;
+END;
+$$;
+
+COMMENT ON PROCEDURE logic_refresh_market_data(INTEGER, INTEGER, TIMESTAMP) IS
+'Перед проверкой сигналов: load_prices + ensure/sync индикаторов логики на TF (live trading)';
+
 CREATE OR REPLACE FUNCTION process_logic_trades(p_logic_id INTEGER)
 RETURNS INTEGER
 LANGUAGE plpgsql AS $$
@@ -5064,6 +5329,8 @@ BEGIN
         PERFORM logic_trade_log(p_logic_id, 'logic.skip', 'Нет активных сигналов или бумаг');
         RETURN 0;
     END IF;
+
+    CALL logic_refresh_market_data(p_logic_id, v_tf_id, v_closed_bar_dt);
 
     -- Все бумаги и все сигналы должны иметь данные на закрытой свече
     FOR v_sec IN
@@ -5378,6 +5645,17 @@ BEGIN
         RETURN jsonb_build_object('skipped', TRUE, 'reason', 'locked');
     END IF;
 
+    IF NOT trade_runner_ui_is_active() THEN
+        PERFORM pg_advisory_unlock(hashtext('multilogictrade_run_trade_cycle'));
+        PERFORM app_tech_log_event(
+            'trade-runner',
+            'cycle.skip',
+            'Пропуск: UI не активен (закройте Angular — робот не торгует)',
+            'postgresql'
+        );
+        RETURN jsonb_build_object('skipped', TRUE, 'reason', 'ui_inactive');
+    END IF;
+
     PERFORM app_tech_log_event('trade-runner', 'cycle.start', 'run_trade_cycle начат', 'postgresql');
 
     FOR v_logic IN
@@ -5418,7 +5696,7 @@ END;
 $$;
 
 COMMENT ON FUNCTION run_trade_cycle() IS
-'Цикл торговли по всем включённым logics. Вызывается pg_cron или API (Node fallback).';
+'Цикл торговли по включённым logics. Только при активном UI (heartbeat Angular); pg_cron или Node fallback.';
 
 
 -- @optional-pgcron-block
@@ -5779,8 +6057,8 @@ BEGIN
     LOOP
         v_candle := v_candles->v_i;
 
-        -- Извлекаем поля свечи из JSON
-        v_candle_time := (v_candle->>'time')::TIMESTAMP;
+        -- Извлекаем поля свечи из JSON (T-Bank отдаёт UTC с суффиксом Z)
+        v_candle_time := market_candle_dt_from_iso(v_candle->>'time');
         v_candle_open := parse_tbank_quotation(v_candle->'open');
         v_candle_high := parse_tbank_quotation(v_candle->'high');
         v_candle_low := parse_tbank_quotation(v_candle->'low');

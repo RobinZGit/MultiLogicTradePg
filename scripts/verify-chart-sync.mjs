@@ -44,10 +44,15 @@ assertIncludes(panel, 'expandIndicatorGate', 'panel expand gate');
 assertIncludes(panel, 'scheduleAutoIndicatorRangeSync', 'panel auto range sync');
 assertIncludes(panel, 'indicatorCoverageMaxAttempts', 'panel coverage limit');
 assertIncludes(panel, 'chartIndicatorsForDisplay', 'panel display guard');
+assertIncludes(panel, 'EMPTY_CHART_SERIES', 'panel stable empty series');
+assertIncludes(panel, 'indicator.rangeSync.retryStorm', 'panel retry storm log');
 assertIncludes(panel, 'if (!range.userInitiated)', 'panel skip suppress on auto range');
 
 assertIncludes(chart, 'scheduleEmitVisibleRange(userInitiated', 'chart emit with userInitiated');
 assertIncludes(chart, 'requestAnimationFrame(() => this.scheduleEmitVisibleRange(false))', 'fullscreen auto emit');
+assertIncludes(chart, 'loadingOlder', 'chart loadingOlder input');
+assertIncludes(chart, 'scheduleRedraw', 'chart rAF redraw coalesce');
+assertIncludes(chart, 'chart.redraw.slow', 'chart slow redraw log');
 assertIncludes(chart, 'onPointerLeave', 'chart pointer leave handler');
 assertIncludes(chart, 'const moved = this.dragging && this.viewStart !== this.dragStartView', 'drag-only user range');
 assertIncludes(chartHtml, 'onPointerLeave', 'chart template pointerleave');
@@ -56,5 +61,6 @@ assertIncludes(panelSpec, 'onChartVisibleRange hides indicators', 'unit test scr
 assertIncludes(panelSpec, 'toggleSecurity syncs indicators', 'unit test expand sync');
 assertIncludes(panelSpec, 'onChartVisibleRange auto emit does not suppress', 'unit test auto range');
 assertIncludes(chartSpec, 'pointerleave without drag', 'unit test pointerleave');
+assertIncludes(chartSpec, 'allows pan while loadingOlder', 'unit test loadingOlder pan');
 
 console.log('verify-chart-sync: OK source guards + unit test names');

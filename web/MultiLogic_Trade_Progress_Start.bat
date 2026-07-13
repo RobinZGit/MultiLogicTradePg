@@ -64,7 +64,7 @@ echo  --------------------------------------------------------
 echo.
 
 pushd "%API%"
-start /b "" cmd /c "set PGPASSWORD=%PGPASSWORD%&& set PGHOST=localhost&& set PGDATABASE=multilogictrade&& set PGUSER=postgres&& node server.js"
+start /b "" cmd /c "set PGPASSWORD=%PGPASSWORD%&& set PGHOST=localhost&& set PGDATABASE=multilogictrade&& set PGUSER=postgres&& set TRADE_RUNNER_INTERVAL_MS=15000&& node server.js"
 popd
 
 ping 127.0.0.1 -n 3 >nul

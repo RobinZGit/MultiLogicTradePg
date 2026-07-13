@@ -5,7 +5,7 @@
 > Включать **запросы пользователя текстом** (секция «Запросы пользователя»).
 
 **Репозиторий:** https://github.com/RobinZGit/MultiLogicTradePg  
-**Последнее обновление:** 2026-07-13 (v25: глобальное логирование в шапке + trade runner logs; БД 00→02)
+**Последнее обновление:** 2026-07-13 (v26: runner сам грузит цены и индикаторы; БД 00→02)
 
 ---
 
@@ -86,8 +86,8 @@
 - `logics` + `logics_detail` — движок формул **ещё не реализован**;
 - UI **Операции** (`/operations`): пять сворачиваемых блоков — **«Параметры логики»**, **«Сигналы индикаторов»**, **«Стоп-лосс и тейк-профит»**, **«Ценные бумаги»**, **«Сделки»** (по умолчанию свёрнуты);
 - API logics: **`GET/PUT /api/logic-params`** — чтение/запись `logic_params`; signals/stops/securities/trades;
-- **Trade runner (PostgreSQL):** `run_trade_cycle()` → `process_logic_trades()` — парсинг `@CODE(...) condition`, `indicator_values` + `prices` на **`timeframe` из logic_params**; **сигналы только на последней закрытой свече TF** (`logic_last_closed_bar_dt`, `last_trade_bar_dt` — идемпотентность); long/short trend; лот, лимит позиций, fake balance; real → `tbank_post_order`; idempotency по `(logic_id, security_id, signal_kind, bar_dt)`;
-- **Расписание:** **pg_cron** (Linux, `@optional-pgcron-block`, каждую минуту) или **Node fallback** (`api/trade-runner.js` → `SELECT run_trade_cycle()`, 60 с, `TRADE_RUNNER_ENABLED=0` отключает); ручной `POST /api/logic-trades/run`;
+- **Trade runner (PostgreSQL):** `run_trade_cycle()` → `process_logic_trades()` — **перед сигналами** `logic_refresh_market_data` (авто `load_prices` + sync индикаторов сигналов логики); парсинг `@CODE(...) condition` на **`timeframe` из logic_params**; **сигналы только на последней закрытой свече TF**; fake/real счета; idempotency по `(logic_id, security_id, signal_kind, bar_dt)`;
+- **Расписание:** **Node fallback** каждые **15 с** (`TRADE_RUNNER_INTERVAL_MS`, Windows); **pg_cron** раз в минуту (Linux); **только при открытом Angular** (heartbeat → `APP_TRADE_RUNNER_HB`, TTL 90 с); ручной `POST /api/logic-trades/run`;
 - **Демо-логика** в `01`: `SMA Price Cross Demo` на `FAKE-EFF-001` — SMA(20), **M15**: long trend `pp > VALUE`, short trend `pp < VALUE`, SBER, 1M, 10%, max 3;
 
 ### Правило схемы БД
@@ -131,6 +131,11 @@
 39. **v23 trade runner в PostgreSQL:** `timeframe` в logic_params; `run_trade_cycle` / `process_logic_trades`; pg_cron + Node fallback; UI выбор таймфрейма; `sql/logic_trade_runner.sql`.
 40. **v24 закрытие свечи TF:** job ждёт закрытия бара (`logic_last_closed_bar_dt` + `last_trade_bar_dt`); данные через `logic_bar_data_at`; fix timezone epoch и `\y` в `evaluate_signal_condition` (раньше `pp`/`VALUE` не подставлялись).
 41. **v25 глобальное логирование:** галочка в app-bar; `APP_TECH_LOGGING` в parameter_values; `sql/app_tech_logging.sql`; trade runner + API logics → `app_tech_log`.
+42. **v26 live data в runner:** `logic_refresh_market_data` — робот сам грузит свечи (T-Bank/MOEX) и пересчитывает индикаторы; окно `logic_trade_load_date_from` (M1/M2 — только сегодня).
+43. **v27 T-Bank UTC→MSK:** `market_candle_dt_from_iso` при записи свечей T-Bank; иначе `prices.dt` на +3 ч от `logic_last_closed_bar_dt` → `trade.not_ready`.
+44. **v28 chart pan perf:** rAF redraw, `loadingOlder` не блокирует перемотку; fullscreen ниже вкладок; логи `chart.pan.*`, `chart.redraw.slow`, `indicator.rangeSync.retryStorm`.
+45. **v29 runner только с UI:** heartbeat Angular → `touch_trade_runner_ui_heartbeat`; `run_trade_cycle` пропускает без UI; блок сделок со scroll.
+46. **v30 intraday TF:** runner **15 с**; `logic_trade_sync_point_count` (M1=400, M2=300, M5=200 свечей); T-Bank UTC→MSK (`market_candle_dt_from_iso`).
 
 ### Автотесты
 

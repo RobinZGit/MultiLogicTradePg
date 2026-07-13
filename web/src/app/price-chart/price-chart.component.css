@@ -11,8 +11,11 @@
 
 .chart-shell--fullscreen {
   position: fixed;
-  inset: 0;
-  z-index: 1001;
+  top: 96px;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 500;
   height: auto;
   border-radius: 0;
   border: none;
@@ -20,8 +23,11 @@
 
 .chart-backdrop {
   position: fixed;
-  inset: 0;
-  z-index: 1000;
+  top: 96px;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 499;
   background: rgba(15, 23, 42, 0.45);
 }
 
@@ -98,7 +104,7 @@
 }
 
 .chart-shell--fullscreen .chart-body {
-  height: calc(100vh - 2rem);
+  height: calc(100vh - 96px - 2rem);
 }
 
 .chart-canvas {
