@@ -33,6 +33,11 @@ import {
   scopeTypeLabel,
   valueUnitLabel,
 } from '../shared/logic-stop';
+import {
+  tradeStatusLabel,
+  yesNoLabel,
+  LogicTradeRow,
+} from '../shared/logic-trade';
 
 const POLL_INTERVAL_MS = 2000;
 
@@ -73,12 +78,15 @@ export class LogicsComponent implements OnInit, OnDestroy {
   expandedSignalsBlocks = new Set<number>();
   expandedStopsBlocks = new Set<number>();
   expandedSecuritiesBlocks = new Set<number>();
+  expandedTradesBlocks = new Set<number>();
   logicSignals = new Map<number, LogicIndicatorSignalRow[]>();
   logicStops = new Map<number, LogicStopRow[]>();
   logicSecurities = new Map<number, LogicSecurityRow[]>();
+  logicTrades = new Map<number, LogicTradeRow[]>();
   signalsLoading = new Set<number>();
   stopsLoading = new Set<number>();
   securitiesLoading = new Set<number>();
+  tradesLoading = new Set<number>();
 
   indicatorsCatalog: IndicatorRow[] = [];
   indicatorsLoaded = false;
@@ -136,6 +144,7 @@ export class LogicsComponent implements OnInit, OnDestroy {
           });
           this.loading = false;
           this.error = null;
+          this.refreshExpandedTrades();
         },
         error: (err) => {
           if (this.loading || this.logics.length === 0) {
@@ -155,6 +164,8 @@ export class LogicsComponent implements OnInit, OnDestroy {
   ruleKindLabel = ruleKindLabel;
   scopeTypeLabel = scopeTypeLabel;
   valueUnitLabel = valueUnitLabel;
+  tradeStatusLabel = tradeStatusLabel;
+  yesNoLabel = yesNoLabel;
 
   isLogicExpanded(id: number): boolean {
     return this.expandedLogics.has(id);
@@ -172,6 +183,10 @@ export class LogicsComponent implements OnInit, OnDestroy {
     return this.expandedSecuritiesBlocks.has(id);
   }
 
+  isTradesBlockExpanded(id: number): boolean {
+    return this.expandedTradesBlocks.has(id);
+  }
+
   toggleLogicExpand(row: LogicRow, event: Event): void {
     const target = event.target as HTMLElement;
     if (
@@ -184,6 +199,7 @@ export class LogicsComponent implements OnInit, OnDestroy {
       this.expandedSignalsBlocks.delete(row.id);
       this.expandedStopsBlocks.delete(row.id);
       this.expandedSecuritiesBlocks.delete(row.id);
+      this.expandedTradesBlocks.delete(row.id);
       this.closeSignalPicker();
       this.closeStopForm();
       this.closeSecurityPicker();
@@ -225,6 +241,38 @@ export class LogicsComponent implements OnInit, OnDestroy {
     } else {
       this.expandedSecuritiesBlocks.add(logicId);
       this.loadSecuritiesForLogic(logicId);
+    }
+  }
+
+  toggleTradesBlock(logicId: number, event: Event): void {
+    event.preventDefault();
+    event.stopPropagation();
+    if (this.expandedTradesBlocks.has(logicId)) {
+      this.expandedTradesBlocks.delete(logicId);
+    } else {
+      this.expandedTradesBlocks.add(logicId);
+      this.loadTradesForLogic(logicId);
+    }
+  }
+
+  tradesFor(logicId: number): LogicTradeRow[] {
+    return this.logicTrades.get(logicId) ?? [];
+  }
+
+  isTradesLoading(logicId: number): boolean {
+    return this.tradesLoading.has(logicId);
+  }
+
+  tradeActionLabel(trade: LogicTradeRow): string {
+    return `${trade.side_name} ${trade.action_name}`;
+  }
+
+  formatTradeDt(iso: string): string {
+    if (!iso) return '—';
+    try {
+      return new Date(iso).toLocaleString('ru-RU');
+    } catch {
+      return iso;
     }
   }
 
@@ -659,8 +707,10 @@ export class LogicsComponent implements OnInit, OnDestroy {
         this.logicSignals.delete(row.id);
         this.logicStops.delete(row.id);
         this.logicSecurities.delete(row.id);
+        this.logicTrades.delete(row.id);
         this.expandedLogics.delete(row.id);
         this.expandedSecuritiesBlocks.delete(row.id);
+        this.expandedTradesBlocks.delete(row.id);
         this.loadLogicsOnce();
       },
       error: (err) => {
@@ -751,6 +801,28 @@ export class LogicsComponent implements OnInit, OnDestroy {
         this.securitiesLoading.delete(logicId);
       },
     });
+  }
+
+  private loadTradesForLogic(logicId: number, silent = false): void {
+    if (!silent && this.tradesLoading.has(logicId)) return;
+    if (!silent) {
+      this.tradesLoading.add(logicId);
+    }
+    this.logicsService.getLogicTrades(logicId).subscribe({
+      next: (rows) => {
+        this.logicTrades.set(logicId, rows);
+        this.tradesLoading.delete(logicId);
+      },
+      error: () => {
+        this.tradesLoading.delete(logicId);
+      },
+    });
+  }
+
+  private refreshExpandedTrades(): void {
+    for (const logicId of this.expandedTradesBlocks) {
+      this.loadTradesForLogic(logicId, true);
+    }
   }
 
   private loadMoexExchangeId(): void {

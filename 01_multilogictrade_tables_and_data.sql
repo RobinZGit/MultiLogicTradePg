@@ -1,6 +1,6 @@
 -- ============================================
 -- MultiLogicTrade — шаг 1: таблицы и справочники
--- Версия: v16 (идемпотентный запуск)
+-- Версия: v17 (идемпотентный запуск)
 -- ============================================
 -- Подключение: база multilogictrade
 -- Можно выполнять многократно: объекты и строки не дублируются.
@@ -25,6 +25,13 @@
 -- ============================================
 
 -- ============================================
+-- Блок миграции: обновление существующей схемы v16 → v17
+-- ============================================
+DO $$
+BEGIN
+    NULL;
+END $$;
+
 -- Блок миграции: обновление существующей схемы v15 → v16
 -- ============================================
 DO $$
@@ -948,6 +955,41 @@ CREATE INDEX IF NOT EXISTS idx_logic_securities_security_id ON logic_securities(
 COMMENT ON TABLE logic_securities IS
 'Портфель ценных бумаг торговой логики: одна строка — одна бумага в logics';
 COMMENT ON COLUMN logic_securities.display_order IS 'Порядок отображения в UI';
+
+-- Сделки по торговой логике (исполнение по сигналам индикаторов)
+CREATE TABLE IF NOT EXISTS logic_trades (
+    id BIGSERIAL PRIMARY KEY,
+    logic_id INTEGER NOT NULL REFERENCES logics(id) ON DELETE RESTRICT,
+    account_id INTEGER NOT NULL REFERENCES accounts(id) ON DELETE RESTRICT,
+    security_id INTEGER NOT NULL REFERENCES securities(id) ON DELETE RESTRICT,
+    timeframe_id INTEGER NOT NULL REFERENCES timeframes(id) ON DELETE RESTRICT,
+    side_id INTEGER NOT NULL REFERENCES sides(id) ON DELETE RESTRICT,
+    action_id INTEGER NOT NULL REFERENCES actions(id) ON DELETE RESTRICT,
+    signal_kind VARCHAR(10) NOT NULL CHECK (signal_kind IN ('trend', 'counter')),
+    signal_formula TEXT NOT NULL,
+    quantity NUMERIC(20, 6) NOT NULL DEFAULT 1 CHECK (quantity > 0),
+    price NUMERIC(18, 6) NOT NULL CHECK (price > 0),
+    bar_dt TIMESTAMP NOT NULL,
+    executed_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    is_simulated BOOLEAN NOT NULL DEFAULT FALSE,
+    is_fictitious BOOLEAN NOT NULL DEFAULT FALSE,
+    broker_order_id VARCHAR(100),
+    status VARCHAR(20) NOT NULL DEFAULT 'filled'
+        CHECK (status IN ('pending', 'submitted', 'filled', 'rejected', 'cancelled')),
+    note TEXT,
+    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE (logic_id, security_id, signal_kind, bar_dt)
+);
+
+CREATE INDEX IF NOT EXISTS idx_logic_trades_logic_id ON logic_trades(logic_id);
+CREATE INDEX IF NOT EXISTS idx_logic_trades_executed_at ON logic_trades(executed_at DESC);
+CREATE INDEX IF NOT EXISTS idx_logic_trades_security_id ON logic_trades(security_id);
+
+COMMENT ON TABLE logic_trades IS
+'Сделки logics: исполнение по logic_indicator_signals; is_simulated — фейковый счёт; is_fictitious — резерв';
+COMMENT ON COLUMN logic_trades.is_simulated IS 'TRUE — сделка на фейковом счёте (бумажная торговля)';
+COMMENT ON COLUMN logic_trades.is_fictitious IS 'Фиктивная сделка (резерв, заполнение позже)';
+COMMENT ON COLUMN logic_trades.bar_dt IS 'Свеча, на которой сработал сигнал';
 
 -- ============================================
 -- Таблица: futures_expirations (контракты фьючерсов)

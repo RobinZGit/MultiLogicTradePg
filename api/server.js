@@ -5,6 +5,7 @@ const { Pool } = require('pg');
 const {
   hashToken,
 } = require('./tbank');
+const { runTradeCycle, startTradeRunner } = require('./trade-runner');
 
 const app = express();
 const port = Number(process.env.PORT) || 3000;
@@ -1693,6 +1694,74 @@ app.delete('/api/logic-securities/:id', async (req, res) => {
   }
 });
 
+const LOGIC_TRADE_SELECT = `
+  SELECT
+    lt.id,
+    lt.logic_id,
+    lt.account_id,
+    lt.security_id,
+    lt.timeframe_id,
+    lt.side_id,
+    lt.action_id,
+    lt.signal_kind,
+    lt.signal_formula,
+    lt.quantity,
+    lt.price,
+    lt.bar_dt,
+    lt.executed_at,
+    lt.is_simulated,
+    lt.is_fictitious,
+    lt.broker_order_id,
+    lt.status,
+    lt.note,
+    lt.created_at,
+    s.name AS security_name,
+    sp.prefix AS security_prefix,
+    sd.name AS side_name,
+    ac.name AS action_name,
+    tf.tf AS timeframe_tf
+  FROM logic_trades lt
+  JOIN securities s ON s.id = lt.security_id
+  LEFT JOIN LATERAL (
+    SELECT prefix FROM security_prefixes WHERE security_id = s.id ORDER BY exchange_id LIMIT 1
+  ) sp ON TRUE
+  JOIN sides sd ON sd.id = lt.side_id
+  JOIN actions ac ON ac.id = lt.action_id
+  JOIN timeframes tf ON tf.id = lt.timeframe_id
+`;
+
+app.get('/api/logic-trades', async (req, res) => {
+  const logicId = Number(req.query.logic_id);
+  if (!Number.isInteger(logicId) || logicId <= 0) {
+    res.status(400).json({ error: 'logic_id required' });
+    return;
+  }
+  const limit = Math.min(Math.max(Number(req.query.limit) || 100, 1), 500);
+  try {
+    const { rows } = await pool.query(
+      `${LOGIC_TRADE_SELECT}
+       WHERE lt.logic_id = $1
+       ORDER BY lt.executed_at DESC, lt.id DESC
+       LIMIT $2`,
+      [logicId, limit]
+    );
+    res.json(rows);
+  } catch (err) {
+    console.error('GET /api/logic-trades', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/api/logic-trades/run', async (_req, res) => {
+  try {
+    const result = await runTradeCycle(pool);
+    res.json({ ok: true, ...result });
+  } catch (err) {
+    console.error('POST /api/logic-trades/run', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
 app.post('/api/tech-log', async (req, res) => {
   const entries = Array.isArray(req.body?.entries) ? req.body.entries : [];
   if (entries.length === 0) {
@@ -2443,4 +2512,5 @@ app.use((_req, res) => {
 app.listen(port, () => {
   console.log(`MultiLogicTrade API: http://localhost:${port}`);
   console.log(`CORS origin: ${corsOrigin}`);
+  startTradeRunner(pool);
 });

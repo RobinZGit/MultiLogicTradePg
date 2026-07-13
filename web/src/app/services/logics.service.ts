@@ -3,6 +3,7 @@ import { HttpClient } from '@angular/common/http';
 import { Observable } from 'rxjs';
 import { AppConfigService } from './app-config.service';
 import { LogicIndicatorSignalRow, LogicRow, LogicSecurityRow, LogicStopRow } from '../models/logic.model';
+import { LogicTradeRow } from '../shared/logic-trade';
 import { LogicPayload } from '../models/lookup.model';
 
 @Injectable({ providedIn: 'root' })
@@ -143,6 +144,13 @@ export class LogicsService {
   deleteLogicSecurity(id: number): Observable<{ ok: boolean; id: number }> {
     return this.http.delete<{ ok: boolean; id: number }>(
       `${this.appConfig.apiUrl}/logic-securities/${id}`
+    );
+  }
+
+  getLogicTrades(logicId: number, limit = 100): Observable<LogicTradeRow[]> {
+    return this.http.get<LogicTradeRow[]>(
+      `${this.appConfig.apiUrl}/logic-trades`,
+      { params: { logic_id: String(logicId), limit: String(limit) } }
     );
   }
 }

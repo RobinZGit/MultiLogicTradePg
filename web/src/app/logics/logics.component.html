@@ -1014,6 +1014,153 @@
 
                     </details>
 
+                    <details class="signals-block trades-block" [open]="isTradesBlockExpanded(row.id)">
+
+                      <summary class="signals-summary">
+
+                        <span
+                          class="signals-summary-head"
+                          (click)="toggleTradesBlock(row.id, $event)"
+                        >
+
+                          <span
+                            class="signals-chevron"
+                            [class.open]="isTradesBlockExpanded(row.id)"
+                            aria-hidden="true"
+                          >▸</span>
+
+                          <span class="signals-title">Сделки</span>
+
+                          @if (isTradesLoading(row.id)) {
+
+                            <span class="signals-loading">загрузка…</span>
+
+                          }
+
+                        </span>
+
+                        <span class="signals-summary-actions">
+
+                          @if (row.is_enabled) {
+
+                            <span class="trades-live-badge">активна</span>
+
+                          } @else {
+
+                            <span class="trades-paused-badge">логика выкл.</span>
+
+                          }
+
+                        </span>
+
+                      </summary>
+
+                      <div class="signals-body">
+
+                        <table class="signals-table trades-table">
+
+                          <thead>
+
+                            <tr>
+
+                              <th>Время</th>
+
+                              <th>Бумага</th>
+
+                              <th>Сигнал</th>
+
+                              <th>Операция</th>
+
+                              <th>Кол-во</th>
+
+                              <th>Цена</th>
+
+                              <th>Симуляция</th>
+
+                              <th>Фиктивная</th>
+
+                              <th>Статус</th>
+
+                            </tr>
+
+                          </thead>
+
+                          <tbody>
+
+                            @for (tr of tradesFor(row.id); track tr.id) {
+
+                              <tr [class.trade-rejected]="tr.status === 'rejected'">
+
+                                <td>{{ formatTradeDt(tr.executed_at) }}</td>
+
+                                <td>
+
+                                  <strong>{{ tr.security_prefix || tr.security_name }}</strong>
+
+                                </td>
+
+                                <td>
+
+                                  <span
+                                    class="sig-badge"
+                                    [class.sig-trend]="tr.signal_kind === 'trend'"
+                                    [class.sig-counter]="tr.signal_kind === 'counter'"
+                                  >
+                                    {{ signalKindLabel(tr.signal_kind) }}
+                                  </span>
+
+                                </td>
+
+                                <td>{{ tradeActionLabel(tr) }}</td>
+
+                                <td>{{ tr.quantity }}</td>
+
+                                <td>{{ tr.price }}</td>
+
+                                <td>{{ yesNoLabel(tr.is_simulated) }}</td>
+
+                                <td>{{ yesNoLabel(tr.is_fictitious) }}</td>
+
+                                <td>{{ tradeStatusLabel(tr.status) }}</td>
+
+                              </tr>
+
+                            } @empty {
+
+                              <tr>
+
+                                <td colspan="9" class="empty">
+
+                                  @if (row.is_enabled) {
+
+                                    Сделок пока нет — runner проверяет сигналы каждые ~15 с
+
+                                  } @else {
+
+                                    Включите логику для автоматических сделок
+
+                                  }
+
+                                </td>
+
+                              </tr>
+
+                            }
+
+                          </tbody>
+
+                        </table>
+
+                        <p class="signals-help">
+                          Включённая логика на фейковом счёте → <strong>симуляция</strong> (is_simulated=да);
+                          на реальном → заявка T-Bank. Поле <strong>Фиктивная</strong> — резерв (пока нет).
+                          Таймфрейм сигналов: M15.
+                        </p>
+
+                      </div>
+
+                    </details>
+
                   </div>
 
                 </td>

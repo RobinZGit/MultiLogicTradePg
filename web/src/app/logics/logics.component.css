@@ -672,3 +672,35 @@ tbody tr:hover {
 .picker-empty-nested {
   margin: 0.25rem 0.5rem 0.5rem;
 }
+
+.trades-block {
+  margin-top: 0;
+}
+
+.trades-live-badge {
+  font-size: 0.78rem;
+  font-weight: 600;
+  color: #15803d;
+  background: #dcfce7;
+  border: 1px solid #86efac;
+  border-radius: 999px;
+  padding: 0.15rem 0.55rem;
+}
+
+.trades-paused-badge {
+  font-size: 0.78rem;
+  font-weight: 600;
+  color: #6b7280;
+  background: #f3f4f6;
+  border: 1px solid #d1d5db;
+  border-radius: 999px;
+  padding: 0.15rem 0.55rem;
+}
+
+.trades-table {
+  font-size: 0.82rem;
+}
+
+.trade-rejected {
+  background: #fef2f2;
+}

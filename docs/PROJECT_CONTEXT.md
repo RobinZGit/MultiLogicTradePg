@@ -5,8 +5,7 @@
 > Включать **запросы пользователя текстом** (секция «Запросы пользователя»).
 
 **Репозиторий:** https://github.com/RobinZGit/MultiLogicTradePg  
-**Последнее обновление:** 2026-07-12 (logic_securities, assign queue, hotfix logics build)  
-**HEAD:** `b2c3bec` — https://github.com/RobinZGit/MultiLogicTradePg
+**Последнее обновление:** 2026-07-13 (logic_trades + trade runner + UI блок «Сделки»)
 
 ---
 
@@ -26,7 +25,7 @@
 | Файл | Назначение |
 |------|------------|
 | `00_create_database.sql` | **DROP + CREATE** базы `multilogictrade` (полное пересоздание) |
-| `01_multilogictrade_tables_and_data.sql` | Таблицы, индексы, справочники (идемпотентно, **v16**) |
+| `01_multilogictrade_tables_and_data.sql` | Таблицы, индексы, справочники (идемпотентно, **v17**) |
 | `02_multilogictrade_functions_and_procedures.sql` | Функции и процедуры (идемпотентно) |
 | `03_multilogictrade_examples.sql` | Примеры SELECT (необязательно) |
 
@@ -75,6 +74,7 @@
 - **`logic_indicator_signals`** — сигналы индикаторов на логике (`logic_id`, `indicator_id`, `signal_kind` trend|counter, `formula`);
 - **`logic_stops`** — стоп-лосс и тейк-профит по логике (`rule_kind` stop_loss|take_profit, `scope_type` security|portfolio, `value`, `value_unit` percent|atr);
 - **`logic_securities`** — портфель бумаг логики (`logic_id`, `security_id`, `display_order`, `is_active`);
+- **`logic_trades`** — сделки по сигналам: `is_simulated` (фейковый счёт), **`is_fictitious`** (резерв, пока всегда false), `signal_kind`, `bar_dt`, `status`, `broker_order_id`;
 - **`indicators.formula`** — многочлен для `calc_poly_formula_array`; **`is_custom`** — подсветка в списке;
 - **`sma`**, **`ema`**, **`ww()`** — от close; **`sma(period=20)`**, **`sma(period=20, series=VALUE)`** — параметры в ();
 - **`@CODE`**, `*`, `#`, ядра `(1;-2;1)` — единый парсер `poly_*` в `02`;
@@ -82,8 +82,9 @@
 - UI: **«+»** у «Индикаторы» → форма (код, название, описание, формула); **«И.»** — справка по синтаксису;
 - API: `GET/POST /api/indicators`, `PUT /api/indicators/:id` (formula для `is_custom`);
 - `logics` + `logics_detail` — движок формул **ещё не реализован**;
-- UI **Операции** (`/operations`): … три сворачиваемых блока под строкой логики — **«Сигналы индикаторов»**, **«Стоп-лосс и тейк-профит»**, **«Ценные бумаги»** (по умолчанию свёрнуты; разворот строки логики не раскрывает блоки автоматически);
-- API: `GET/POST/PUT/DELETE /api/logic-indicator-signals`; `GET/POST/PUT/DELETE /api/logic-stops`; `GET /api/logic-securities`, `POST /api/logic-securities/bulk`, `DELETE /api/logic-securities/:id`;
+- UI **Операции** (`/operations`): четыре сворачиваемых блока — **«Сигналы индикаторов»**, **«Стоп-лосс и тейк-профит»**, **«Ценные бумаги»**, **«Сделки»** (по умолчанию свёрнуты);
+- API logics: signals/stops/securities/trades — `GET /api/logic-trades?logic_id=`, `POST /api/logic-trades/run` (ручной цикл);
+- **Trade runner** (`api/trade-runner.js`): каждые ~15 с для `logics.is_enabled=TRUE` — проверка `logic_indicator_signals` на бумагах `logic_securities`, M15; trend→Open Long, counter→Open Short; fake→`is_simulated=true`, real→`tbank_post_order`; env `TRADE_RUNNER_ENABLED=0` отключает;
 
 ### Правило схемы БД
 
@@ -92,7 +93,7 @@
 
 ---
 
-## Что сделано (актуально на 2026-07-12)
+## Что сделано (актуально на 2026-07-13)
 
 ### Бумаги ↔ индикаторы
 
@@ -116,6 +117,7 @@
 29. **Fix multi-indicator assign:** очередь POST+mergeOnly по одному на бумагу; debounced flush после серии assign.
 30. **Logics — ценные бумаги:** таблица `logic_securities`, блок «Ценные бумаги» (+ Добавить, picker акции/фьючерсы с «выбрать все», bulk add); все три подблока логики свёрнуты по умолчанию.
 31. **Hotfix logics build:** у `ExchangeRow` нет `is_active` — MOEX по имени; удалён дубликат `toggleStopsBlock`.
+32. **Logics — сделки:** таблица `logic_trades`, trade runner по включённым логикам, UI блок «Сделки»; поля `is_simulated` / `is_fictitious`.
 
 ### Автотесты
 
@@ -151,6 +153,8 @@
 
 ## Открытые задачи / следующие шаги
 
+- [ ] Расширить оценку формул сигналов (CROSS, AND/OR) и привязку таймфрейма к логике.
+- [ ] Закрытие позиций, `logic_stops` в runner, `is_fictitious` — логика заполнения.
 - [ ] Заполнить `tbank_figi` где возможно (частично через `resolve_tbank_instrument_id`).
 - [ ] Влить реструктуризацию параметров индикаторов (черновик `Indicators_parameters_todo`).
 - [ ] Реализовать движок `logics_detail.formula`.
@@ -175,6 +179,7 @@
 
 | Дата | Суть |
 |------|------|
+| 2026-07-13 | logic_trades + trade runner + UI «Сделки» |
 | 2026-07-12 | правило: контекст обязателен перед каждым push; hotfix logics build |
 | 2026-07-12 | logic_securities + UI блок «Ценные бумаги» на logics |
 | 2026-07-12 | assign queue + debounced flush; fix multi-indicator drag hang |
@@ -242,3 +247,4 @@
 32. «Снова зависание при добавлении нескольких индикаторов на бумагу — разбор app_tech_log; очередь assign + debounced flush; в репо».
 33. «На logics третий блок «Ценные бумаги»: таблица logic_securities, picker акции/фьючерсы с галочками и «выбрать все», bulk add; все три блока свёрнуты по умолчанию; контекст; в репо».
 34. «Контекст обновляй при каждой выкладке; запиши в правила проекта, что перед push нужно обновлять PROJECT_CONTEXT.md».
+35. «Сделки по включённой логике в реальном времени по сигналам; реальный/фейковый счёт; поле Фиктивная (резерв); блок «Сделки» на logics; таблица сделок».
