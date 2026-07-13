@@ -840,25 +840,43 @@ tbody tr:hover {
   cursor: pointer;
 }
 
-.positions-total-pnl {
-  display: flex;
+.positions-summary-pnl {
+  display: inline-flex;
   align-items: baseline;
-  gap: 0.5rem;
-  margin-bottom: 0.65rem;
-  padding: 0.45rem 0.65rem;
-  border-radius: 8px;
-  background: #f8fafc;
-  border: 1px solid #e2e8f0;
+  gap: 0.35rem;
+  margin-left: 0.75rem;
 }
 
 .positions-total-label {
-  font-size: 0.85rem;
+  font-size: 0.78rem;
   font-weight: 600;
-  color: #374151;
+  color: #64748b;
 }
 
 .positions-total-value {
-  font-size: 1.05rem;
+  font-size: 0.95rem;
+  font-weight: 700;
+}
+
+.btn-close-all-positions {
+  margin-right: 0.5rem;
+  padding: 0.2rem 0.55rem;
+  font-size: 0.78rem;
+  font-weight: 600;
+  color: #991b1b;
+  background: #fef2f2;
+  border: 1px solid #fecaca;
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+.btn-close-all-positions:hover:not(:disabled) {
+  background: #fee2e2;
+}
+
+.btn-close-all-positions:disabled {
+  opacity: 0.6;
+  cursor: wait;
 }
 
 .positions-sub-block {

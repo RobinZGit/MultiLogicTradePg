@@ -2018,6 +2018,33 @@ app.post('/api/logic-trades/heartbeat/end', async (_req, res) => {
   }
 });
 
+app.post('/api/logic-trades/close-all', async (req, res) => {
+  const logicId = parseInt(String(req.body?.logic_id ?? req.query?.logic_id ?? ''), 10);
+  if (!Number.isFinite(logicId) || logicId <= 0) {
+    res.status(400).json({ error: 'Укажите logic_id' });
+    return;
+  }
+  try {
+    const { rows } = await pool.query(
+      'SELECT logic_close_all_positions_at_market($1::INTEGER) AS result',
+      [logicId]
+    );
+    const result = rows[0]?.result ?? {};
+    await writeTechLogEvent(pool, {
+      threadKey: 'trade-runner',
+      operation: 'trade.close_all',
+      message: `Закрыть всё: logic=${logicId} closed=${result.closed ?? 0}`,
+      source: 'api',
+      logicId,
+      payload: result,
+    });
+    res.json({ ok: true, ...result });
+  } catch (err) {
+    console.error('POST /api/logic-trades/close-all', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
 app.post('/api/tech-log', async (req, res) => {
   const entries = Array.isArray(req.body?.entries) ? req.body.entries : [];
   if (entries.length === 0) {

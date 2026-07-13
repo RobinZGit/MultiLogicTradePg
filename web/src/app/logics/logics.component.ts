@@ -102,6 +102,7 @@ export class LogicsComponent implements OnInit, OnDestroy {
   securitiesLoading = new Set<number>();
   tradesLoading = new Set<number>();
   tradeLotsLoading = new Set<number>();
+  closeAllLoading = new Set<number>();
 
   readonly costMethodOptions: Array<{ value: 'FIFO' | 'AVERAGE'; label: string }> = [
     { value: 'FIFO', label: 'FIFO (первая покупка — первая продажа)' },
@@ -211,7 +212,7 @@ export class LogicsComponent implements OnInit, OnDestroy {
           this.loading = false;
           this.error = null;
           // Сделки — read-only, обновляем; редактируемые блоки (параметры, формулы) — нет
-          this.refreshExpandedTrades();
+          this.refreshAllTradesSummaries();
           this.maybeCheckTbankTokenForTrades();
         },
         error: (err) => {
@@ -688,6 +689,52 @@ export class LogicsComponent implements OnInit, OnDestroy {
           : sum,
       0
     );
+  }
+
+  hasOpenPositions(logicId: number): boolean {
+    return this.openPositionTrades(logicId).length > 0;
+  }
+
+  isCloseAllLoading(logicId: number): boolean {
+    return this.closeAllLoading.has(logicId);
+  }
+
+  closeAllPositionsAtMarket(logicId: number, event: Event): void {
+    event.preventDefault();
+    event.stopPropagation();
+    if (this.closeAllLoading.has(logicId) || !this.hasOpenPositions(logicId)) {
+      return;
+    }
+    if (
+      !confirm(
+        'Закрыть все открытые позиции по текущим рыночным ценам? Фин. результат будет пересчитан.'
+      )
+    ) {
+      return;
+    }
+    this.closeAllLoading.add(logicId);
+    this.logicsService.closeAllPositionsAtMarket(logicId).subscribe({
+      next: (result) => {
+        this.closeAllLoading.delete(logicId);
+        if (!result.ok) {
+          alert(result.error ?? 'Не удалось закрыть позиции');
+          return;
+        }
+        this.logicTradeLots.clear();
+        this.expandedTradeRows.clear();
+        this.loadTradesForLogic(logicId);
+        if (this.isClosedPositionsExpanded(logicId)) {
+          this.loadLotsForClosedPositions(logicId);
+        }
+        if ((result.closed ?? 0) === 0 && (result.skipped ?? 0) > 0) {
+          alert('Не удалось закрыть позиции: нет цен или ошибка брокера');
+        }
+      },
+      error: (err) => {
+        this.closeAllLoading.delete(logicId);
+        alert(err?.error?.error ?? err?.message ?? 'Ошибка закрытия позиций');
+      },
+    });
   }
 
   isOpenPositionTrade(trade: LogicTradeRow): boolean {
@@ -1456,9 +1503,9 @@ export class LogicsComponent implements OnInit, OnDestroy {
     });
   }
 
-  private refreshExpandedTrades(): void {
-    for (const logicId of this.expandedTradesBlocks) {
-      this.loadTradesForLogic(logicId, true);
+  private refreshAllTradesSummaries(): void {
+    for (const row of this.logics) {
+      this.loadTradesForLogic(row.id, true);
     }
   }
 

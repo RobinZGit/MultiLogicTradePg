@@ -187,4 +187,20 @@ export class LogicsService {
       { params: { trade_id: String(tradeId) } }
     );
   }
+
+  closeAllPositionsAtMarket(logicId: number): Observable<{
+    ok: boolean;
+    closed?: number;
+    skipped?: number;
+    errors?: unknown[];
+    error?: string;
+  }> {
+    return this.http.post<{
+      ok: boolean;
+      closed?: number;
+      skipped?: number;
+      errors?: unknown[];
+      error?: string;
+    }>(`${this.appConfig.apiUrl}/logic-trades/close-all`, { logic_id: logicId });
+  }
 }

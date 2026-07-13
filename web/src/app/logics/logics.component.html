@@ -1291,6 +1291,17 @@
 
                           <span class="signals-title">Позиции</span>
 
+                          <span class="positions-summary-pnl">
+                            <span class="positions-total-label">Фин. результат:</span>
+                            <span
+                              class="trade-pnl positions-total-value"
+                              [class.trade-pnl-pos]="totalFinancialResult(row.id) > 0"
+                              [class.trade-pnl-neg]="totalFinancialResult(row.id) < 0"
+                            >
+                              {{ formatPnl(totalFinancialResult(row.id)) }}
+                            </span>
+                          </span>
+
                           @if (isTradesLoading(row.id)) {
 
                             <span class="signals-loading">загрузка…</span>
@@ -1300,6 +1311,21 @@
                         </span>
 
                         <span class="signals-summary-actions" (click)="$event.stopPropagation()">
+
+                          @if (hasOpenPositions(row.id)) {
+                            <button
+                              type="button"
+                              class="btn-close-all-positions"
+                              [disabled]="isCloseAllLoading(row.id)"
+                              (click)="closeAllPositionsAtMarket(row.id, $event)"
+                            >
+                              @if (isCloseAllLoading(row.id)) {
+                                закрытие…
+                              } @else {
+                                Закрыть всё по рынку
+                              }
+                            </button>
+                          }
 
                           @if (row.is_enabled && tbankTokenAlert) {
 
@@ -1341,17 +1367,6 @@
                           </button>
 
                         }
-
-                        <div class="positions-total-pnl">
-                          <span class="positions-total-label">Фин. результат (всего):</span>
-                          <span
-                            class="trade-pnl positions-total-value"
-                            [class.trade-pnl-pos]="totalFinancialResult(row.id) > 0"
-                            [class.trade-pnl-neg]="totalFinancialResult(row.id) < 0"
-                          >
-                            {{ formatPnl(totalFinancialResult(row.id)) }}
-                          </span>
-                        </div>
 
                         <details
                           class="signals-block positions-sub-block"
