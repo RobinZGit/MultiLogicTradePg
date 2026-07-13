@@ -1442,5 +1442,317 @@ CREATE INDEX IF NOT EXISTS idx_brokers_code ON brokers(code);
 CREATE INDEX IF NOT EXISTS idx_indicators_code ON indicators(code);
 
 -- ============================================
+-- Комментарии ко всем таблицам и полям (PostgreSQL COMMENT ON)
+-- ============================================
+
+-- security_types
+COMMENT ON COLUMN security_types.id IS 'Surrogate PK';
+COMMENT ON COLUMN security_types.name IS 'Код типа: Stock, Futures, Bond …';
+COMMENT ON COLUMN security_types.note IS 'Краткое описание на русском';
+
+-- exchanges
+COMMENT ON COLUMN exchanges.id IS 'Surrogate PK';
+COMMENT ON COLUMN exchanges.name IS 'Код площадки: MOEX, SPB';
+
+-- securities
+COMMENT ON COLUMN securities.id IS 'Surrogate PK';
+COMMENT ON COLUMN securities.name IS 'Полное наименование инструмента (уникально)';
+COMMENT ON COLUMN securities.security_type_id IS 'FK → security_types';
+
+-- security_prefixes
+COMMENT ON COLUMN security_prefixes.id IS 'Surrogate PK';
+COMMENT ON COLUMN security_prefixes.security_id IS 'FK → securities';
+COMMENT ON COLUMN security_prefixes.exchange_id IS 'FK → exchanges';
+COMMENT ON COLUMN security_prefixes.prefix IS 'Тикер на бирже (SBER, VTBR, Si …)';
+COMMENT ON COLUMN security_prefixes.note IS 'Произвольная заметка';
+
+-- timeframes
+COMMENT ON COLUMN timeframes.id IS 'Surrogate PK';
+COMMENT ON COLUMN timeframes.tf IS 'Код TF: M15, H1, D1 …';
+COMMENT ON COLUMN timeframes.full_name IS 'Человекочитаемое название';
+COMMENT ON COLUMN timeframes.sec IS 'Длительность одной свечи в секундах';
+
+-- brokers
+COMMENT ON TABLE brokers IS 'Брокеры / провайдеры API (T-Bank и др.)';
+COMMENT ON COLUMN brokers.id IS 'Surrogate PK';
+COMMENT ON COLUMN brokers.code IS 'Уникальный код брокера (T-BANK)';
+COMMENT ON COLUMN brokers.name IS 'Отображаемое имя';
+COMMENT ON COLUMN brokers.api_url IS 'Базовый URL REST API';
+COMMENT ON COLUMN brokers.is_active IS 'Брокер доступен для подключения счетов';
+COMMENT ON COLUMN brokers.created_at IS 'Дата создания записи';
+
+-- accounts
+COMMENT ON TABLE accounts IS 'Торговые счета брокера (real / fake); логики привязаны к account_id';
+COMMENT ON COLUMN accounts.id IS 'Surrogate PK';
+COMMENT ON COLUMN accounts.broker_id IS 'FK → brokers';
+COMMENT ON COLUMN accounts.account_code IS 'Код счёта у брокера (уникален в рамках broker_id)';
+COMMENT ON COLUMN accounts.name IS 'Имя счёта в UI';
+COMMENT ON COLUMN accounts.account_type IS 'real — боевой; fake — бумажная торговля';
+COMMENT ON COLUMN accounts.is_efficient IS 'Эффективный (маржинальный) счёт T-Bank';
+COMMENT ON COLUMN accounts.token_encrypted IS 'Зашифрованный токен счёта (если отличается от глобального)';
+COMMENT ON COLUMN accounts.token_hash IS 'Хеш токена для проверки без расшифровки';
+COMMENT ON COLUMN accounts.is_active IS 'Счёт активен';
+COMMENT ON COLUMN accounts.created_at IS 'Дата создания';
+COMMENT ON COLUMN accounts.updated_at IS 'Дата последнего изменения';
+
+-- prices
+COMMENT ON COLUMN prices.id IS 'Surrogate PK';
+COMMENT ON COLUMN prices.security_id IS 'FK → securities';
+COMMENT ON COLUMN prices.timeframe_id IS 'FK → timeframes';
+COMMENT ON COLUMN prices.dt IS 'Open time свечи (UTC/локаль БД)';
+COMMENT ON COLUMN prices.open_price IS 'Цена открытия';
+COMMENT ON COLUMN prices.high_price IS 'Максимум';
+COMMENT ON COLUMN prices.low_price IS 'Минимум';
+COMMENT ON COLUMN prices.close_price IS 'Цена закрытия';
+COMMENT ON COLUMN prices.volume IS 'Объём в лотах/штуках';
+COMMENT ON COLUMN prices.value IS 'Оборот в деньгах';
+COMMENT ON COLUMN prices.trades IS 'Число сделок в свече';
+COMMENT ON COLUMN prices.created_at IS 'Когда строка загружена в БД';
+
+-- parameter_types (глобальные настройки приложения, не per-logic)
+COMMENT ON TABLE parameter_types IS 'Справочник типов глобальных параметров (RSI_PERIOD, TBANK_API_TOKEN …)';
+COMMENT ON COLUMN parameter_types.id IS 'Surrogate PK';
+COMMENT ON COLUMN parameter_types.name IS 'Полное имя параметра';
+COMMENT ON COLUMN parameter_types.short_name IS 'Ключ в коде (RSI_PERIOD, TBANK_API_TOKEN)';
+COMMENT ON COLUMN parameter_types.value_type IS 'integer | number | boolean | text | secret';
+COMMENT ON COLUMN parameter_types.is_control IS 'TRUE — управляющий параметр (токен, флаги)';
+COMMENT ON COLUMN parameter_types.is_fake_only IS 'Только для фейковых счетов';
+COMMENT ON COLUMN parameter_types.description IS 'Описание для UI';
+COMMENT ON COLUMN parameter_types.default_value IS 'Значение по умолчанию (текст)';
+COMMENT ON COLUMN parameter_types.min_value IS 'Минимум (для числовых)';
+COMMENT ON COLUMN parameter_types.max_value IS 'Максимум (для числовых)';
+COMMENT ON COLUMN parameter_types.created_at IS 'Дата создания';
+
+-- parameter_sets
+COMMENT ON TABLE parameter_sets IS 'Наборы глобальных параметров (обычно Default)';
+COMMENT ON COLUMN parameter_sets.id IS 'Surrogate PK';
+COMMENT ON COLUMN parameter_sets.name IS 'Имя набора (уникально)';
+COMMENT ON COLUMN parameter_sets.description IS 'Описание набора';
+COMMENT ON COLUMN parameter_sets.is_active IS 'Набор используется';
+COMMENT ON COLUMN parameter_sets.created_at IS 'Дата создания';
+
+-- parameter_values
+COMMENT ON TABLE parameter_values IS 'Значения глобальных parameter_types внутри parameter_sets';
+COMMENT ON COLUMN parameter_values.id IS 'Surrogate PK';
+COMMENT ON COLUMN parameter_values.parameter_set_id IS 'FK → parameter_sets';
+COMMENT ON COLUMN parameter_values.parameter_type_id IS 'FK → parameter_types';
+COMMENT ON COLUMN parameter_values.value IS 'Текущее значение (текст)';
+COMMENT ON COLUMN parameter_values.record_date IS 'Момент актуализации значения';
+COMMENT ON COLUMN parameter_values.created_at IS 'Дата создания строки';
+
+-- indicators
+COMMENT ON TABLE indicators IS 'Справочник индикаторов: код (SMA, RSI), formula/script, описание';
+COMMENT ON COLUMN indicators.id IS 'Surrogate PK';
+COMMENT ON COLUMN indicators.code IS 'Короткий код (@SMA в формулах сигналов)';
+COMMENT ON COLUMN indicators.name IS 'Полное английское название';
+COMMENT ON COLUMN indicators.category IS 'Группа: trend, momentum, volatility …';
+COMMENT ON COLUMN indicators.is_active IS 'Индикатор доступен в UI и расчётах';
+COMMENT ON COLUMN indicators.created_at IS 'Дата создания';
+COMMENT ON COLUMN indicators.sig_trend_def IS 'Шаблон условия trend-сигнала (legacy/справка)';
+COMMENT ON COLUMN indicators.sig_ct_def IS 'Шаблон условия counter-сигнала (legacy/справка)';
+
+-- indicator_value_types
+COMMENT ON TABLE indicator_value_types IS 'Линии/серии индикатора: RSI, OVERBOUGHT, MACD, UPPER …';
+COMMENT ON COLUMN indicator_value_types.id IS 'Surrogate PK';
+COMMENT ON COLUMN indicator_value_types.indicator_id IS 'FK → indicators';
+COMMENT ON COLUMN indicator_value_types.code IS 'Код серии в рамках индикатора';
+COMMENT ON COLUMN indicator_value_types.name IS 'Отображаемое имя линии';
+COMMENT ON COLUMN indicator_value_types.value_type IS 'Тип значения (float …)';
+COMMENT ON COLUMN indicator_value_types.is_threshold IS 'TRUE — горизонтальный порог на графике';
+COMMENT ON COLUMN indicator_value_types.threshold_value IS 'Значение порога (70 для RSI OVERBOUGHT)';
+COMMENT ON COLUMN indicator_value_types.description IS 'Описание серии';
+COMMENT ON COLUMN indicator_value_types.display_order IS 'Порядок на графике';
+COMMENT ON COLUMN indicator_value_types.created_at IS 'Дата создания';
+
+-- security_indicator_series
+COMMENT ON COLUMN security_indicator_series.id IS 'Surrogate PK';
+COMMENT ON COLUMN security_indicator_series.security_id IS 'FK → securities';
+COMMENT ON COLUMN security_indicator_series.indicator_id IS 'FK → indicators';
+COMMENT ON COLUMN security_indicator_series.series_code IS 'Код серии (VALUE, K, D …)';
+COMMENT ON COLUMN security_indicator_series.invoke_formula IS 'Формула расчёта: calc_ind_*_array или многочлен pp * (1;-2;1)';
+COMMENT ON COLUMN security_indicator_series.param_period IS 'period для SMA/RSI/BB …';
+COMMENT ON COLUMN security_indicator_series.param_fast_period IS 'fast_period для MACD';
+COMMENT ON COLUMN security_indicator_series.param_slow_period IS 'slow_period для MACD';
+COMMENT ON COLUMN security_indicator_series.param_signal_period IS 'signal_period для MACD';
+COMMENT ON COLUMN security_indicator_series.param_std_dev IS 'std_dev для Bollinger';
+COMMENT ON COLUMN security_indicator_series.param_k_period IS '%K period для STOCH';
+COMMENT ON COLUMN security_indicator_series.param_d_period IS '%D period для STOCH';
+COMMENT ON COLUMN security_indicator_series.param_smooth IS 'Сглаживание STOCH';
+COMMENT ON COLUMN security_indicator_series.point_count IS 'Число баров в массивном расчёте';
+COMMENT ON COLUMN security_indicator_series.display_order IS 'Порядок линий на графике';
+COMMENT ON COLUMN security_indicator_series.is_active IS 'Серия участвует в sync/calc';
+COMMENT ON COLUMN security_indicator_series.created_at IS 'Дата создания';
+
+-- indicator_values
+COMMENT ON TABLE indicator_values IS 'Рассчитанные значения индикаторов по бумаге, TF и времени';
+COMMENT ON COLUMN indicator_values.id IS 'Surrogate PK';
+COMMENT ON COLUMN indicator_values.indicator_id IS 'FK → indicators';
+COMMENT ON COLUMN indicator_values.indicator_value_type_id IS 'FK → indicator_value_types (какая линия)';
+COMMENT ON COLUMN indicator_values.security_id IS 'FK → securities';
+COMMENT ON COLUMN indicator_values.timeframe_id IS 'FK → timeframes';
+COMMENT ON COLUMN indicator_values.dt IS 'Open time свечи значения';
+COMMENT ON COLUMN indicator_values.value IS 'Числовое значение индикатора';
+COMMENT ON COLUMN indicator_values.is_signal IS 'Помечено как сигнал (legacy/аналитика)';
+COMMENT ON COLUMN indicator_values.signal_type IS 'Тип сигнала если is_signal';
+COMMENT ON COLUMN indicator_values.created_at IS 'Когда записано в БД';
+
+-- logics (дополнение)
+COMMENT ON COLUMN logics.id IS 'Surrogate PK; все дочерние таблицы ссылаются logic_id → logics.id';
+
+-- logic_param_defs
+COMMENT ON COLUMN logic_param_defs.param_key IS 'Уникальный ключ параметра логики (timeframe, commission_pct …)';
+COMMENT ON COLUMN logic_param_defs.name_ru IS 'Подпись в UI';
+COMMENT ON COLUMN logic_param_defs.value_type IS 'number | integer | money | boolean | text';
+COMMENT ON COLUMN logic_param_defs.default_value IS 'Значение при создании новой логики';
+COMMENT ON COLUMN logic_param_defs.description IS 'Подсказка в UI';
+COMMENT ON COLUMN logic_param_defs.display_order IS 'Порядок полей в форме параметров';
+
+-- logic_params
+COMMENT ON COLUMN logic_params.id IS 'Surrogate PK';
+COMMENT ON COLUMN logic_params.logic_id IS 'FK → logics: параметры изолированы по логике';
+COMMENT ON COLUMN logic_params.updated_at IS 'Время последнего изменения значения';
+
+-- sides / actions (справочники сделок)
+COMMENT ON TABLE sides IS 'Сторона сделки: Open (открытие) | Close (закрытие)';
+COMMENT ON COLUMN sides.id IS 'Surrogate PK';
+COMMENT ON COLUMN sides.name IS 'Open | Close';
+
+COMMENT ON TABLE actions IS 'Направление позиции: Long | Short';
+COMMENT ON COLUMN actions.id IS 'Surrogate PK';
+COMMENT ON COLUMN actions.name IS 'Long | Short';
+
+-- logics_detail (legacy, до logic_indicator_signals)
+COMMENT ON TABLE logics_detail IS 'Устаревшие формулы по имени логики; заменено logic_indicator_signals';
+COMMENT ON COLUMN logics_detail.id IS 'Surrogate PK';
+COMMENT ON COLUMN logics_detail.logic_name IS 'FK по name → logics.name';
+COMMENT ON COLUMN logics_detail.formula IS 'Текст формулы (legacy)';
+COMMENT ON COLUMN logics_detail.side_id IS 'FK → sides';
+COMMENT ON COLUMN logics_detail.action_id IS 'FK → actions';
+
+-- logic_indicator_signals (дополнение)
+COMMENT ON COLUMN logic_indicator_signals.id IS 'Surrogate PK';
+COMMENT ON COLUMN logic_indicator_signals.logic_id IS 'FK → logics';
+COMMENT ON COLUMN logic_indicator_signals.indicator_id IS 'FK → indicators';
+COMMENT ON COLUMN logic_indicator_signals.display_order IS 'Приоритет проверки сигналов';
+COMMENT ON COLUMN logic_indicator_signals.is_active IS 'Сигнал участвует в trade runner';
+COMMENT ON COLUMN logic_indicator_signals.created_at IS 'Дата создания';
+
+-- logic_stops (дополнение)
+COMMENT ON COLUMN logic_stops.id IS 'Surrogate PK';
+COMMENT ON COLUMN logic_stops.logic_id IS 'FK → logics';
+COMMENT ON COLUMN logic_stops.value IS 'Величина SL/TP (% или множитель ATR)';
+COMMENT ON COLUMN logic_stops.display_order IS 'Порядок применения правил';
+COMMENT ON COLUMN logic_stops.is_active IS 'Правило включено';
+COMMENT ON COLUMN logic_stops.created_at IS 'Дата создания';
+
+-- logic_securities (дополнение)
+COMMENT ON COLUMN logic_securities.id IS 'Surrogate PK';
+COMMENT ON COLUMN logic_securities.logic_id IS 'FK → logics';
+COMMENT ON COLUMN logic_securities.security_id IS 'FK → securities — бумага в портфеле логики';
+COMMENT ON COLUMN logic_securities.is_active IS 'Бумага участвует в торговле/тесте';
+COMMENT ON COLUMN logic_securities.stop_resume_triggered_at IS 'Когда сработал security_resume SL';
+COMMENT ON COLUMN logic_securities.created_at IS 'Дата добавления в портфель';
+
+-- logic_trades (дополнение)
+COMMENT ON COLUMN logic_trades.id IS 'Surrogate PK сделки';
+COMMENT ON COLUMN logic_trades.logic_id IS 'FK → logics — все сделки логики здесь';
+COMMENT ON COLUMN logic_trades.account_id IS 'FK → accounts — счёт исполнения';
+COMMENT ON COLUMN logic_trades.security_id IS 'FK → securities';
+COMMENT ON COLUMN logic_trades.timeframe_id IS 'FK → timeframes — TF сигнала';
+COMMENT ON COLUMN logic_trades.side_id IS 'FK → sides: Open | Close';
+COMMENT ON COLUMN logic_trades.action_id IS 'FK → actions: Long | Short';
+COMMENT ON COLUMN logic_trades.signal_kind IS 'trend | counter — какой тип сигнала сработал';
+COMMENT ON COLUMN logic_trades.signal_formula IS 'Копия формулы logic_indicator_signals на момент сделки';
+COMMENT ON COLUMN logic_trades.quantity IS 'Объём в лотах/штуках';
+COMMENT ON COLUMN logic_trades.price IS 'Цена исполнения';
+COMMENT ON COLUMN logic_trades.executed_at IS 'Время записи/исполнения';
+COMMENT ON COLUMN logic_trades.is_simulated IS 'Бумажная торговля (fake account)';
+COMMENT ON COLUMN logic_trades.broker_order_id IS 'ID заявки у брокера (real)';
+COMMENT ON COLUMN logic_trades.status IS 'pending | submitted | filled | rejected | cancelled';
+COMMENT ON COLUMN logic_trades.note IS 'Произвольная заметка';
+COMMENT ON COLUMN logic_trades.created_at IS 'Дата создания записи';
+
+-- logic_backtest_runs
+COMMENT ON COLUMN logic_backtest_runs.id IS 'Surrogate PK прогона теста';
+COMMENT ON COLUMN logic_backtest_runs.logic_id IS 'FK → logics';
+COMMENT ON COLUMN logic_backtest_runs.date_from IS 'Начало периода теста';
+COMMENT ON COLUMN logic_backtest_runs.date_to IS 'Конец периода теста';
+COMMENT ON COLUMN logic_backtest_runs.status IS 'pending | loading_prices | running | completed | …';
+COMMENT ON COLUMN logic_backtest_runs.progress_pct IS 'Прогресс 0–100';
+COMMENT ON COLUMN logic_backtest_runs.phase_message IS 'Текущая фаза для UI';
+COMMENT ON COLUMN logic_backtest_runs.phase_detail IS 'Детали фазы (JSON-текст)';
+COMMENT ON COLUMN logic_backtest_runs.current_bar_dt IS 'Обрабатываемая свеча';
+COMMENT ON COLUMN logic_backtest_runs.total_bars IS 'Всего баров в прогоне';
+COMMENT ON COLUMN logic_backtest_runs.processed_bars IS 'Обработано баров';
+COMMENT ON COLUMN logic_backtest_runs.trades_created IS 'Создано test-сделок';
+COMMENT ON COLUMN logic_backtest_runs.test_balance IS 'Итоговый баланс в тесте';
+COMMENT ON COLUMN logic_backtest_runs.financial_result IS 'Суммарный PnL теста';
+COMMENT ON COLUMN logic_backtest_runs.cancel_requested IS 'Запрошена отмена';
+COMMENT ON COLUMN logic_backtest_runs.error_message IS 'Текст ошибки при failed';
+COMMENT ON COLUMN logic_backtest_runs.started_at IS 'Старт прогона';
+COMMENT ON COLUMN logic_backtest_runs.finished_at IS 'Завершение прогона';
+COMMENT ON COLUMN logic_backtest_runs.created_at IS 'Создание записи прогона';
+
+-- logic_backtest_security_state
+COMMENT ON COLUMN logic_backtest_security_state.run_id IS 'FK → logic_backtest_runs';
+COMMENT ON COLUMN logic_backtest_security_state.security_id IS 'FK → securities';
+COMMENT ON COLUMN logic_backtest_security_state.real_trading_paused IS 'Теневой режим внутри backtest';
+COMMENT ON COLUMN logic_backtest_security_state.stop_resume_equity IS 'Цель возобновления (копия logic_securities)';
+COMMENT ON COLUMN logic_backtest_security_state.stop_resume_baseline IS 'База после SL в тесте';
+
+-- logic_trade_lots
+COMMENT ON COLUMN logic_trade_lots.id IS 'Surrogate PK пакета закрытия';
+COMMENT ON COLUMN logic_trade_lots.logic_id IS 'FK → logics';
+COMMENT ON COLUMN logic_trade_lots.close_trade_id IS 'FK → logic_trades (Close)';
+COMMENT ON COLUMN logic_trade_lots.action_id IS 'Long | Short — сторона закрываемой позиции';
+COMMENT ON COLUMN logic_trade_lots.cost_method IS 'FIFO | AVERAGE — из logic_params.cost_method';
+COMMENT ON COLUMN logic_trade_lots.quantity IS 'Объём в пакете';
+COMMENT ON COLUMN logic_trade_lots.close_amount IS 'Сумма по цене закрытия';
+COMMENT ON COLUMN logic_trade_lots.open_amount IS 'Сумма по цене открытия (FIFO) или средней';
+COMMENT ON COLUMN logic_trade_lots.close_commission IS 'Комиссия закрывающей сделки (доля)';
+COMMENT ON COLUMN logic_trade_lots.open_commission IS 'Комиссия открывающей сделки (доля)';
+COMMENT ON COLUMN logic_trade_lots.financial_result IS 'PnL пакета';
+COMMENT ON COLUMN logic_trade_lots.created_at IS 'Дата создания';
+
+-- futures_expirations
+COMMENT ON COLUMN futures_expirations.id IS 'Surrogate PK контракта';
+COMMENT ON COLUMN futures_expirations.security_id IS 'FK → securities (группа фьючерса)';
+COMMENT ON COLUMN futures_expirations.prefix IS 'SHORTNAME MOEX (Si-6.26, CNY-9.26)';
+COMMENT ON COLUMN futures_expirations.moex_secid IS 'SECID для API (CRU6, SiM6)';
+COMMENT ON COLUMN futures_expirations.expiration_date IS 'Дата экспирации';
+COMMENT ON COLUMN futures_expirations.tbank_figi IS 'FIGI контракта в T-Bank';
+COMMENT ON COLUMN futures_expirations.is_active IS 'Контракт доступен для загрузки цен';
+COMMENT ON COLUMN futures_expirations.created_at IS 'Дата синхронизации';
+
+-- price_load_log
+COMMENT ON TABLE price_load_log IS 'Журнал загрузок цен (T-Bank / MOEX): период, источник, результат';
+COMMENT ON COLUMN price_load_log.id IS 'Surrogate PK';
+COMMENT ON COLUMN price_load_log.security_id IS 'FK → securities';
+COMMENT ON COLUMN price_load_log.timeframe_id IS 'FK → timeframes';
+COMMENT ON COLUMN price_load_log.date_from IS 'Начало запрошенного периода';
+COMMENT ON COLUMN price_load_log.date_to IS 'Конец запрошенного периода';
+COMMENT ON COLUMN price_load_log.source IS 'T-BANK | MOEX | …';
+COMMENT ON COLUMN price_load_log.records_loaded IS 'Число загруженных свечей';
+COMMENT ON COLUMN price_load_log.contract_prefix IS 'Конкретный фьючерсный контракт (если есть)';
+COMMENT ON COLUMN price_load_log.error_message IS 'Текст ошибки загрузки';
+COMMENT ON COLUMN price_load_log.loaded_at IS 'Время завершения загрузки';
+
+-- app_tech_log (дополнение)
+COMMENT ON COLUMN app_tech_log.id IS 'Surrogate PK';
+COMMENT ON COLUMN app_tech_log.span_id IS 'Идентификатор span в trace';
+COMMENT ON COLUMN app_tech_log.parent_span_id IS 'Родительский span';
+COMMENT ON COLUMN app_tech_log.source IS 'web | api | sql';
+COMMENT ON COLUMN app_tech_log.operation IS 'Имя операции (run_trade_cycle, backtest.start …)';
+COMMENT ON COLUMN app_tech_log.started_at IS 'Начало операции';
+COMMENT ON COLUMN app_tech_log.finished_at IS 'Конец операции';
+COMMENT ON COLUMN app_tech_log.duration_ms IS 'Длительность, мс';
+COMMENT ON COLUMN app_tech_log.security_id IS 'FK → securities (если применимо)';
+COMMENT ON COLUMN app_tech_log.timeframe_id IS 'FK → timeframes (если применимо)';
+COMMENT ON COLUMN app_tech_log.sync_gen IS 'Поколение sync графика';
+COMMENT ON COLUMN app_tech_log.message IS 'Краткое сообщение';
+COMMENT ON COLUMN app_tech_log.payload IS 'JSON с деталями';
+COMMENT ON COLUMN app_tech_log.created_at IS 'Время записи в журнал';
+
+-- ============================================
 -- Готово: шаг 1 завершён
 -- ============================================
