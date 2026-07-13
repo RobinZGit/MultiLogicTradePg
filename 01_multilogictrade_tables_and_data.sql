@@ -1,6 +1,6 @@
 -- ============================================
 -- MultiLogicTrade — шаг 1: таблицы и справочники
--- Версия: v23 (идемпотентный запуск)
+-- Версия: v24 (идемпотентный запуск)
 -- ============================================
 -- Подключение: база multilogictrade
 -- Можно выполнять многократно: объекты и строки не дублируются.
@@ -940,7 +940,9 @@ INSERT INTO logic_param_defs (param_key, name_ru, value_type, default_value, des
     ('current_balance', 'Текущий остаток', 'money', '',
      'Обновляется trade runner после симулированных сделок', 4),
     ('last_trade_check_at', 'Последняя проверка сигналов', 'text', '',
-     'Служебный: время последнего run_trade_cycle (не редактировать)', 99)
+     'Служебный: время последнего run_trade_cycle (не редактировать)', 98),
+    ('last_trade_bar_dt', 'Последняя обработанная свеча', 'text', '',
+     'Служебный: open time закрытой свечи TF (не редактировать)', 99)
 ON CONFLICT (param_key) DO UPDATE SET
     name_ru = EXCLUDED.name_ru,
     value_type = EXCLUDED.value_type,

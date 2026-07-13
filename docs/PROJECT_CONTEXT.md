@@ -5,7 +5,7 @@
 > Включать **запросы пользователя текстом** (секция «Запросы пользователя»).
 
 **Репозиторий:** https://github.com/RobinZGit/MultiLogicTradePg  
-**Последнее обновление:** 2026-07-13 (v23: run_trade_cycle в PostgreSQL + timeframe; БД 00→02)
+**Последнее обновление:** 2026-07-13 (v24: проверка закрытия свечи TF + fix evaluate_signal; БД 00→02)
 
 ---
 
@@ -25,7 +25,7 @@
 | Файл | Назначение |
 |------|------------|
 | `00_create_database.sql` | **DROP + CREATE** базы `multilogictrade` (полное пересоздание) |
-| `01_multilogictrade_tables_and_data.sql` | Таблицы, индексы, справочники (идемпотентно, **v23**) |
+| `01_multilogictrade_tables_and_data.sql` | Таблицы, индексы, справочники (идемпотентно, **v24**) |
 | `02_multilogictrade_functions_and_procedures.sql` | Функции и процедуры (идемпотентно) |
 | `03_multilogictrade_examples.sql` | Примеры SELECT (необязательно) |
 
@@ -86,7 +86,7 @@
 - `logics` + `logics_detail` — движок формул **ещё не реализован**;
 - UI **Операции** (`/operations`): пять сворачиваемых блоков — **«Параметры логики»**, **«Сигналы индикаторов»**, **«Стоп-лосс и тейк-профит»**, **«Ценные бумаги»**, **«Сделки»** (по умолчанию свёрнуты);
 - API logics: **`GET/PUT /api/logic-params`** — чтение/запись `logic_params`; signals/stops/securities/trades;
-- **Trade runner (PostgreSQL):** `run_trade_cycle()` → `process_logic_trades()` — парсинг `@CODE(...) condition`, `indicator_values` + `prices` на **`timeframe` из logic_params**; long/short trend; лот, лимит позиций, fake balance; real → `tbank_post_order`; idempotency по `(logic_id, security_id, signal_kind, bar_dt)`;
+- **Trade runner (PostgreSQL):** `run_trade_cycle()` → `process_logic_trades()` — парсинг `@CODE(...) condition`, `indicator_values` + `prices` на **`timeframe` из logic_params**; **сигналы только на последней закрытой свече TF** (`logic_last_closed_bar_dt`, `last_trade_bar_dt` — идемпотентность); long/short trend; лот, лимит позиций, fake balance; real → `tbank_post_order`; idempotency по `(logic_id, security_id, signal_kind, bar_dt)`;
 - **Расписание:** **pg_cron** (Linux, `@optional-pgcron-block`, каждую минуту) или **Node fallback** (`api/trade-runner.js` → `SELECT run_trade_cycle()`, 60 с, `TRADE_RUNNER_ENABLED=0` отключает); ручной `POST /api/logic-trades/run`;
 - **Демо-логика** в `01`: `SMA Price Cross Demo` на `FAKE-EFF-001` — SMA(20), **M15**: long trend `pp > VALUE`, short trend `pp < VALUE`, SBER, 1M, 10%, max 3;
 
@@ -129,6 +129,7 @@
 37. **Fix poll logics:** цикл 2 с больше не перезагружает «Параметры» и не затирает черновики формул; `paramsDirtyIds`; правило `no-refresh-while-editing.mdc`.
 38. **Демо SMA v22:** только long trend + short trend (без counter); long выше SMA, short ниже SMA.
 39. **v23 trade runner в PostgreSQL:** `timeframe` в logic_params; `run_trade_cycle` / `process_logic_trades`; pg_cron + Node fallback; UI выбор таймфрейма; `sql/logic_trade_runner.sql`.
+40. **v24 закрытие свечи TF:** job ждёт закрытия бара (`logic_last_closed_bar_dt` + `last_trade_bar_dt`); данные через `logic_bar_data_at`; fix timezone epoch и `\y` в `evaluate_signal_condition` (раньше `pp`/`VALUE` не подставлялись).
 
 ### Автотесты
 
@@ -190,6 +191,7 @@
 
 | Дата | Суть |
 |------|------|
+| 2026-07-13 | v24: закрытие свечи TF в runner, last_trade_bar_dt, fix evaluate_signal/timezone |
 | 2026-07-13 | v23: run_trade_cycle в PostgreSQL, timeframe, pg_cron; БД 00→02 |
 | 2026-07-13 | v22 demo: только long-trend + short-trend (без counter) |
 | 2026-07-13 | v21 demo SMA: long выше / short ниже средней; БД 00→02 |

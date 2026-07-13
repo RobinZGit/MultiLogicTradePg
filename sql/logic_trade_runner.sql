@@ -51,6 +51,112 @@ BEGIN
 END;
 $$;
 
+COMMENT ON FUNCTION logic_resolve_timeframe_id(INTEGER) IS
+'timeframe_id из logic_params.timeframe (код TF, по умолчанию M15)';
+
+CREATE OR REPLACE FUNCTION logic_last_closed_bar_dt(
+    p_tf_sec INTEGER,
+    p_at TIMESTAMP DEFAULT LOCALTIMESTAMP
+)
+RETURNS TIMESTAMP
+LANGUAGE plpgsql STABLE AS $$
+DECLARE
+    v_tz TEXT := current_setting('TimeZone');
+    v_epoch NUMERIC;
+    v_current_bar_start NUMERIC;
+BEGIN
+    IF p_tf_sec IS NULL OR p_tf_sec <= 0 THEN
+        RETURN NULL;
+    END IF;
+    v_epoch := EXTRACT(EPOCH FROM (COALESCE(p_at, LOCALTIMESTAMP) AT TIME ZONE v_tz));
+    v_current_bar_start := floor(v_epoch / p_tf_sec) * p_tf_sec;
+    RETURN (to_timestamp(v_current_bar_start - p_tf_sec) AT TIME ZONE v_tz)::timestamp;
+END;
+$$;
+
+COMMENT ON FUNCTION logic_last_closed_bar_dt(INTEGER, TIMESTAMP) IS
+'Начало последней закрытой свечи (open time) для TF с периодом p_tf_sec секунд';
+
+CREATE OR REPLACE FUNCTION logic_bar_data_at(
+    p_security_id INTEGER,
+    p_timeframe_id INTEGER,
+    p_indicator_id INTEGER,
+    p_series TEXT,
+    p_bar_dt TIMESTAMP
+)
+RETURNS TABLE (bar_dt TIMESTAMP, ind_value NUMERIC, close_price NUMERIC)
+LANGUAGE plpgsql STABLE AS $$
+DECLARE
+    v_tf_sec INTEGER;
+    v_ind_dt TIMESTAMP;
+    v_ind_val NUMERIC;
+    v_pp NUMERIC;
+BEGIN
+    SELECT t.sec INTO v_tf_sec FROM timeframes t WHERE t.id = p_timeframe_id;
+
+    SELECT iv.dt, iv.value
+    INTO v_ind_dt, v_ind_val
+    FROM indicator_values iv
+    JOIN indicator_value_types ivt ON ivt.id = iv.indicator_value_type_id
+    WHERE iv.security_id = p_security_id
+      AND iv.timeframe_id = p_timeframe_id
+      AND iv.indicator_id = p_indicator_id
+      AND upper(ivt.code) = upper(COALESCE(p_series, 'VALUE'))
+      AND iv.dt = p_bar_dt
+    LIMIT 1;
+
+    IF v_ind_dt IS NULL AND v_tf_sec IS NOT NULL THEN
+        SELECT iv.dt, iv.value
+        INTO v_ind_dt, v_ind_val
+        FROM indicator_values iv
+        JOIN indicator_value_types ivt ON ivt.id = iv.indicator_value_type_id
+        WHERE iv.security_id = p_security_id
+          AND iv.timeframe_id = p_timeframe_id
+          AND iv.indicator_id = p_indicator_id
+          AND upper(ivt.code) = upper(COALESCE(p_series, 'VALUE'))
+          AND iv.dt > p_bar_dt - make_interval(secs => v_tf_sec)
+          AND iv.dt <= p_bar_dt
+        ORDER BY iv.dt DESC
+        LIMIT 1;
+    END IF;
+
+    IF v_ind_dt IS NULL THEN
+        RETURN;
+    END IF;
+
+    SELECT p.close_price
+    INTO v_pp
+    FROM prices p
+    WHERE p.security_id = p_security_id
+      AND p.timeframe_id = p_timeframe_id
+      AND p.dt = v_ind_dt
+    LIMIT 1;
+
+    IF v_pp IS NULL THEN
+        SELECT p.close_price
+        INTO v_pp
+        FROM prices p
+        WHERE p.security_id = p_security_id
+          AND p.timeframe_id = p_timeframe_id
+          AND p.dt <= v_ind_dt
+        ORDER BY p.dt DESC
+        LIMIT 1;
+    END IF;
+
+    IF v_pp IS NULL OR v_pp <= 0 THEN
+        RETURN;
+    END IF;
+
+    bar_dt := v_ind_dt;
+    ind_value := v_ind_val;
+    close_price := v_pp;
+    RETURN NEXT;
+END;
+$$;
+
+COMMENT ON FUNCTION logic_bar_data_at(INTEGER, INTEGER, INTEGER, TEXT, TIMESTAMP) IS
+'Индикатор и close на конкретной закрытой свече (exact dt, затем fallback в пределах одного бара)';
+
 CREATE OR REPLACE FUNCTION parse_signal_series(p_params TEXT)
 RETURNS TEXT
 LANGUAGE plpgsql IMMUTABLE AS $$
@@ -99,8 +205,8 @@ BEGIN
         RETURN FALSE;
     END IF;
 
-    v_expr := regexp_replace(v_expr, '\mpp\b', p_pp::TEXT, 'gi');
-    v_expr := regexp_replace(v_expr, '\mVALUE\b', p_value::TEXT, 'gi');
+    v_expr := regexp_replace(v_expr, '\mpp\y', p_pp::TEXT, 'gi');
+    v_expr := regexp_replace(v_expr, '\yVALUE\y', p_value::TEXT, 'gi');
     IF v_expr ~ '[A-Za-z_]' THEN
         RETURN FALSE;
     END IF;
@@ -322,6 +428,11 @@ DECLARE
     v_order JSONB;
     v_notional NUMERIC;
     v_is_open BOOLEAN;
+    v_closed_bar_dt TIMESTAMP;
+    v_last_bar_raw TEXT;
+    v_last_bar_dt TIMESTAMP;
+    v_all_securities_ready BOOLEAN := TRUE;
+    v_bar_row RECORD;
 BEGIN
     SELECT l.id, l.account_id, a.account_type
     INTO v_logic
@@ -341,6 +452,24 @@ BEGIN
     END IF;
 
     SELECT t.sec INTO v_tf_sec FROM timeframes t WHERE t.id = v_tf_id;
+
+    v_closed_bar_dt := logic_last_closed_bar_dt(v_tf_sec);
+    IF v_closed_bar_dt IS NULL THEN
+        RETURN 0;
+    END IF;
+
+    v_last_bar_raw := btrim(COALESCE(get_logic_param_text(p_logic_id, 'last_trade_bar_dt'), ''));
+    IF v_last_bar_raw <> '' THEN
+        BEGIN
+            v_last_bar_dt := v_last_bar_raw::TIMESTAMP;
+            IF v_closed_bar_dt <= v_last_bar_dt THEN
+                RETURN 0;
+            END IF;
+        EXCEPTION
+            WHEN OTHERS THEN
+                NULL;
+        END;
+    END IF;
 
     SELECT id INTO v_side_open_id FROM sides WHERE name = 'Open' LIMIT 1;
     SELECT id INTO v_side_close_id FROM sides WHERE name = 'Close' LIMIT 1;
@@ -367,6 +496,40 @@ BEGIN
         RETURN 0;
     END IF;
 
+    -- Все бумаги и все сигналы должны иметь данные на закрытой свече
+    FOR v_sec IN
+        SELECT ls.security_id
+        FROM logic_securities ls
+        WHERE ls.logic_id = p_logic_id AND ls.is_active = TRUE
+    LOOP
+        FOR v_sig IN
+            SELECT lis.indicator_id, lis.formula
+            FROM logic_indicator_signals lis
+            WHERE lis.logic_id = p_logic_id AND lis.is_active = TRUE
+        LOOP
+            SELECT * INTO v_parsed FROM parse_signal_formula(v_sig.formula);
+            IF NOT COALESCE(v_parsed.valid, FALSE) THEN
+                CONTINUE;
+            END IF;
+            v_series := parse_signal_series(v_parsed.params);
+            SELECT * INTO v_bar_row
+            FROM logic_bar_data_at(
+                v_sec.security_id, v_tf_id, v_sig.indicator_id, v_series, v_closed_bar_dt
+            );
+            IF NOT FOUND THEN
+                v_all_securities_ready := FALSE;
+                EXIT;
+            END IF;
+        END LOOP;
+        IF NOT v_all_securities_ready THEN
+            EXIT;
+        END IF;
+    END LOOP;
+
+    IF NOT v_all_securities_ready THEN
+        RETURN 0;
+    END IF;
+
     FOR v_sec IN
         SELECT ls.security_id
         FROM logic_securities ls
@@ -385,33 +548,17 @@ BEGIN
 
             v_series := parse_signal_series(v_parsed.params);
 
-            SELECT iv.dt, iv.value
-            INTO v_ind_dt, v_ind_value
-            FROM indicator_values iv
-            JOIN indicator_value_types ivt ON ivt.id = iv.indicator_value_type_id
-            WHERE iv.security_id = v_sec.security_id
-              AND iv.timeframe_id = v_tf_id
-              AND iv.indicator_id = v_sig.indicator_id
-              AND upper(ivt.code) = upper(v_series)
-            ORDER BY iv.dt DESC
-            LIMIT 1;
-
-            IF v_ind_dt IS NULL OR v_ind_value IS NULL THEN
+            SELECT * INTO v_bar_row
+            FROM logic_bar_data_at(
+                v_sec.security_id, v_tf_id, v_sig.indicator_id, v_series, v_closed_bar_dt
+            );
+            IF NOT FOUND THEN
                 CONTINUE;
             END IF;
 
-            SELECT p.close_price
-            INTO v_pp
-            FROM prices p
-            WHERE p.security_id = v_sec.security_id
-              AND p.timeframe_id = v_tf_id
-              AND p.dt <= v_ind_dt
-            ORDER BY p.dt DESC
-            LIMIT 1;
-
-            IF v_pp IS NULL OR v_pp <= 0 THEN
-                CONTINUE;
-            END IF;
+            v_ind_dt := v_bar_row.bar_dt;
+            v_ind_value := v_bar_row.ind_value;
+            v_pp := v_bar_row.close_price;
 
             IF NOT evaluate_signal_condition(v_parsed.condition, v_pp, v_ind_value) THEN
                 CONTINUE;
@@ -559,13 +706,19 @@ BEGIN
         to_char(CURRENT_TIMESTAMP, 'YYYY-MM-DD"T"HH24:MI:SS'),
         'text'
     );
+    PERFORM logic_upsert_param(
+        p_logic_id,
+        'last_trade_bar_dt',
+        to_char(v_closed_bar_dt, 'YYYY-MM-DD"T"HH24:MI:SS'),
+        'text'
+    );
 
     RETURN v_created;
 END;
 $$;
 
 COMMENT ON FUNCTION process_logic_trades(INTEGER) IS
-'Один проход по сигналам и бумагам логики: indicator_values + prices на timeframe из logic_params';
+'Сигналы только на последней закрытой свече TF логики; last_trade_bar_dt — идемпотентность по бару';
 
 CREATE OR REPLACE FUNCTION run_trade_cycle()
 RETURNS JSONB
