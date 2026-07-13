@@ -840,6 +840,86 @@ tbody tr:hover {
   cursor: pointer;
 }
 
+.positions-total-pnl {
+  display: flex;
+  align-items: baseline;
+  gap: 0.5rem;
+  margin-bottom: 0.65rem;
+  padding: 0.45rem 0.65rem;
+  border-radius: 8px;
+  background: #f8fafc;
+  border: 1px solid #e2e8f0;
+}
+
+.positions-total-label {
+  font-size: 0.85rem;
+  font-weight: 600;
+  color: #374151;
+}
+
+.positions-total-value {
+  font-size: 1.05rem;
+}
+
+.positions-sub-block {
+  margin-top: 0.5rem;
+}
+
+.position-group {
+  margin-bottom: 0.75rem;
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+  overflow: hidden;
+}
+
+.position-group-open,
+.position-group-close {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.45rem 0.75rem;
+  padding: 0.4rem 0.65rem;
+  font-size: 0.82rem;
+}
+
+.position-group-open {
+  background: #f8fafc;
+  border-bottom: 1px dashed #e2e8f0;
+}
+
+.position-group-close {
+  background: #fff;
+  cursor: pointer;
+}
+
+.position-group-close:hover {
+  background: #f1f5f9;
+}
+
+.position-group-tag {
+  font-size: 0.72rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  padding: 0.1rem 0.35rem;
+  border-radius: 4px;
+  background: #dbeafe;
+  color: #1e40af;
+}
+
+.position-group-tag-close {
+  background: #ffedd5;
+  color: #9a3412;
+}
+
+.position-group-lots {
+  padding: 0.45rem 0.65rem 0.65rem;
+  background: #f8fafc;
+}
+
+.positions-empty {
+  margin: 0.25rem 0;
+}
+
 .trades-token-alert,
 .trades-token-banner {
   border: 1px solid #dc2626;

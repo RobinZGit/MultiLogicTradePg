@@ -25,6 +25,7 @@ export interface LogicTradeRow {
   status: LogicTradeStatus;
   commission: number;
   financial_result: number | null;
+  remaining_qty?: number | null;
   note: string | null;
   created_at?: string;
   security_name: string;
@@ -53,6 +54,13 @@ export interface LogicTradeLotRow {
   open_price: number | null;
   close_executed_at: string;
   close_price: number;
+}
+
+export interface ClosedPositionGroup {
+  id: number;
+  close: LogicTradeRow;
+  opens: LogicTradeRow[];
+  pnl: number;
 }
 
 export function costMethodLabel(method: string): string {

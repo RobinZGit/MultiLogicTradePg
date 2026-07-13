@@ -1289,7 +1289,7 @@
                             aria-hidden="true"
                           >▸</span>
 
-                          <span class="signals-title">Сделки</span>
+                          <span class="signals-title">Позиции</span>
 
                           @if (isTradesLoading(row.id)) {
 
@@ -1342,245 +1342,138 @@
 
                         }
 
-                        <div class="trades-scroll">
-
-                        <table class="signals-table trades-table">
-
-                          <thead>
-
-                            <tr>
-
-                              <th></th>
-
-                              <th>Время</th>
-
-                              <th>Бумага</th>
-
-                              <th>Сигнал</th>
-
-                              <th>Операция</th>
-
-                              <th>Кол-во</th>
-
-                              <th>Цена</th>
-
-                              <th>Сумма</th>
-
-                              <th>Комиссия</th>
-
-                              <th>Фин. результат</th>
-
-                              <th>Статус</th>
-
-                            </tr>
-
-                          </thead>
-
-                          <tbody>
-
-                            @for (tr of tradesFor(row.id); track tr.id) {
-
-                              <tr
-                                class="trade-row"
-                                [class.trade-rejected]="tr.status === 'rejected'"
-                                (click)="toggleTradeRow(tr, $event)"
-                              >
-
-                                <td class="trade-expand-cell">
-                                  <span
-                                    class="trade-row-chevron"
-                                    [class.open]="isTradeRowExpanded(tr.id)"
-                                    aria-hidden="true"
-                                  >▸</span>
-                                </td>
-
-                                <td>{{ formatTradeDt(tr.executed_at) }}</td>
-
-                                <td>
-
-                                  <strong>{{ tr.security_prefix || tr.security_name }}</strong>
-
-                                </td>
-
-                                <td>
-
-                                  <span
-                                    class="sig-badge"
-                                    [class.sig-trend]="tr.signal_kind === 'trend'"
-                                    [class.sig-counter]="tr.signal_kind === 'counter'"
-                                  >
-                                    {{ signalKindLabel(tr.signal_kind) }}
-                                  </span>
-
-                                </td>
-
-                                <td>{{ tradeActionLabel(tr) }}</td>
-
-                                <td>{{ tr.quantity }}</td>
-
-                                <td>{{ tr.price }}</td>
-
-                                <td>{{ formatMoney(tr.quantity * tr.price) }}</td>
-
-                                <td>{{ formatMoney(tr.commission) }}</td>
-
-                                <td>
-                                  @if (tr.side_name === 'Close') {
-                                    <span
-                                      class="trade-pnl"
-                                      [class.trade-pnl-pos]="(tr.financial_result ?? 0) > 0"
-                                      [class.trade-pnl-neg]="(tr.financial_result ?? 0) < 0"
-                                    >
-                                      {{ formatPnl(tr.financial_result) }}
-                                    </span>
-                                  } @else {
-                                    —
-                                  }
-                                </td>
-
-                                <td>{{ tradeStatusLabel(tr.status) }}</td>
-
-                              </tr>
-
-                              @if (isTradeRowExpanded(tr.id)) {
-
-                                <tr class="trade-lots-row">
-
-                                  <td colspan="11">
-
-                                    @if (isTradeLotsLoading(tr.id)) {
-
-                                      <p class="trade-lots-loading">Загрузка пакетов…</p>
-
-                                    } @else if (tradeLotsFor(tr.id).length === 0) {
-
-                                      <p class="trade-lots-empty">
-                                        @if (tr.side_name === 'Open') {
-                                          Пакетов пока нет — части позиции ещё не закрывались
-                                        } @else if (tr.side_name === 'Close') {
-                                          Пакеты не рассчитаны (пересоздайте сделки или дождитесь новых закрытий)
-                                        } @else {
-                                          Нет пакетов
-                                        }
-                                      </p>
-
-                                    } @else {
-
-                                      <table class="signals-table trade-lots-table">
-
-                                        <thead>
-
-                                          <tr>
-
-                                            <th>Метод</th>
-
-                                            @if (tr.side_name === 'Close') {
-                                              <th>Покупка #</th>
-                                              <th>Цена покупки</th>
-                                            } @else {
-                                              <th>Продажа #</th>
-                                              <th>Цена продажи</th>
-                                            }
-
-                                            <th>Кол-во</th>
-
-                                            <th>Сумма продажи</th>
-
-                                            <th>Сумма покупки</th>
-
-                                            <th>Ком. продажи</th>
-
-                                            <th>Ком. покупки</th>
-
-                                            <th>Фин. результат</th>
-
-                                          </tr>
-
-                                        </thead>
-
-                                        <tbody>
-
-                                          @for (lot of tradeLotsFor(tr.id); track lot.id) {
-
-                                            <tr>
-
-                                              <td>{{ costMethodLabel(lot.cost_method) }}</td>
-
-                                              @if (tr.side_name === 'Close') {
-                                                <td>#{{ lot.open_trade_id ?? '—' }}</td>
-                                                <td>{{ lot.open_price ?? '—' }}</td>
-                                              } @else {
-                                                <td>#{{ lot.close_trade_id }}</td>
-                                                <td>{{ lot.close_price }}</td>
-                                              }
-
-                                              <td>{{ lot.quantity }}</td>
-
-                                              <td>{{ formatMoney(lot.close_amount) }}</td>
-
-                                              <td>{{ formatMoney(lot.open_amount) }}</td>
-
-                                              <td>{{ formatMoney(lot.close_commission) }}</td>
-
-                                              <td>{{ formatMoney(lot.open_commission) }}</td>
-
-                                              <td>
-                                                <span
-                                                  class="trade-pnl"
-                                                  [class.trade-pnl-pos]="lot.financial_result > 0"
-                                                  [class.trade-pnl-neg]="lot.financial_result < 0"
-                                                >
-                                                  {{ formatPnl(lot.financial_result) }}
-                                                </span>
-                                              </td>
-
-                                            </tr>
-
-                                          }
-
-                                        </tbody>
-
-                                      </table>
-
-                                    }
-
-                                  </td>
-
-                                </tr>
-
-                              }
-
-                            } @empty {
-
-                              <tr>
-
-                                <td colspan="11" class="empty">
-
-                                  @if (row.is_enabled) {
-
-                                    Сделок пока нет — runner проверяет сигналы, пока открыт UI (~15 с)
-
-                                  } @else {
-
-                                    Включите логику для автоматических сделок
-
-                                  }
-
-                                </td>
-
-                              </tr>
-
-                            }
-
-                          </tbody>
-
-                        </table>
-
+                        <div class="positions-total-pnl">
+                          <span class="positions-total-label">Фин. результат (всего):</span>
+                          <span
+                            class="trade-pnl positions-total-value"
+                            [class.trade-pnl-pos]="totalFinancialResult(row.id) > 0"
+                            [class.trade-pnl-neg]="totalFinancialResult(row.id) < 0"
+                          >
+                            {{ formatPnl(totalFinancialResult(row.id)) }}
+                          </span>
                         </div>
 
+                        <details
+                          class="signals-block positions-sub-block"
+                          [open]="isOpenPositionsExpanded(row.id)"
+                        >
+                          <summary class="signals-summary" (click)="toggleOpenPositionsBlock(row.id, $event)">
+                            <span class="signals-summary-head">
+                              <span class="signals-chevron" [class.open]="isOpenPositionsExpanded(row.id)" aria-hidden="true">▸</span>
+                              <span class="signals-title">Открытые позиции</span>
+                            </span>
+                          </summary>
+                          <div class="signals-body">
+                            <div class="trades-scroll">
+                              <table class="signals-table trades-table">
+                                <thead>
+                                  <tr>
+                                    <th></th>
+                                    <th>Время</th>
+                                    <th>Бумага</th>
+                                    <th>Операция</th>
+                                    <th>Кол-во</th>
+                                    <th>Остаток</th>
+                                    <th>Цена</th>
+                                    <th>Комиссия</th>
+                                    <th>Статус</th>
+                                  </tr>
+                                </thead>
+                                <tbody>
+                                  @for (tr of openPositionTrades(row.id); track tr.id) {
+                                    <tr class="trade-row" [class.trade-rejected]="tr.status === 'rejected'" (click)="toggleTradeRow(tr, $event)">
+                                      <td class="trade-expand-cell">
+                                        <span class="trade-row-chevron" [class.open]="isTradeRowExpanded(tr.id)" aria-hidden="true">▸</span>
+                                      </td>
+                                      <td>{{ formatTradeDt(tr.executed_at) }}</td>
+                                      <td><strong>{{ tr.security_prefix || tr.security_name }}</strong></td>
+                                      <td>{{ tradeActionLabel(tr) }}</td>
+                                      <td>{{ tr.quantity }}</td>
+                                      <td>{{ tr.remaining_qty ?? tr.quantity }}</td>
+                                      <td>{{ tr.price }}</td>
+                                      <td>{{ formatMoney(tr.commission) }}</td>
+                                      <td>{{ tradeStatusLabel(tr.status) }}</td>
+                                    </tr>
+                                  } @empty {
+                                    <tr><td colspan="9" class="empty">Нет открытых позиций</td></tr>
+                                  }
+                                </tbody>
+                              </table>
+                            </div>
+                          </div>
+                        </details>
+
+                        <details
+                          class="signals-block positions-sub-block"
+                          [open]="isClosedPositionsExpanded(row.id)"
+                        >
+                          <summary class="signals-summary" (click)="toggleClosedPositionsBlock(row.id, $event)">
+                            <span class="signals-summary-head">
+                              <span class="signals-chevron" [class.open]="isClosedPositionsExpanded(row.id)" aria-hidden="true">▸</span>
+                              <span class="signals-title">Закрытые позиции</span>
+                            </span>
+                          </summary>
+                          <div class="signals-body">
+                            @for (group of closedPositionGroups(row.id); track group.id) {
+                              <div class="position-group">
+                                @for (open of group.opens; track open.id) {
+                                  <div class="position-group-open">
+                                    <span class="position-group-tag">Вход</span>
+                                    <span>{{ formatTradeDt(open.executed_at) }}</span>
+                                    <strong>{{ open.security_prefix || open.security_name }}</strong>
+                                    <span>{{ tradeActionLabel(open) }}</span>
+                                    <span>{{ open.quantity }} × {{ open.price }}</span>
+                                  </div>
+                                }
+                                <div class="position-group-close trade-row" (click)="toggleTradeRow(group.close, $event)">
+                                  <span class="position-group-tag position-group-tag-close">Выход</span>
+                                  <span>{{ formatTradeDt(group.close.executed_at) }}</span>
+                                  <strong>{{ group.close.security_prefix || group.close.security_name }}</strong>
+                                  <span>{{ tradeActionLabel(group.close) }}</span>
+                                  <span>{{ group.close.quantity }} × {{ group.close.price }}</span>
+                                  <span class="trade-pnl" [class.trade-pnl-pos]="group.pnl > 0" [class.trade-pnl-neg]="group.pnl < 0">{{ formatPnl(group.pnl) }}</span>
+                                  <span class="trade-row-chevron" [class.open]="isTradeRowExpanded(group.close.id)" aria-hidden="true">▸</span>
+                                </div>
+                                @if (isTradeRowExpanded(group.close.id)) {
+                                  <div class="position-group-lots">
+                                    @if (isTradeLotsLoading(group.close.id)) {
+                                      <p class="trade-lots-loading">Загрузка пакетов…</p>
+                                    } @else if (tradeLotsFor(group.close.id).length === 0) {
+                                      <p class="trade-lots-empty">Пакеты не рассчитаны</p>
+                                    } @else {
+                                      <table class="signals-table trade-lots-table">
+                                        <thead>
+                                          <tr>
+                                            <th>Метод</th>
+                                            <th>Вход #</th>
+                                            <th>Кол-во</th>
+                                            <th>Фин. результат</th>
+                                          </tr>
+                                        </thead>
+                                        <tbody>
+                                          @for (lot of tradeLotsFor(group.close.id); track lot.id) {
+                                            <tr>
+                                              <td>{{ costMethodLabel(lot.cost_method) }}</td>
+                                              <td>#{{ lot.open_trade_id ?? '—' }}</td>
+                                              <td>{{ lot.quantity }}</td>
+                                              <td>{{ formatPnl(lot.financial_result) }}</td>
+                                            </tr>
+                                          }
+                                        </tbody>
+                                      </table>
+                                    }
+                                  </div>
+                                }
+                              </div>
+                            } @empty {
+                              <p class="empty positions-empty">Нет закрытых позиций</p>
+                            }
+                          </div>
+                        </details>
+
                         <p class="signals-help">
-                          Сделки по <strong>выбранным сигналам индикаторов</strong> на бумагах логики.
-                          Робот работает только пока открыт UI. Клик по строке — пакеты закрытия (FIFO / средняя).
+                          Позиции по сигналам индикаторов. Открытые — входы без полного закрытия.
+                          Закрытые — вход и выход с фин. результатом. Runner работает при открытом UI.
                         </p>
 
                       </div>

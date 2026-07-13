@@ -1896,6 +1896,10 @@ const LOGIC_TRADE_SELECT = `
     lt.financial_result,
     lt.note,
     lt.created_at,
+    CASE
+      WHEN sd.name = 'Open' THEN logic_trade_open_remaining_qty(lt.id)
+      ELSE NULL
+    END AS remaining_qty,
     s.name AS security_name,
     sp.prefix AS security_prefix,
     sd.name AS side_name,

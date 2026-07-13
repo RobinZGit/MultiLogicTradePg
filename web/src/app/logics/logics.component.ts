@@ -39,6 +39,7 @@ import {
   valueUnitLabel,
 } from '../shared/logic-stop';
 import {
+  ClosedPositionGroup,
   costMethodLabel,
   tradeStatusLabel,
   yesNoLabel,
@@ -88,6 +89,8 @@ export class LogicsComponent implements OnInit, OnDestroy {
   expandedStopsBlocks = new Set<number>();
   expandedSecuritiesBlocks = new Set<number>();
   expandedTradesBlocks = new Set<number>();
+  expandedOpenPositionsBlocks = new Set<number>();
+  expandedClosedPositionsBlocks = new Set<number>();
   expandedTradeRows = new Set<number>();
   logicSignals = new Map<number, LogicIndicatorSignalRow[]>();
   logicStops = new Map<number, LogicStopRow[]>();
@@ -598,12 +601,108 @@ export class LogicsComponent implements OnInit, OnDestroy {
     event.stopPropagation();
     if (this.expandedTradesBlocks.has(logicId)) {
       this.expandedTradesBlocks.delete(logicId);
+      this.expandedOpenPositionsBlocks.delete(logicId);
+      this.expandedClosedPositionsBlocks.delete(logicId);
       for (const tr of this.tradesFor(logicId)) {
         this.expandedTradeRows.delete(tr.id);
       }
     } else {
       this.expandedTradesBlocks.add(logicId);
       this.loadTradesForLogic(logicId);
+    }
+  }
+
+  toggleOpenPositionsBlock(logicId: number, event: Event): void {
+    event.preventDefault();
+    event.stopPropagation();
+    if (this.expandedOpenPositionsBlocks.has(logicId)) {
+      this.expandedOpenPositionsBlocks.delete(logicId);
+    } else {
+      this.expandedOpenPositionsBlocks.add(logicId);
+    }
+  }
+
+  toggleClosedPositionsBlock(logicId: number, event: Event): void {
+    event.preventDefault();
+    event.stopPropagation();
+    if (this.expandedClosedPositionsBlocks.has(logicId)) {
+      this.expandedClosedPositionsBlocks.delete(logicId);
+    } else {
+      this.expandedClosedPositionsBlocks.add(logicId);
+      this.loadLotsForClosedPositions(logicId);
+    }
+  }
+
+  isOpenPositionsExpanded(logicId: number): boolean {
+    return this.expandedOpenPositionsBlocks.has(logicId);
+  }
+
+  isClosedPositionsExpanded(logicId: number): boolean {
+    return this.expandedClosedPositionsBlocks.has(logicId);
+  }
+
+  openPositionTrades(logicId: number): LogicTradeRow[] {
+    return this.tradesFor(logicId).filter((t) => this.isOpenPositionTrade(t));
+  }
+
+  closedPositionGroups(logicId: number): ClosedPositionGroup[] {
+    const trades = this.tradesFor(logicId);
+    const byId = new Map(trades.map((t) => [t.id, t]));
+    const closes = trades
+      .filter((t) => t.side_name === 'Close')
+      .sort(
+        (a, b) =>
+          new Date(b.executed_at).getTime() - new Date(a.executed_at).getTime()
+      );
+
+    return closes.map((close) => {
+      const lots = this.tradeLotsFor(close.id);
+      const openIds = new Set<number>();
+      for (const lot of lots) {
+        if (lot.open_trade_id != null) {
+          openIds.add(lot.open_trade_id);
+        }
+      }
+      const opens = [...openIds]
+        .map((id) => byId.get(id))
+        .filter((t): t is LogicTradeRow => t != null)
+        .sort(
+          (a, b) =>
+            new Date(a.executed_at).getTime() - new Date(b.executed_at).getTime()
+        );
+      return {
+        id: close.id,
+        close,
+        opens,
+        pnl: Number(close.financial_result ?? 0),
+      };
+    });
+  }
+
+  totalFinancialResult(logicId: number): number {
+    return this.tradesFor(logicId).reduce(
+      (sum, t) =>
+        t.financial_result != null && Number.isFinite(Number(t.financial_result))
+          ? sum + Number(t.financial_result)
+          : sum,
+      0
+    );
+  }
+
+  isOpenPositionTrade(trade: LogicTradeRow): boolean {
+    if (trade.side_name !== 'Open') {
+      return false;
+    }
+    const rem = trade.remaining_qty;
+    if (rem == null) {
+      return true;
+    }
+    return Number(rem) > 0;
+  }
+
+  private loadLotsForClosedPositions(logicId: number): void {
+    for (const close of this.tradesFor(logicId).filter((t) => t.side_name === 'Close')) {
+      this.loadTradeLots(close.id);
     }
   }
 

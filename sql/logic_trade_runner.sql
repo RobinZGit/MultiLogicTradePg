@@ -597,7 +597,6 @@ DECLARE
     v_closed_bar_dt TIMESTAMP;
     v_last_bar_raw TEXT;
     v_last_bar_dt TIMESTAMP;
-    v_all_securities_ready BOOLEAN := TRUE;
     v_bar_row RECORD;
 BEGIN
     SELECT l.id, l.account_id, a.account_type
@@ -676,48 +675,6 @@ BEGIN
 
     CALL logic_refresh_market_data(p_logic_id, v_tf_id, v_closed_bar_dt);
 
-    -- Все бумаги и все сигналы должны иметь данные на закрытой свече
-    FOR v_sec IN
-        SELECT ls.security_id
-        FROM logic_securities ls
-        WHERE ls.logic_id = p_logic_id AND ls.is_active = TRUE
-    LOOP
-        FOR v_sig IN
-            SELECT lis.indicator_id, lis.formula
-            FROM logic_indicator_signals lis
-            WHERE lis.logic_id = p_logic_id AND lis.is_active = TRUE
-        LOOP
-            SELECT * INTO v_parsed FROM parse_signal_formula(v_sig.formula);
-            IF NOT COALESCE(v_parsed.valid, FALSE) THEN
-                CONTINUE;
-            END IF;
-            v_series := parse_signal_series(v_parsed.params);
-            SELECT * INTO v_bar_row
-            FROM logic_bar_data_at(
-                v_sec.security_id, v_tf_id, v_sig.indicator_id, v_series, v_closed_bar_dt
-            );
-            IF NOT FOUND THEN
-                v_all_securities_ready := FALSE;
-                PERFORM logic_trade_log(
-                    p_logic_id,
-                    'trade.not_ready',
-                    format('Нет данных на свече %s для security=%s signal=%s', v_closed_bar_dt, v_sec.security_id, v_sig.formula),
-                    jsonb_build_object('closed_bar', v_closed_bar_dt, 'security_id', v_sec.security_id, 'formula', v_sig.formula),
-                    v_sec.security_id,
-                    v_tf_id
-                );
-                EXIT;
-            END IF;
-        END LOOP;
-        IF NOT v_all_securities_ready THEN
-            EXIT;
-        END IF;
-    END LOOP;
-
-    IF NOT v_all_securities_ready THEN
-        RETURN 0;
-    END IF;
-
     PERFORM logic_trade_log(
         p_logic_id,
         'trade.bar_check',
@@ -750,6 +707,14 @@ BEGIN
                 v_sec.security_id, v_tf_id, v_sig.indicator_id, v_series, v_closed_bar_dt
             );
             IF NOT FOUND THEN
+                PERFORM logic_trade_log(
+                    p_logic_id,
+                    'trade.not_ready',
+                    format('Нет данных на свече %s для security=%s signal=%s', v_closed_bar_dt, v_sec.security_id, v_sig.formula),
+                    jsonb_build_object('closed_bar', v_closed_bar_dt, 'security_id', v_sec.security_id, 'formula', v_sig.formula),
+                    v_sec.security_id,
+                    v_tf_id
+                );
                 CONTINUE;
             END IF;
 
