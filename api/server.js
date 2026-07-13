@@ -759,6 +759,10 @@ app.get('/api/logics', async (_req, res) => {
         l.name,
         l.account_id,
         l.is_enabled,
+        l.position_size_pct,
+        l.max_open_positions,
+        l.initial_balance,
+        l.current_balance,
         a.account_code,
         a.name AS account_name,
         a.account_type,
@@ -1264,6 +1268,71 @@ app.patch('/api/logics/:id', async (req, res) => {
     res.json(rows[0]);
   } catch (err) {
     console.error('PATCH /api/logics/:id', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.patch('/api/logics/:id/trading-params', async (req, res) => {
+  const id = Number(req.params.id);
+  if (!Number.isInteger(id) || id <= 0) {
+    res.status(400).json({ error: 'Invalid logic id' });
+    return;
+  }
+
+  const parsed = parseLogicTradingParams(req.body);
+  if (parsed.error) {
+    res.status(400).json({ error: parsed.error });
+    return;
+  }
+
+  try {
+    const sets = [];
+    const vals = [];
+    let idx = 1;
+
+    if (parsed.position_size_pct !== undefined) {
+      sets.push(`position_size_pct = $${idx++}`);
+      vals.push(parsed.position_size_pct);
+    }
+    if (parsed.max_open_positions !== undefined) {
+      sets.push(`max_open_positions = $${idx++}`);
+      vals.push(parsed.max_open_positions);
+    }
+    if (parsed.initial_balance !== undefined) {
+      sets.push(`initial_balance = $${idx++}`);
+      vals.push(parsed.initial_balance);
+      if (parsed.reset_balance) {
+        sets.push(`current_balance = $${idx++}`);
+        vals.push(parsed.initial_balance);
+      }
+    }
+
+    vals.push(id);
+    const { rows } = await pool.query(
+      `
+      UPDATE logics
+      SET ${sets.join(', ')}
+      WHERE id = $${idx}
+      RETURNING
+        id,
+        position_size_pct,
+        max_open_positions,
+        initial_balance,
+        current_balance
+      `,
+      vals
+    );
+    if (rows.length === 0) {
+      res.status(404).json({ error: 'Logic not found' });
+      return;
+    }
+    res.json(rows[0]);
+  } catch (err) {
+    console.error('PATCH /api/logics/:id/trading-params', err);
+    if (err.code === '23514') {
+      res.status(400).json({ error: 'Недопустимое значение параметра' });
+      return;
+    }
     res.status(500).json({ error: err.message });
   }
 });
@@ -2057,6 +2126,47 @@ function formatRoutine(r) {
     result_type: r.result_type || null,
     description: r.description || null,
   };
+}
+
+function parseLogicTradingParams(body) {
+  const out = { reset_balance: Boolean(body?.reset_balance) };
+  let hasField = false;
+
+  if (body?.position_size_pct !== undefined) {
+    const v = Number(body.position_size_pct);
+    if (!Number.isFinite(v) || v <= 0 || v > 100) {
+      return { error: '% депозита: число от 0.01 до 100' };
+    }
+    out.position_size_pct = v;
+    hasField = true;
+  }
+
+  if (body?.max_open_positions !== undefined) {
+    const v = Number(body.max_open_positions);
+    if (!Number.isInteger(v) || v <= 0) {
+      return { error: 'Макс. позиций: целое число > 0' };
+    }
+    out.max_open_positions = v;
+    hasField = true;
+  }
+
+  if (body?.initial_balance !== undefined) {
+    if (body.initial_balance === null || body.initial_balance === '') {
+      out.initial_balance = null;
+    } else {
+      const v = Number(body.initial_balance);
+      if (!Number.isFinite(v) || v < 0) {
+        return { error: 'Начальный остаток: число ≥ 0 или пусто' };
+      }
+      out.initial_balance = v;
+    }
+    hasField = true;
+  }
+
+  if (!hasField) {
+    return { error: 'Укажите параметры торговли' };
+  }
+  return out;
 }
 
 function parseLogicBody(body) {

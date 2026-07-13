@@ -75,6 +75,7 @@ export class LogicsComponent implements OnInit, OnDestroy {
   editorLogic: LogicRow | null = null;
 
   expandedLogics = new Set<number>();
+  expandedParamsBlocks = new Set<number>();
   expandedSignalsBlocks = new Set<number>();
   expandedStopsBlocks = new Set<number>();
   expandedSecuritiesBlocks = new Set<number>();
@@ -117,6 +118,16 @@ export class LogicsComponent implements OnInit, OnDestroy {
   private formulaDrafts = new Map<number, string>();
   private savingFormulaIds = new Set<number>();
   private savingStopIds = new Set<number>();
+  private savingParamsIds = new Set<number>();
+  paramsDrafts = new Map<
+    number,
+    {
+      position_size_pct: string;
+      max_open_positions: string;
+      initial_balance: string;
+      reset_balance: boolean;
+    }
+  >();
 
   constructor(
     private readonly logicsService: LogicsService,
@@ -171,6 +182,10 @@ export class LogicsComponent implements OnInit, OnDestroy {
     return this.expandedLogics.has(id);
   }
 
+  isParamsBlockExpanded(id: number): boolean {
+    return this.expandedParamsBlocks.has(id);
+  }
+
   isSignalsBlockExpanded(id: number): boolean {
     return this.expandedSignalsBlocks.has(id);
   }
@@ -196,6 +211,7 @@ export class LogicsComponent implements OnInit, OnDestroy {
     }
     if (this.expandedLogics.has(row.id)) {
       this.expandedLogics.delete(row.id);
+      this.expandedParamsBlocks.delete(row.id);
       this.expandedSignalsBlocks.delete(row.id);
       this.expandedStopsBlocks.delete(row.id);
       this.expandedSecuritiesBlocks.delete(row.id);
@@ -206,6 +222,96 @@ export class LogicsComponent implements OnInit, OnDestroy {
       return;
     }
     this.expandedLogics.add(row.id);
+  }
+
+  toggleParamsBlock(logicId: number, event: Event): void {
+    event.preventDefault();
+    event.stopPropagation();
+    if (this.expandedParamsBlocks.has(logicId)) {
+      this.expandedParamsBlocks.delete(logicId);
+    } else {
+      this.expandedParamsBlocks.add(logicId);
+      this.ensureParamsDraft(logicId);
+    }
+  }
+
+  ensureParamsDraft(logicId: number): void {
+    if (this.paramsDrafts.has(logicId)) return;
+    const row = this.logics.find((l) => l.id === logicId);
+    if (!row) return;
+    this.paramsDrafts.set(logicId, {
+      position_size_pct: String(row.position_size_pct ?? 10),
+      max_open_positions: String(row.max_open_positions ?? 5),
+      initial_balance:
+        row.initial_balance != null ? String(row.initial_balance) : '',
+      reset_balance: false,
+    });
+  }
+
+  paramsDraft(logicId: number) {
+    this.ensureParamsDraft(logicId);
+    return (
+      this.paramsDrafts.get(logicId) ?? {
+        position_size_pct: '10',
+        max_open_positions: '5',
+        initial_balance: '',
+        reset_balance: false,
+      }
+    );
+  }
+
+  isParamsSaving(logicId: number): boolean {
+    return this.savingParamsIds.has(logicId);
+  }
+
+  saveTradingParams(row: LogicRow, event: Event): void {
+    event.stopPropagation();
+    const draft = this.paramsDraft(row.id);
+    const position_size_pct = Number(draft.position_size_pct.replace(',', '.'));
+    const max_open_positions = Number(draft.max_open_positions);
+    const initialRaw = draft.initial_balance.trim().replace(',', '.');
+    const initial_balance =
+      initialRaw === '' ? null : Number(initialRaw);
+
+    if (!Number.isFinite(position_size_pct) || position_size_pct <= 0 || position_size_pct > 100) {
+      return;
+    }
+    if (!Number.isInteger(max_open_positions) || max_open_positions <= 0) {
+      return;
+    }
+    if (initial_balance != null && (!Number.isFinite(initial_balance) || initial_balance < 0)) {
+      return;
+    }
+
+    this.savingParamsIds.add(row.id);
+    this.logicsService
+      .updateLogicTradingParams(row.id, {
+        position_size_pct,
+        max_open_positions,
+        initial_balance,
+        reset_balance: draft.reset_balance,
+      })
+      .subscribe({
+        next: (updated) => {
+          const idx = this.logics.findIndex((l) => l.id === row.id);
+          if (idx >= 0) {
+            this.logics[idx] = { ...this.logics[idx], ...updated };
+          }
+          this.paramsDrafts.delete(row.id);
+          this.savingParamsIds.delete(row.id);
+        },
+        error: () => {
+          this.savingParamsIds.delete(row.id);
+        },
+      });
+  }
+
+  formatMoney(value: number | null | undefined): string {
+    if (value == null || !Number.isFinite(Number(value))) return '—';
+    return Number(value).toLocaleString('ru-RU', {
+      minimumFractionDigits: 2,
+      maximumFractionDigits: 2,
+    });
   }
 
   toggleSignalsBlock(logicId: number, event: Event): void {

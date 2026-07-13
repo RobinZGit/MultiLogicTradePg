@@ -2,7 +2,7 @@ import { Injectable } from '@angular/core';
 import { HttpClient } from '@angular/common/http';
 import { Observable } from 'rxjs';
 import { AppConfigService } from './app-config.service';
-import { LogicIndicatorSignalRow, LogicRow, LogicSecurityRow, LogicStopRow } from '../models/logic.model';
+import { LogicIndicatorSignalRow, LogicRow, LogicSecurityRow, LogicStopRow, LogicTradingParamsPayload } from '../models/logic.model';
 import { LogicTradeRow } from '../shared/logic-trade';
 import { LogicPayload } from '../models/lookup.model';
 
@@ -35,6 +35,22 @@ export class LogicsService {
     return this.http.patch<{ id: number; is_enabled: boolean }>(
       `${this.appConfig.apiUrl}/logics/${id}`,
       { is_enabled }
+    );
+  }
+
+  updateLogicTradingParams(
+    id: number,
+    payload: LogicTradingParamsPayload
+  ): Observable<{
+    id: number;
+    position_size_pct: number;
+    max_open_positions: number;
+    initial_balance: number | null;
+    current_balance: number | null;
+  }> {
+    return this.http.patch(
+      `${this.appConfig.apiUrl}/logics/${id}/trading-params`,
+      payload
     );
   }
 

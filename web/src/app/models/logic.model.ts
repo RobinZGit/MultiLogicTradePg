@@ -4,12 +4,23 @@ export interface LogicRow {
   account_id: number;
   broker_id: number;
   is_enabled: boolean;
+  position_size_pct: number;
+  max_open_positions: number;
+  initial_balance: number | null;
+  current_balance: number | null;
   account_code: string;
   account_name: string;
   account_type: 'real' | 'fake';
   account_is_active: boolean;
   broker_code: string;
   broker_name: string;
+}
+
+export interface LogicTradingParamsPayload {
+  position_size_pct?: number;
+  max_open_positions?: number;
+  initial_balance?: number | null;
+  reset_balance?: boolean;
 }
 
 export interface LogicIndicatorSignalRow {

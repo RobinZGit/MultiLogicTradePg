@@ -326,6 +326,35 @@ JOIN sides s ON ld.side_id = s.id
 JOIN actions a ON ld.action_id = a.id
 WHERE s.name = 'Open' AND a.name = 'Long';
 
+-- 6.3 Демо-логика SMA (бумажная торговля)
+SELECT
+    l.name,
+    l.is_enabled,
+    l.position_size_pct,
+    l.max_open_positions,
+    l.initial_balance,
+    l.current_balance,
+    a.account_code,
+    a.account_type
+FROM logics l
+JOIN accounts a ON a.id = l.account_id
+WHERE l.name = 'SMA Price Cross Demo';
+
+-- 6.4 Сигналы и бумаги демо-логики
+SELECT l.name, lis.signal_kind, lis.formula, i.code AS indicator
+FROM logics l
+JOIN logic_indicator_signals lis ON lis.logic_id = l.id
+JOIN indicators i ON i.id = lis.indicator_id
+WHERE l.name = 'SMA Price Cross Demo'
+ORDER BY lis.display_order;
+
+SELECT l.name, sp.prefix, s.name AS security_name
+FROM logics l
+JOIN logic_securities ls ON ls.logic_id = l.id
+JOIN securities s ON s.id = ls.security_id
+LEFT JOIN security_prefixes sp ON sp.security_id = s.id AND sp.exchange_id = 1
+WHERE l.name = 'SMA Price Cross Demo';
+
 -- ============================================
 -- 7. КОМПЛЕКСНЫЕ ЗАПРОСЫ
 -- ============================================

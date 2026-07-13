@@ -704,3 +704,38 @@ tbody tr:hover {
 .trade-rejected {
   background: #fef2f2;
 }
+
+.params-table .params-input {
+  width: 100%;
+  max-width: 10rem;
+  padding: 0.25rem 0.45rem;
+  font-size: 0.85rem;
+  border: 1px solid #d1d5db;
+  border-radius: 4px;
+}
+
+.params-table .params-input-short {
+  max-width: 5rem;
+}
+
+.params-hint {
+  font-size: 0.78rem;
+  color: #6b7280;
+}
+
+.params-actions-row td {
+  padding-top: 0.75rem;
+}
+
+.params-reset {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  margin-right: 1rem;
+  font-size: 0.82rem;
+  cursor: pointer;
+}
+
+.params-block {
+  border-color: #93c5fd;
+}

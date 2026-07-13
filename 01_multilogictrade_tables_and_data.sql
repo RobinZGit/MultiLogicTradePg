@@ -1,6 +1,6 @@
 -- ============================================
 -- MultiLogicTrade — шаг 1: таблицы и справочники
--- Версия: v17 (идемпотентный запуск)
+-- Версия: v18 (идемпотентный запуск)
 -- ============================================
 -- Подключение: база multilogictrade
 -- Можно выполнять многократно: объекты и строки не дублируются.
@@ -25,6 +25,7 @@
 -- ============================================
 
 -- ============================================
+
 -- Блок миграции: обновление существующей схемы v16 → v17
 -- ============================================
 DO $$
@@ -852,8 +853,39 @@ CREATE TABLE IF NOT EXISTS logics (
     id SERIAL PRIMARY KEY,
     name VARCHAR(100) NOT NULL UNIQUE,
     account_id INTEGER NOT NULL REFERENCES accounts(id) ON DELETE RESTRICT,
-    is_enabled BOOLEAN NOT NULL DEFAULT TRUE
+    is_enabled BOOLEAN NOT NULL DEFAULT TRUE,
+    position_size_pct NUMERIC(8, 4) NOT NULL DEFAULT 10,
+    max_open_positions INTEGER NOT NULL DEFAULT 5,
+    initial_balance NUMERIC(18, 2),
+    current_balance NUMERIC(18, 2)
 );
+
+-- Блок миграции: обновление существующей схемы v17 → v18 (для БД без новых колонок)
+ALTER TABLE logics ADD COLUMN IF NOT EXISTS position_size_pct NUMERIC(8, 4) NOT NULL DEFAULT 10;
+ALTER TABLE logics ADD COLUMN IF NOT EXISTS max_open_positions INTEGER NOT NULL DEFAULT 5;
+ALTER TABLE logics ADD COLUMN IF NOT EXISTS initial_balance NUMERIC(18, 2);
+ALTER TABLE logics ADD COLUMN IF NOT EXISTS current_balance NUMERIC(18, 2);
+
+DO $$
+BEGIN
+    ALTER TABLE logics ADD CONSTRAINT chk_logics_position_size_pct
+        CHECK (position_size_pct > 0 AND position_size_pct <= 100);
+EXCEPTION
+    WHEN duplicate_object THEN NULL;
+END $$;
+
+DO $$
+BEGIN
+    ALTER TABLE logics ADD CONSTRAINT chk_logics_max_open_positions
+        CHECK (max_open_positions > 0);
+EXCEPTION
+    WHEN duplicate_object THEN NULL;
+END $$;
+
+COMMENT ON COLUMN logics.position_size_pct IS '% депозита на одну сделку (от current_balance логики)';
+COMMENT ON COLUMN logics.max_open_positions IS 'Макс. число одновременно открытых long-позиций по бумагам';
+COMMENT ON COLUMN logics.initial_balance IS 'Начальный остаток (фейковый счёт / эталон депозита для расчёта лота)';
+COMMENT ON COLUMN logics.current_balance IS 'Текущий остаток после сделок (обновляет trade runner)';
 
 CREATE INDEX IF NOT EXISTS idx_logics_account_id ON logics(account_id);
 
@@ -862,13 +894,27 @@ COMMENT ON COLUMN logics.name IS 'Уникальное имя логики';
 COMMENT ON COLUMN logics.account_id IS 'Счёт (accounts), на котором выполняется эта торговля';
 COMMENT ON COLUMN logics.is_enabled IS 'Логика включена (активна) или выключена';
 
--- Пример: одна демо-логика на фейковом счёте T-Bank
-INSERT INTO logics (name, account_id)
-SELECT 'Demo RSI SBER M5', a.id
+-- Пример: логика «цена выше SMA — покупка, ниже — продажа» на фейковом счёте T-Bank
+INSERT INTO logics (
+    name, account_id, is_enabled,
+    position_size_pct, max_open_positions, initial_balance, current_balance
+)
+SELECT
+    'SMA Price Cross Demo',
+    a.id,
+    FALSE,
+    10,
+    3,
+    1000000,
+    1000000
 FROM accounts a
 JOIN brokers b ON b.id = a.broker_id
 WHERE b.code = 'T-BANK' AND a.account_code = 'FAKE-EFF-001'
-ON CONFLICT (name) DO NOTHING;
+ON CONFLICT (name) DO UPDATE SET
+    position_size_pct = EXCLUDED.position_size_pct,
+    max_open_positions = EXCLUDED.max_open_positions,
+    initial_balance = EXCLUDED.initial_balance,
+    current_balance = COALESCE(logics.current_balance, EXCLUDED.current_balance);
 
 CREATE TABLE IF NOT EXISTS sides (
     id SERIAL PRIMARY KEY,
@@ -955,6 +1001,32 @@ CREATE INDEX IF NOT EXISTS idx_logic_securities_security_id ON logic_securities(
 COMMENT ON TABLE logic_securities IS
 'Портфель ценных бумаг торговой логики: одна строка — одна бумага в logics';
 COMMENT ON COLUMN logic_securities.display_order IS 'Порядок отображения в UI';
+
+-- Демо-логика SMA Price Cross Demo: сигналы и бумага SBER
+INSERT INTO logic_indicator_signals (logic_id, indicator_id, signal_kind, formula, display_order)
+SELECT l.id, i.id, 'trend', '@SMA(period=20,series=VALUE) pp > VALUE', 0
+FROM logics l
+CROSS JOIN indicators i
+WHERE l.name = 'SMA Price Cross Demo' AND i.code = 'SMA'
+ON CONFLICT (logic_id, indicator_id, signal_kind) DO UPDATE SET
+    formula = EXCLUDED.formula,
+    is_active = TRUE;
+
+INSERT INTO logic_indicator_signals (logic_id, indicator_id, signal_kind, formula, display_order)
+SELECT l.id, i.id, 'counter', '@SMA(period=20,series=VALUE) pp < VALUE', 1
+FROM logics l
+CROSS JOIN indicators i
+WHERE l.name = 'SMA Price Cross Demo' AND i.code = 'SMA'
+ON CONFLICT (logic_id, indicator_id, signal_kind) DO UPDATE SET
+    formula = EXCLUDED.formula,
+    is_active = TRUE;
+
+INSERT INTO logic_securities (logic_id, security_id, display_order)
+SELECT l.id, s.id, 0
+FROM logics l
+JOIN securities s ON s.name = 'Сбербанк (обыкновенные)'
+WHERE l.name = 'SMA Price Cross Demo'
+ON CONFLICT (logic_id, security_id) DO UPDATE SET is_active = TRUE;
 
 -- Сделки по торговой логике (исполнение по сигналам индикаторов)
 CREATE TABLE IF NOT EXISTS logic_trades (
