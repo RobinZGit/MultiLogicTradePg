@@ -39,8 +39,9 @@ import {
   valueUnitLabel,
 } from '../shared/logic-stop';
 import {
-  ClosedPositionGroup,
   costMethodLabel,
+  tradeOperationHint,
+  tradeOperationLabel,
   tradeStatusLabel,
   yesNoLabel,
   LogicTradeLotRow,
@@ -621,6 +622,7 @@ export class LogicsComponent implements OnInit, OnDestroy {
       this.expandedOpenPositionsBlocks.delete(logicId);
     } else {
       this.expandedOpenPositionsBlocks.add(logicId);
+      this.loadLotsForOpenPositions(logicId);
     }
   }
 
@@ -644,41 +646,37 @@ export class LogicsComponent implements OnInit, OnDestroy {
   }
 
   openPositionTrades(logicId: number): LogicTradeRow[] {
-    return this.tradesFor(logicId).filter((t) => this.isOpenPositionTrade(t));
-  }
-
-  closedPositionGroups(logicId: number): ClosedPositionGroup[] {
-    const trades = this.tradesFor(logicId);
-    const byId = new Map(trades.map((t) => [t.id, t]));
-    const closes = trades
-      .filter((t) => t.side_name === 'Close')
+    return this.tradesFor(logicId)
+      .filter((t) => this.isOpenPositionTrade(t))
       .sort(
         (a, b) =>
           new Date(b.executed_at).getTime() - new Date(a.executed_at).getTime()
       );
+  }
 
-    return closes.map((close) => {
-      const lots = this.tradeLotsFor(close.id);
-      const openIds = new Set<number>();
-      for (const lot of lots) {
-        if (lot.open_trade_id != null) {
-          openIds.add(lot.open_trade_id);
-        }
-      }
-      const opens = [...openIds]
-        .map((id) => byId.get(id))
-        .filter((t): t is LogicTradeRow => t != null)
-        .sort(
-          (a, b) =>
-            new Date(a.executed_at).getTime() - new Date(b.executed_at).getTime()
-        );
-      return {
-        id: close.id,
-        close,
-        opens,
-        pnl: Number(close.financial_result ?? 0),
-      };
-    });
+  closePositionTrades(logicId: number): LogicTradeRow[] {
+    return this.tradesFor(logicId)
+      .filter(
+        (t) =>
+          t.side_name === 'Close' &&
+          (t.status === 'filled' || t.status === 'submitted')
+      )
+      .sort(
+        (a, b) =>
+          new Date(b.executed_at).getTime() - new Date(a.executed_at).getTime()
+      );
+  }
+
+  closedPartialLotsForOpen(openTradeId: number): LogicTradeLotRow[] {
+    return this.tradeLotsFor(openTradeId).filter(
+      (l) => l.open_trade_id === openTradeId
+    );
+  }
+
+  closedLotsForClose(closeTradeId: number): LogicTradeLotRow[] {
+    return this.tradeLotsFor(closeTradeId).filter(
+      (l) => l.close_trade_id === closeTradeId
+    );
   }
 
   totalFinancialResult(logicId: number): number {
@@ -749,8 +747,17 @@ export class LogicsComponent implements OnInit, OnDestroy {
   }
 
   private loadLotsForClosedPositions(logicId: number): void {
-    for (const close of this.tradesFor(logicId).filter((t) => t.side_name === 'Close')) {
+    for (const close of this.closePositionTrades(logicId)) {
       this.loadTradeLots(close.id);
+    }
+  }
+
+  private loadLotsForOpenPositions(logicId: number): void {
+    for (const open of this.openPositionTrades(logicId)) {
+      const rem = open.remaining_qty ?? open.quantity;
+      if (Number(open.quantity) > Number(rem)) {
+        this.loadTradeLots(open.id);
+      }
     }
   }
 
@@ -781,6 +788,8 @@ export class LogicsComponent implements OnInit, OnDestroy {
     return trade.side_name === 'Close' || trade.side_name === 'Open';
   }
 
+  tradeOperationLabel = tradeOperationLabel;
+  tradeOperationHint = tradeOperationHint;
   costMethodLabel = costMethodLabel;
 
   formatPnl(value: number | null | undefined): string {
@@ -815,7 +824,12 @@ export class LogicsComponent implements OnInit, OnDestroy {
   }
 
   tradeActionLabel(trade: LogicTradeRow): string {
-    return `${trade.side_name} ${trade.action_name}`;
+    return tradeOperationLabel(trade);
+  }
+
+  openTradeHasPartialCloses(trade: LogicTradeRow): boolean {
+    const rem = trade.remaining_qty ?? trade.quantity;
+    return Number(trade.quantity) > Number(rem);
   }
 
   formatTradeDt(iso: string): string {

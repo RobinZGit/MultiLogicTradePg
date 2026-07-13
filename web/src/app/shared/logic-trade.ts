@@ -56,11 +56,28 @@ export interface LogicTradeLotRow {
   close_price: number;
 }
 
-export interface ClosedPositionGroup {
-  id: number;
-  close: LogicTradeRow;
-  opens: LogicTradeRow[];
-  pnl: number;
+export function tradeOperationLabel(
+  trade: Pick<LogicTradeRow, 'side_name' | 'action_name'>
+): string {
+  const opening = trade.side_name === 'Open';
+  if (trade.action_name === 'Long') {
+    return opening ? 'Покупка' : 'Продажа';
+  }
+  return opening ? 'Продажа (шорт)' : 'Покупка (закрытие шорта)';
+}
+
+export function tradeOperationHint(
+  trade: Pick<LogicTradeRow, 'side_name' | 'action_name'>
+): string {
+  const opening = trade.side_name === 'Open';
+  if (trade.action_name === 'Long') {
+    return opening
+      ? 'Сделка открытия long-позиции'
+      : 'Сделка закрытия long — продажа ранее купленного';
+  }
+  return opening
+    ? 'Сделка открытия short-позиции'
+    : 'Сделка закрытия short — покупка для покрытия шорта';
 }
 
 export function costMethodLabel(method: string): string {

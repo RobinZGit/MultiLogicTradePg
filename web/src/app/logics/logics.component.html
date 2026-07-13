@@ -1375,7 +1375,8 @@
                           <summary class="signals-summary" (click)="toggleOpenPositionsBlock(row.id, $event)">
                             <span class="signals-summary-head">
                               <span class="signals-chevron" [class.open]="isOpenPositionsExpanded(row.id)" aria-hidden="true">▸</span>
-                              <span class="signals-title">Открытые позиции</span>
+                              <span class="signals-title">Сделки открытия</span>
+                              <span class="positions-sub-hint">с остатком</span>
                             </span>
                           </summary>
                           <div class="signals-body">
@@ -1384,10 +1385,11 @@
                                 <thead>
                                   <tr>
                                     <th></th>
+                                    <th>#</th>
                                     <th>Время</th>
                                     <th>Бумага</th>
                                     <th>Операция</th>
-                                    <th>Кол-во</th>
+                                    <th>Открыто</th>
                                     <th>Остаток</th>
                                     <th>Цена</th>
                                     <th>Комиссия</th>
@@ -1396,21 +1398,70 @@
                                 </thead>
                                 <tbody>
                                   @for (tr of openPositionTrades(row.id); track tr.id) {
-                                    <tr class="trade-row" [class.trade-rejected]="tr.status === 'rejected'" (click)="toggleTradeRow(tr, $event)">
+                                    <tr
+                                      class="trade-row"
+                                      [class.trade-rejected]="tr.status === 'rejected'"
+                                      [class.trade-row-expandable]="openTradeHasPartialCloses(tr)"
+                                      (click)="openTradeHasPartialCloses(tr) ? toggleTradeRow(tr, $event) : null"
+                                    >
                                       <td class="trade-expand-cell">
-                                        <span class="trade-row-chevron" [class.open]="isTradeRowExpanded(tr.id)" aria-hidden="true">▸</span>
+                                        @if (openTradeHasPartialCloses(tr)) {
+                                          <span class="trade-row-chevron" [class.open]="isTradeRowExpanded(tr.id)" aria-hidden="true">▸</span>
+                                        }
                                       </td>
+                                      <td>#{{ tr.id }}</td>
                                       <td>{{ formatTradeDt(tr.executed_at) }}</td>
                                       <td><strong>{{ tr.security_prefix || tr.security_name }}</strong></td>
-                                      <td>{{ tradeActionLabel(tr) }}</td>
+                                      <td [title]="tradeOperationHint(tr)">{{ tradeOperationLabel(tr) }}</td>
                                       <td>{{ tr.quantity }}</td>
                                       <td>{{ tr.remaining_qty ?? tr.quantity }}</td>
                                       <td>{{ tr.price }}</td>
                                       <td>{{ formatMoney(tr.commission) }}</td>
                                       <td>{{ tradeStatusLabel(tr.status) }}</td>
                                     </tr>
+                                    @if (openTradeHasPartialCloses(tr) && isTradeRowExpanded(tr.id)) {
+                                      <tr class="trade-lots-detail-row">
+                                        <td colspan="10">
+                                          <div class="trade-lots-panel">
+                                            <p class="trade-lots-panel-title">Уже закрыто пакетами (частично)</p>
+                                            @if (isTradeLotsLoading(tr.id)) {
+                                              <p class="trade-lots-loading">Загрузка пакетов…</p>
+                                            } @else if (closedPartialLotsForOpen(tr.id).length === 0) {
+                                              <p class="trade-lots-empty">Пакеты не рассчитаны</p>
+                                            } @else {
+                                              <table class="signals-table trade-lots-table">
+                                                <thead>
+                                                  <tr>
+                                                    <th>Закрытие #</th>
+                                                    <th>Дата закрытия</th>
+                                                    <th>Кол-во</th>
+                                                    <th>Цена закрытия</th>
+                                                    <th>Ком. покупки</th>
+                                                    <th>Ком. продажи</th>
+                                                    <th>Фин. результат</th>
+                                                  </tr>
+                                                </thead>
+                                                <tbody>
+                                                  @for (lot of closedPartialLotsForOpen(tr.id); track lot.id) {
+                                                    <tr>
+                                                      <td>#{{ lot.close_trade_id }}</td>
+                                                      <td>{{ formatTradeDt(lot.close_executed_at) }}</td>
+                                                      <td>{{ lot.quantity }}</td>
+                                                      <td>{{ lot.close_price }}</td>
+                                                      <td>{{ formatMoney(lot.open_commission) }}</td>
+                                                      <td>{{ formatMoney(lot.close_commission) }}</td>
+                                                      <td>{{ formatPnl(lot.financial_result) }}</td>
+                                                    </tr>
+                                                  }
+                                                </tbody>
+                                              </table>
+                                            }
+                                          </div>
+                                        </td>
+                                      </tr>
+                                    }
                                   } @empty {
-                                    <tr><td colspan="9" class="empty">Нет открытых позиций</td></tr>
+                                    <tr><td colspan="10" class="empty">Нет открытых сделок (все покупки/шорты полностью закрыты)</td></tr>
                                   }
                                 </tbody>
                               </table>
@@ -1425,70 +1476,107 @@
                           <summary class="signals-summary" (click)="toggleClosedPositionsBlock(row.id, $event)">
                             <span class="signals-summary-head">
                               <span class="signals-chevron" [class.open]="isClosedPositionsExpanded(row.id)" aria-hidden="true">▸</span>
-                              <span class="signals-title">Закрытые позиции</span>
+                              <span class="signals-title">Сделки закрытия</span>
+                              <span class="positions-sub-hint">продажи / покрытие шорта</span>
                             </span>
                           </summary>
                           <div class="signals-body">
-                            @for (group of closedPositionGroups(row.id); track group.id) {
-                              <div class="position-group">
-                                @for (open of group.opens; track open.id) {
-                                  <div class="position-group-open">
-                                    <span class="position-group-tag">Вход</span>
-                                    <span>{{ formatTradeDt(open.executed_at) }}</span>
-                                    <strong>{{ open.security_prefix || open.security_name }}</strong>
-                                    <span>{{ tradeActionLabel(open) }}</span>
-                                    <span>{{ open.quantity }} × {{ open.price }}</span>
-                                  </div>
-                                }
-                                <div class="position-group-close trade-row" (click)="toggleTradeRow(group.close, $event)">
-                                  <span class="position-group-tag position-group-tag-close">Выход</span>
-                                  <span>{{ formatTradeDt(group.close.executed_at) }}</span>
-                                  <strong>{{ group.close.security_prefix || group.close.security_name }}</strong>
-                                  <span>{{ tradeActionLabel(group.close) }}</span>
-                                  <span>{{ group.close.quantity }} × {{ group.close.price }}</span>
-                                  <span class="trade-pnl" [class.trade-pnl-pos]="group.pnl > 0" [class.trade-pnl-neg]="group.pnl < 0">{{ formatPnl(group.pnl) }}</span>
-                                  <span class="trade-row-chevron" [class.open]="isTradeRowExpanded(group.close.id)" aria-hidden="true">▸</span>
-                                </div>
-                                @if (isTradeRowExpanded(group.close.id)) {
-                                  <div class="position-group-lots">
-                                    @if (isTradeLotsLoading(group.close.id)) {
-                                      <p class="trade-lots-loading">Загрузка пакетов…</p>
-                                    } @else if (tradeLotsFor(group.close.id).length === 0) {
-                                      <p class="trade-lots-empty">Пакеты не рассчитаны</p>
-                                    } @else {
-                                      <table class="signals-table trade-lots-table">
-                                        <thead>
-                                          <tr>
-                                            <th>Метод</th>
-                                            <th>Вход #</th>
-                                            <th>Кол-во</th>
-                                            <th>Фин. результат</th>
-                                          </tr>
-                                        </thead>
-                                        <tbody>
-                                          @for (lot of tradeLotsFor(group.close.id); track lot.id) {
-                                            <tr>
-                                              <td>{{ costMethodLabel(lot.cost_method) }}</td>
-                                              <td>#{{ lot.open_trade_id ?? '—' }}</td>
-                                              <td>{{ lot.quantity }}</td>
-                                              <td>{{ formatPnl(lot.financial_result) }}</td>
-                                            </tr>
-                                          }
-                                        </tbody>
-                                      </table>
+                            <div class="trades-scroll">
+                              <table class="signals-table trades-table">
+                                <thead>
+                                  <tr>
+                                    <th></th>
+                                    <th>#</th>
+                                    <th>Время</th>
+                                    <th>Бумага</th>
+                                    <th>Операция</th>
+                                    <th>Кол-во</th>
+                                    <th>Цена</th>
+                                    <th>Комиссия</th>
+                                    <th>Фин. результат</th>
+                                    <th>Статус</th>
+                                  </tr>
+                                </thead>
+                                <tbody>
+                                  @for (tr of closePositionTrades(row.id); track tr.id) {
+                                    <tr class="trade-row trade-row-expandable" [class.trade-rejected]="tr.status === 'rejected'" (click)="toggleTradeRow(tr, $event)">
+                                      <td class="trade-expand-cell">
+                                        <span class="trade-row-chevron" [class.open]="isTradeRowExpanded(tr.id)" aria-hidden="true">▸</span>
+                                      </td>
+                                      <td>#{{ tr.id }}</td>
+                                      <td>{{ formatTradeDt(tr.executed_at) }}</td>
+                                      <td><strong>{{ tr.security_prefix || tr.security_name }}</strong></td>
+                                      <td [title]="tradeOperationHint(tr)">{{ tradeOperationLabel(tr) }}</td>
+                                      <td>{{ tr.quantity }}</td>
+                                      <td>{{ tr.price }}</td>
+                                      <td>{{ formatMoney(tr.commission) }}</td>
+                                      <td>
+                                        <span
+                                          class="trade-pnl"
+                                          [class.trade-pnl-pos]="(tr.financial_result ?? 0) > 0"
+                                          [class.trade-pnl-neg]="(tr.financial_result ?? 0) < 0"
+                                        >
+                                          {{ formatPnl(tr.financial_result) }}
+                                        </span>
+                                      </td>
+                                      <td>{{ tradeStatusLabel(tr.status) }}</td>
+                                    </tr>
+                                    @if (isTradeRowExpanded(tr.id)) {
+                                      <tr class="trade-lots-detail-row">
+                                        <td colspan="10">
+                                          <div class="trade-lots-panel">
+                                            <p class="trade-lots-panel-title">Пакеты закрытия — из каких покупок сложена эта продажа</p>
+                                            @if (isTradeLotsLoading(tr.id)) {
+                                              <p class="trade-lots-loading">Загрузка пакетов…</p>
+                                            } @else if (closedLotsForClose(tr.id).length === 0) {
+                                              <p class="trade-lots-empty">Пакеты не рассчитаны</p>
+                                            } @else {
+                                              <table class="signals-table trade-lots-table">
+                                                <thead>
+                                                  <tr>
+                                                    <th>Метод</th>
+                                                    <th>Покупка #</th>
+                                                    <th>Дата покупки</th>
+                                                    <th>Цена покупки</th>
+                                                    <th>Кол-во</th>
+                                                    <th>Ком. покупки</th>
+                                                    <th>Ком. продажи</th>
+                                                    <th>Фин. результат</th>
+                                                  </tr>
+                                                </thead>
+                                                <tbody>
+                                                  @for (lot of closedLotsForClose(tr.id); track lot.id) {
+                                                    <tr>
+                                                      <td>{{ costMethodLabel(lot.cost_method) }}</td>
+                                                      <td>#{{ lot.open_trade_id ?? '—' }}</td>
+                                                      <td>{{ lot.open_executed_at ? formatTradeDt(lot.open_executed_at) : '—' }}</td>
+                                                      <td>{{ lot.open_price ?? '—' }}</td>
+                                                      <td>{{ lot.quantity }}</td>
+                                                      <td>{{ formatMoney(lot.open_commission) }}</td>
+                                                      <td>{{ formatMoney(lot.close_commission) }}</td>
+                                                      <td>{{ formatPnl(lot.financial_result) }}</td>
+                                                    </tr>
+                                                  }
+                                                </tbody>
+                                              </table>
+                                            }
+                                          </div>
+                                        </td>
+                                      </tr>
                                     }
-                                  </div>
-                                }
-                              </div>
-                            } @empty {
-                              <p class="empty positions-empty">Нет закрытых позиций</p>
-                            }
+                                  } @empty {
+                                    <tr><td colspan="10" class="empty">Нет сделок закрытия</td></tr>
+                                  }
+                                </tbody>
+                              </table>
+                            </div>
                           </div>
                         </details>
 
                         <p class="signals-help">
-                          Позиции по сигналам индикаторов. Открытые — входы без полного закрытия.
-                          Закрытые — вход и выход с фин. результатом. Runner работает при открытом UI.
+                          <strong>Сделки открытия</strong> — покупки (long) или продажи в шорт с ненулевым остатком.
+                          Полностью закрытые покупки здесь не показываются — они видны только в пакетах под сделкой закрытия.
+                          <strong>Сделки закрытия</strong> — продажи или покупки для закрытия; раскройте строку, чтобы увидеть пакеты (FIFO/средняя) с комиссиями.
                         </p>
 
                       </div>
