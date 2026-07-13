@@ -5581,6 +5581,103 @@ $$;
 COMMENT ON FUNCTION logic_security_latest_price(INTEGER, INTEGER) IS
 'Последняя цена закрытия по бумаге и TF (для ручного закрытия по рынку)';
 
+CREATE OR REPLACE FUNCTION logic_ensure_security_market_price(
+    p_logic_id INTEGER,
+    p_security_id INTEGER,
+    p_timeframe_id INTEGER
+)
+RETURNS NUMERIC
+LANGUAGE plpgsql AS $$
+DECLARE
+    v_price NUMERIC;
+    v_tf_sec INTEGER;
+    v_date_from DATE;
+    v_date_to DATE;
+    v_point_count INTEGER;
+    v_closed_bar_dt TIMESTAMP;
+    v_err TEXT;
+BEGIN
+    v_price := logic_security_latest_price(p_security_id, p_timeframe_id);
+    IF v_price IS NOT NULL AND v_price > 0 THEN
+        RETURN v_price;
+    END IF;
+
+    SELECT t.sec INTO v_tf_sec FROM timeframes t WHERE t.id = p_timeframe_id;
+    v_closed_bar_dt := COALESCE(
+        logic_last_closed_bar_dt(v_tf_sec),
+        date_trunc('day', LOCALTIMESTAMP)::TIMESTAMP
+    );
+    v_point_count := logic_trade_sync_point_count(v_tf_sec);
+    v_date_to := GREATEST(v_closed_bar_dt::date, CURRENT_DATE);
+    v_date_from := logic_trade_load_date_from(v_tf_sec, v_point_count, v_closed_bar_dt);
+
+    BEGIN
+        CALL load_prices(p_security_id, p_timeframe_id, v_date_from, v_date_to);
+        PERFORM logic_trade_log(
+            p_logic_id,
+            'trade.prices.loaded',
+            format(
+                'Цены для закрытия sec=%s TF=%s (%s .. %s)',
+                p_security_id,
+                p_timeframe_id,
+                v_date_from,
+                v_date_to
+            ),
+            jsonb_build_object(
+                'security_id', p_security_id,
+                'timeframe_id', p_timeframe_id,
+                'date_from', v_date_from,
+                'date_to', v_date_to,
+                'reason', 'close_all_at_market'
+            ),
+            p_security_id,
+            p_timeframe_id
+        );
+    EXCEPTION
+        WHEN undefined_function THEN
+            PERFORM logic_trade_log(
+                p_logic_id,
+                'trade.prices.error',
+                'load_prices недоступен (нет HTTP-расширения)',
+                jsonb_build_object('security_id', p_security_id, 'reason', 'close_all_at_market'),
+                p_security_id,
+                p_timeframe_id
+            );
+        WHEN OTHERS THEN
+            v_err := SQLERRM;
+            PERFORM logic_trade_log(
+                p_logic_id,
+                'trade.prices.error',
+                format('Ошибка загрузки цен sec=%s: %s', p_security_id, v_err),
+                jsonb_build_object(
+                    'security_id', p_security_id,
+                    'error', v_err,
+                    'reason', 'close_all_at_market'
+                ),
+                p_security_id,
+                p_timeframe_id
+            );
+    END;
+
+    v_price := logic_security_latest_price(p_security_id, p_timeframe_id);
+    IF v_price IS NOT NULL AND v_price > 0 THEN
+        RETURN v_price;
+    END IF;
+
+    SELECT p.close_price
+    INTO v_price
+    FROM prices p
+    WHERE p.security_id = p_security_id
+    ORDER BY p.dt DESC
+    LIMIT 1;
+
+    RETURN v_price;
+END;
+$$;
+
+COMMENT ON FUNCTION logic_ensure_security_market_price(INTEGER, INTEGER, INTEGER) IS
+'Последняя цена для закрытия: из БД или load_prices (T-Bank/MOEX), затем fallback по любому TF';
+
 CREATE OR REPLACE FUNCTION logic_close_all_positions_at_market(p_logic_id INTEGER)
 RETURNS JSONB
 LANGUAGE plpgsql AS $$
@@ -5665,13 +5762,13 @@ BEGIN
             CONTINUE;
         END IF;
 
-        v_price := logic_security_latest_price(v_sec.security_id, v_tf_id);
+        v_price := logic_ensure_security_market_price(p_logic_id, v_sec.security_id, v_tf_id);
         IF v_price IS NULL OR v_price <= 0 THEN
             v_skipped := v_skipped + 1;
             v_errors := v_errors || jsonb_build_array(
                 jsonb_build_object(
                     'security_id', v_sec.security_id,
-                    'reason', 'Нет цены для закрытия по рынку'
+                    'reason', 'Не удалось получить цену (загрузка и fallback не дали результат)'
                 )
             );
             CONTINUE;
@@ -5896,7 +5993,7 @@ END;
 $$;
 
 COMMENT ON FUNCTION logic_close_all_positions_at_market(INTEGER) IS
-'Ручное закрытие всех открытых long/short по последней цене TF логики; PnL через logic_trade_finalize';
+'Ручное закрытие всех открытых long/short; цена из БД или load_prices; PnL через logic_trade_finalize';
 
 CREATE OR REPLACE FUNCTION process_logic_trades(p_logic_id INTEGER)
 RETURNS INTEGER
