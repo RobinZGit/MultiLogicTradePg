@@ -138,6 +138,8 @@ export class LogicsComponent implements OnInit, OnDestroy {
   >();
   paramsSaveErrors = new Map<number, string>();
   paramsLoading = new Set<number>();
+  /** Пользователь менял черновик — poll не перезаписывает поля ввода. */
+  private paramsDirtyIds = new Set<number>();
 
   constructor(
     private readonly logicsService: LogicsService,
@@ -162,7 +164,7 @@ export class LogicsComponent implements OnInit, OnDestroy {
               const local = this.logics.find((x) => x.id === row.id);
               return local ? { ...row, is_enabled: local.is_enabled } : row;
             }
-            if (this.savingParamsIds.has(row.id)) {
+            if (this.savingParamsIds.has(row.id) || this.paramsDirtyIds.has(row.id)) {
               const local = this.logics.find((x) => x.id === row.id);
               return local
                 ? {
@@ -170,7 +172,7 @@ export class LogicsComponent implements OnInit, OnDestroy {
                     position_size_pct: local.position_size_pct,
                     max_open_positions: local.max_open_positions,
                     initial_balance: local.initial_balance,
-                    current_balance: local.current_balance,
+                    // current_balance — только для отображения, берём с сервера
                   }
                 : row;
             }
@@ -178,8 +180,8 @@ export class LogicsComponent implements OnInit, OnDestroy {
           });
           this.loading = false;
           this.error = null;
+          // Сделки — read-only, обновляем; редактируемые блоки (параметры, формулы) — нет
           this.refreshExpandedTrades();
-          this.refreshOpenParamsBlocks();
         },
         error: (err) => {
           if (this.loading || this.logics.length === 0) {
@@ -237,6 +239,7 @@ export class LogicsComponent implements OnInit, OnDestroy {
     if (this.expandedLogics.has(row.id)) {
       this.expandedLogics.delete(row.id);
       this.expandedParamsBlocks.delete(row.id);
+      this.paramsDirtyIds.delete(row.id);
       this.expandedSignalsBlocks.delete(row.id);
       this.expandedStopsBlocks.delete(row.id);
       this.expandedSecuritiesBlocks.delete(row.id);
@@ -262,21 +265,25 @@ export class LogicsComponent implements OnInit, OnDestroy {
 
   onParamsPctChange(logicId: number, value: string): void {
     this.getParamsDraft(logicId).position_size_pct = value;
+    this.paramsDirtyIds.add(logicId);
     this.paramsSaveErrors.delete(logicId);
   }
 
   onParamsMaxPositionsChange(logicId: number, value: string): void {
     this.getParamsDraft(logicId).max_open_positions = value;
+    this.paramsDirtyIds.add(logicId);
     this.paramsSaveErrors.delete(logicId);
   }
 
   onParamsInitialBalanceChange(logicId: number, value: string): void {
     this.getParamsDraft(logicId).initial_balance = value;
+    this.paramsDirtyIds.add(logicId);
     this.paramsSaveErrors.delete(logicId);
   }
 
   onParamsResetBalanceChange(logicId: number, value: boolean): void {
     this.getParamsDraft(logicId).reset_balance = value;
+    this.paramsDirtyIds.add(logicId);
     this.paramsSaveErrors.delete(logicId);
   }
 
@@ -315,25 +322,23 @@ export class LogicsComponent implements OnInit, OnDestroy {
     return Number(raw.trim().replace(/\s/g, '').replace(',', '.'));
   }
 
-  private refreshOpenParamsBlocks(): void {
-    for (const logicId of this.expandedParamsBlocks) {
-      if (this.savingParamsIds.has(logicId)) continue;
-      this.loadParamsForLogic(logicId, true);
-    }
-  }
-
   isParamsLoading(logicId: number): boolean {
     return this.paramsLoading.has(logicId);
   }
 
   loadParamsForLogic(logicId: number, silent = false): void {
+    if (silent && this.paramsDirtyIds.has(logicId)) {
+      return;
+    }
     if (!silent) {
       this.paramsLoading.add(logicId);
     }
     this.logicsService.getLogicParams(logicId).subscribe({
       next: (resp) => {
         this.applyTradingParamsToLogic(logicId, resp.trading);
-        this.paramsDrafts.set(logicId, this.draftFromTrading(resp.trading));
+        if (!this.paramsDirtyIds.has(logicId)) {
+          this.paramsDrafts.set(logicId, this.draftFromTrading(resp.trading));
+        }
         this.paramsLoading.delete(logicId);
       },
       error: () => {
@@ -379,8 +384,10 @@ export class LogicsComponent implements OnInit, OnDestroy {
     event.stopPropagation();
     if (this.expandedParamsBlocks.has(logicId)) {
       this.expandedParamsBlocks.delete(logicId);
+      this.paramsDirtyIds.delete(logicId);
     } else {
       this.expandedParamsBlocks.add(logicId);
+      this.paramsDirtyIds.delete(logicId);
       this.loadParamsForLogic(logicId);
     }
   }
@@ -443,6 +450,7 @@ export class LogicsComponent implements OnInit, OnDestroy {
         next: (resp) => {
           this.applyTradingParamsToLogic(row.id, resp.trading);
           this.paramsDrafts.set(row.id, this.draftFromTrading(resp.trading));
+          this.paramsDirtyIds.delete(row.id);
           this.savingParamsIds.delete(row.id);
           this.paramsSaveErrors.delete(row.id);
         },
@@ -1085,7 +1093,9 @@ export class LogicsComponent implements OnInit, OnDestroy {
       next: (rows) => {
         this.logicSignals.set(logicId, rows);
         for (const r of rows) {
-          this.formulaDrafts.set(r.id, r.formula);
+          if (!this.isFormulaDraftDirty(r.id, r.formula)) {
+            this.formulaDrafts.set(r.id, r.formula);
+          }
         }
         this.signalsLoading.delete(logicId);
       },
@@ -1183,6 +1193,11 @@ export class LogicsComponent implements OnInit, OnDestroy {
         this.securitiesCatalogLoading = false;
       },
     });
+  }
+
+  private isFormulaDraftDirty(signalId: number, savedFormula: string): boolean {
+    const draft = this.formulaDrafts.get(signalId);
+    return draft !== undefined && draft !== savedFormula;
   }
 
   private loadLogicsOnce(): void {
