@@ -4,6 +4,7 @@ export interface LogicRow {
   account_id: number;
   broker_id: number;
   is_enabled: boolean;
+  timeframe?: string;
   position_size_pct: number;
   max_open_positions: number;
   initial_balance: number | null;
@@ -17,6 +18,7 @@ export interface LogicRow {
 }
 
 export interface LogicTradingParamsPayload {
+  timeframe?: string;
   position_size_pct?: number;
   max_open_positions?: number;
   initial_balance?: number | null;
@@ -24,6 +26,7 @@ export interface LogicTradingParamsPayload {
 }
 
 export interface LogicTradingParamsResponse {
+  timeframe: string;
   position_size_pct: number;
   max_open_positions: number;
   initial_balance: number | null;

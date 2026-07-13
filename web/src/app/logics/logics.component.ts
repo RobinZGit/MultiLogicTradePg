@@ -130,6 +130,7 @@ export class LogicsComponent implements OnInit, OnDestroy {
   paramsDrafts = new Map<
     number,
     {
+      timeframe: string;
       position_size_pct: string;
       max_open_positions: string;
       initial_balance: string;
@@ -138,6 +139,7 @@ export class LogicsComponent implements OnInit, OnDestroy {
   >();
   paramsSaveErrors = new Map<number, string>();
   paramsLoading = new Set<number>();
+  timeframesCatalog: { id: number; tf: string; full_name: string }[] = [];
   /** Пользователь менял черновик — poll не перезаписывает поля ввода. */
   private paramsDirtyIds = new Set<number>();
 
@@ -152,6 +154,11 @@ export class LogicsComponent implements OnInit, OnDestroy {
   ngOnInit(): void {
     this.loadIndicatorsCatalog();
     this.loadMoexExchangeId();
+    this.securitiesService.getTimeframes().subscribe({
+      next: (rows) => {
+        this.timeframesCatalog = rows.filter((r) => r.is_active !== false);
+      },
+    });
     timer(0, POLL_INTERVAL_MS)
       .pipe(
         takeUntil(this.destroy$),
@@ -263,6 +270,12 @@ export class LogicsComponent implements OnInit, OnDestroy {
     return this.paramsSaveErrors.get(logicId) ?? null;
   }
 
+  onParamsTimeframeChange(logicId: number, value: string): void {
+    this.getParamsDraft(logicId).timeframe = value;
+    this.paramsDirtyIds.add(logicId);
+    this.paramsSaveErrors.delete(logicId);
+  }
+
   onParamsPctChange(logicId: number, value: string): void {
     this.getParamsDraft(logicId).position_size_pct = value;
     this.paramsDirtyIds.add(logicId);
@@ -353,6 +366,7 @@ export class LogicsComponent implements OnInit, OnDestroy {
   private applyTradingParamsToLogic(
     logicId: number,
     trading: {
+      timeframe?: string;
       position_size_pct: number;
       max_open_positions: number;
       initial_balance: number | null;
@@ -366,12 +380,14 @@ export class LogicsComponent implements OnInit, OnDestroy {
   }
 
   private draftFromTrading(trading: {
+    timeframe?: string;
     position_size_pct: number;
     max_open_positions: number;
     initial_balance: number | null;
     current_balance: number | null;
   }) {
     return {
+      timeframe: (trading.timeframe ?? 'M15').toUpperCase(),
       position_size_pct: this.formatPctParam(trading.position_size_pct),
       max_open_positions: this.formatIntParam(trading.max_open_positions, 5),
       initial_balance: this.formatBalanceDraft(trading.initial_balance),
@@ -401,6 +417,7 @@ export class LogicsComponent implements OnInit, OnDestroy {
 
   private draftFromLogicRow(row: LogicRow) {
     return this.draftFromTrading({
+      timeframe: row.timeframe ?? 'M15',
       position_size_pct: row.position_size_pct,
       max_open_positions: row.max_open_positions,
       initial_balance: row.initial_balance,
@@ -441,6 +458,7 @@ export class LogicsComponent implements OnInit, OnDestroy {
     this.savingParamsIds.add(row.id);
     this.logicsService
       .saveLogicParams(row.id, {
+        timeframe: draft.timeframe,
         position_size_pct,
         max_open_positions,
         initial_balance,

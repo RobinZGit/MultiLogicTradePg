@@ -2158,6 +2158,15 @@ function parseLogicTradingParams(body) {
   const out = { reset_balance: Boolean(body?.reset_balance) };
   let hasField = false;
 
+  if (body?.timeframe !== undefined) {
+    const tf = String(body.timeframe).trim().toUpperCase();
+    if (!/^[A-Z0-9]+$/.test(tf)) {
+      return { error: 'Таймфрейм: код вида M15, H1, D1' };
+    }
+    out.timeframe = tf;
+    hasField = true;
+  }
+
   if (body?.position_size_pct !== undefined) {
     const v = Number(body.position_size_pct);
     if (!Number.isFinite(v) || v <= 0 || v > 100) {

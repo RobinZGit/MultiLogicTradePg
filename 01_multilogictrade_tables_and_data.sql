@@ -1,6 +1,6 @@
 -- ============================================
 -- MultiLogicTrade — шаг 1: таблицы и справочники
--- Версия: v21 (идемпотентный запуск)
+-- Версия: v23 (идемпотентный запуск)
 -- ============================================
 -- Подключение: база multilogictrade
 -- Можно выполнять многократно: объекты и строки не дублируются.
@@ -929,6 +929,8 @@ CREATE TABLE IF NOT EXISTS logic_param_defs (
 );
 
 INSERT INTO logic_param_defs (param_key, name_ru, value_type, default_value, description, display_order) VALUES
+    ('timeframe', 'Таймфрейм', 'text', 'M15',
+     'Таймфрейм цен, индикаторов и цикла сделок (M15, H1, D1 …)', 0),
     ('position_size_pct', '% депозита на сделку', 'number', '10',
      'Доля текущего остатка на одну покупку (1–100)', 1),
     ('max_open_positions', 'Макс. открытых позиций', 'integer', '5',
@@ -936,7 +938,9 @@ INSERT INTO logic_param_defs (param_key, name_ru, value_type, default_value, des
     ('initial_balance', 'Начальный остаток', 'money', '',
      'Стартовый депозит бумажной торговли / эталон для расчёта лота', 3),
     ('current_balance', 'Текущий остаток', 'money', '',
-     'Обновляется trade runner после симулированных сделок', 4)
+     'Обновляется trade runner после симулированных сделок', 4),
+    ('last_trade_check_at', 'Последняя проверка сигналов', 'text', '',
+     'Служебный: время последнего run_trade_cycle (не редактировать)', 99)
 ON CONFLICT (param_key) DO UPDATE SET
     name_ru = EXCLUDED.name_ru,
     value_type = EXCLUDED.value_type,
@@ -1006,6 +1010,7 @@ INSERT INTO logic_params (logic_id, param_key, param_value, value_type)
 SELECT l.id, v.param_key, v.param_value, v.value_type
 FROM logics l
 CROSS JOIN (VALUES
+    ('timeframe', 'M15', 'text'),
     ('position_size_pct', '10', 'number'),
     ('max_open_positions', '3', 'integer'),
     ('initial_balance', '1000000', 'money'),
@@ -1124,7 +1129,13 @@ COMMENT ON TABLE logic_securities IS
 'Портфель ценных бумаг торговой логики: одна строка — одна бумага в logics';
 COMMENT ON COLUMN logic_securities.display_order IS 'Порядок отображения в UI';
 
--- Демо-логика SMA Price Cross Demo: long выше SMA, short ниже SMA + SBER
+-- Демо-логика SMA Price Cross Demo: только long-trend и short-trend + SBER
+DELETE FROM logic_indicator_signals lis
+USING logics l
+WHERE lis.logic_id = l.id
+  AND l.name = 'SMA Price Cross Demo'
+  AND lis.signal_kind = 'counter';
+
 INSERT INTO logic_indicator_signals (logic_id, indicator_id, position_side, signal_kind, formula, display_order)
 SELECT l.id, i.id, 'long', 'trend', '@SMA(period=20,series=VALUE) pp > VALUE', 0
 FROM logics l
@@ -1135,25 +1146,7 @@ ON CONFLICT (logic_id, indicator_id, position_side, signal_kind) DO UPDATE SET
     is_active = TRUE;
 
 INSERT INTO logic_indicator_signals (logic_id, indicator_id, position_side, signal_kind, formula, display_order)
-SELECT l.id, i.id, 'long', 'counter', '@SMA(period=20,series=VALUE) pp < VALUE', 1
-FROM logics l
-CROSS JOIN indicators i
-WHERE l.name = 'SMA Price Cross Demo' AND i.code = 'SMA'
-ON CONFLICT (logic_id, indicator_id, position_side, signal_kind) DO UPDATE SET
-    formula = EXCLUDED.formula,
-    is_active = TRUE;
-
-INSERT INTO logic_indicator_signals (logic_id, indicator_id, position_side, signal_kind, formula, display_order)
-SELECT l.id, i.id, 'short', 'trend', '@SMA(period=20,series=VALUE) pp < VALUE', 2
-FROM logics l
-CROSS JOIN indicators i
-WHERE l.name = 'SMA Price Cross Demo' AND i.code = 'SMA'
-ON CONFLICT (logic_id, indicator_id, position_side, signal_kind) DO UPDATE SET
-    formula = EXCLUDED.formula,
-    is_active = TRUE;
-
-INSERT INTO logic_indicator_signals (logic_id, indicator_id, position_side, signal_kind, formula, display_order)
-SELECT l.id, i.id, 'short', 'counter', '@SMA(period=20,series=VALUE) pp > VALUE', 3
+SELECT l.id, i.id, 'short', 'trend', '@SMA(period=20,series=VALUE) pp < VALUE', 1
 FROM logics l
 CROSS JOIN indicators i
 WHERE l.name = 'SMA Price Cross Demo' AND i.code = 'SMA'

@@ -2,6 +2,7 @@
 
 /** Ключи торговых параметров логики (строки в logic_params). */
 const PARAM_KEYS = {
+  TIMEFRAME: 'timeframe',
   POSITION_SIZE_PCT: 'position_size_pct',
   MAX_OPEN_POSITIONS: 'max_open_positions',
   INITIAL_BALANCE: 'initial_balance',
@@ -9,6 +10,7 @@ const PARAM_KEYS = {
 };
 
 const DEFAULTS = {
+  [PARAM_KEYS.TIMEFRAME]: { value: 'M15', type: 'text' },
   [PARAM_KEYS.POSITION_SIZE_PCT]: { value: '10', type: 'number' },
   [PARAM_KEYS.MAX_OPEN_POSITIONS]: { value: '5', type: 'integer' },
   [PARAM_KEYS.INITIAL_BALANCE]: { value: '', type: 'money' },
@@ -49,6 +51,10 @@ function rowsToTradingParams(rows) {
     map[r.param_key] = parseParamValue(r.param_key, r.param_value, r.value_type);
   }
   return {
+    timeframe:
+      map[PARAM_KEYS.TIMEFRAME] != null && String(map[PARAM_KEYS.TIMEFRAME]).trim() !== ''
+        ? String(map[PARAM_KEYS.TIMEFRAME]).trim().toUpperCase()
+        : 'M15',
     position_size_pct:
       map[PARAM_KEYS.POSITION_SIZE_PCT] != null
         ? Number(map[PARAM_KEYS.POSITION_SIZE_PCT])
@@ -111,6 +117,14 @@ async function upsertParam(pool, logicId, paramKey, value, valueType) {
 
 async function saveTradingParams(pool, logicId, payload) {
   await ensureDefaultParams(pool, logicId);
+
+  if (payload.timeframe !== undefined) {
+    const tf = String(payload.timeframe).trim().toUpperCase();
+    if (!tf) {
+      throw new Error('timeframe required');
+    }
+    await upsertParam(pool, logicId, PARAM_KEYS.TIMEFRAME, tf, 'text');
+  }
 
   if (payload.position_size_pct !== undefined) {
     await upsertParam(

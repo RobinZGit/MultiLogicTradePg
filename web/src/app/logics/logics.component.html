@@ -278,6 +278,29 @@
 
                             <tr>
 
+                              <td>Таймфрейм</td>
+
+                              <td>
+
+                                <select
+                                  class="params-input"
+                                  [ngModel]="getParamsDraft(row.id).timeframe"
+                                  (ngModelChange)="onParamsTimeframeChange(row.id, $event)"
+                                  (click)="$event.stopPropagation()"
+                                >
+                                  @for (tf of timeframesCatalog; track tf.id) {
+                                    <option [value]="tf.tf">{{ tf.tf }} — {{ tf.full_name }}</option>
+                                  }
+                                </select>
+
+                              </td>
+
+                              <td class="params-hint">Цены, индикаторы и цикл сделок в PostgreSQL (pg_cron)</td>
+
+                            </tr>
+
+                            <tr>
+
                               <td>% депозита на сделку</td>
 
                               <td>

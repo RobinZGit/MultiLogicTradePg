@@ -5,7 +5,7 @@
 > Включать **запросы пользователя текстом** (секция «Запросы пользователя»).
 
 **Репозиторий:** https://github.com/RobinZGit/MultiLogicTradePg  
-**Последнее обновление:** 2026-07-13 (v21 demo: long+short по SMA; БД 00→02)
+**Последнее обновление:** 2026-07-13 (v23: run_trade_cycle в PostgreSQL + timeframe; БД 00→02)
 
 ---
 
@@ -25,7 +25,7 @@
 | Файл | Назначение |
 |------|------------|
 | `00_create_database.sql` | **DROP + CREATE** базы `multilogictrade` (полное пересоздание) |
-| `01_multilogictrade_tables_and_data.sql` | Таблицы, индексы, справочники (идемпотентно, **v21**) |
+| `01_multilogictrade_tables_and_data.sql` | Таблицы, индексы, справочники (идемпотентно, **v23**) |
 | `02_multilogictrade_functions_and_procedures.sql` | Функции и процедуры (идемпотентно) |
 | `03_multilogictrade_examples.sql` | Примеры SELECT (необязательно) |
 
@@ -59,7 +59,7 @@
 ### Проверка SQL перед сборкой
 
 - `scripts/verify-sql.mjs`, `npm run verify:sql` в `web/` (`prebuild`);
-- CI: `--core-only` (без HTTP-блока); маркер `-- @optional-http-block` в `02`.
+- CI: `--core-only` (без HTTP/pg_cron); маркеры `@optional-pgcron-block`, `@optional-http-block` в `02`.
 
 ### UI
 
@@ -76,7 +76,7 @@
 - **`logic_stops`** — стоп-лосс и тейк-профит по логике (`rule_kind` stop_loss|take_profit, `scope_type` security|portfolio, `value`, `value_unit` percent|atr);
 - **`logic_securities`** — портфель бумаг логики (`logic_id`, `security_id`, `display_order`, `is_active`);
 - **`logic_trades`** — сделки по сигналам: `is_simulated` (фейковый счёт), **`is_fictitious`** (резерв), `signal_kind`, `bar_dt`, `status`, `broker_order_id`;
-- **`logic_param_defs`** + **`logic_params`** — параметры торговли (EAV: ключ, значение, value_type);
+- **`logic_param_defs`** + **`logic_params`** — параметры торговли (EAV): **`timeframe`**, `position_size_pct`, `max_open_positions`, `initial_balance`, `current_balance`, `last_trade_check_at`;
 - **`indicators.formula`** — многочлен для `calc_poly_formula_array`; **`is_custom`** — подсветка в списке;
 - **`sma`**, **`ema`**, **`ww()`** — от close; **`sma(period=20)`**, **`sma(period=20, series=VALUE)`** — параметры в ();
 - **`@CODE`**, `*`, `#`, ядра `(1;-2;1)` — единый парсер `poly_*` в `02`;
@@ -86,8 +86,9 @@
 - `logics` + `logics_detail` — движок формул **ещё не реализован**;
 - UI **Операции** (`/operations`): пять сворачиваемых блоков — **«Параметры логики»**, **«Сигналы индикаторов»**, **«Стоп-лосс и тейк-профит»**, **«Ценные бумаги»**, **«Сделки»** (по умолчанию свёрнуты);
 - API logics: **`GET/PUT /api/logic-params`** — чтение/запись `logic_params`; signals/stops/securities/trades;
-- **Trade runner** (`api/trade-runner.js`): каждые ~15 с для `logics.is_enabled=TRUE` — **активные сигналы** `logic_indicator_signals` на бумагах `logic_securities`, M15; условие с `pp` (цена) и `VALUE` (индикатор); **long trend→Open Long**, **long counter→Close Long**, **short trend→Open Short**, **short counter→Close Short**; лот = `floor(остаток × % / 100 / цена)`; лимит `max_open_positions`; fake→`is_simulated=true` + пересчёт `current_balance`; real→`tbank_post_order`; env `TRADE_RUNNER_ENABLED=0` отключает;
-- **Демо-логика** в `01`: `SMA Price Cross Demo` на `FAKE-EFF-001` — SMA(20): **long** при `pp > VALUE`, **short** при `pp < VALUE` (+ counter для закрытия), SBER, депозит 1M, 10%, макс. 3 позиции;
+- **Trade runner (PostgreSQL):** `run_trade_cycle()` → `process_logic_trades()` — парсинг `@CODE(...) condition`, `indicator_values` + `prices` на **`timeframe` из logic_params**; long/short trend; лот, лимит позиций, fake balance; real → `tbank_post_order`; idempotency по `(logic_id, security_id, signal_kind, bar_dt)`;
+- **Расписание:** **pg_cron** (Linux, `@optional-pgcron-block`, каждую минуту) или **Node fallback** (`api/trade-runner.js` → `SELECT run_trade_cycle()`, 60 с, `TRADE_RUNNER_ENABLED=0` отключает); ручной `POST /api/logic-trades/run`;
+- **Демо-логика** в `01`: `SMA Price Cross Demo` на `FAKE-EFF-001` — SMA(20), **M15**: long trend `pp > VALUE`, short trend `pp < VALUE`, SBER, 1M, 10%, max 3;
 
 ### Правило схемы БД
 
@@ -126,7 +127,8 @@
 35. **logic_indicator_signals.position_side:** Long/Short; кнопки «+ Индикатор Long/Short», тренд/к-тренд на форме picker.
 36. **logic_params (v20):** таблица параметров логики EAV; сохранение через PUT /api/logic-params; runner читает из logic_params.
 37. **Fix poll logics:** цикл 2 с больше не перезагружает «Параметры» и не затирает черновики формул; `paramsDirtyIds`; правило `no-refresh-while-editing.mdc`.
-38. **Демо SMA v21:** 4 сигнала — long trend/counter + short trend/counter; long выше SMA, short ниже SMA.
+38. **Демо SMA v22:** только long trend + short trend (без counter); long выше SMA, short ниже SMA.
+39. **v23 trade runner в PostgreSQL:** `timeframe` в logic_params; `run_trade_cycle` / `process_logic_trades`; pg_cron + Node fallback; UI выбор таймфрейма; `sql/logic_trade_runner.sql`.
 
 ### Автотесты
 
@@ -162,8 +164,8 @@
 
 ## Открытые задачи / следующие шаги
 
-- [ ] Расширить оценку формул сигналов (CROSS, AND/OR) и привязку таймфрейма к логике.
-- [ ] `logic_stops` в runner, `is_fictitious` — логика заполнения; шорты (Open Short).
+- [ ] Расширить оценку формул сигналов (CROSS, AND/OR).
+- [ ] `logic_stops` в runner, `is_fictitious` — логика заполнения.
 - [ ] Заполнить `tbank_figi` где возможно (частично через `resolve_tbank_instrument_id`).
 - [ ] Влить реструктуризацию параметров индикаторов (черновик `Indicators_parameters_todo`).
 - [ ] Реализовать движок `logics_detail.formula`.
@@ -188,6 +190,8 @@
 
 | Дата | Суть |
 |------|------|
+| 2026-07-13 | v23: run_trade_cycle в PostgreSQL, timeframe, pg_cron; БД 00→02 |
+| 2026-07-13 | v22 demo: только long-trend + short-trend (без counter) |
 | 2026-07-13 | v21 demo SMA: long выше / short ниже средней; БД 00→02 |
 | 2026-07-13 | fix poll: параметры/формулы не сбрасываются при редактировании; правило UI |
 | 2026-07-13 | v20 logic_params EAV + position_side Long/Short; БД 00→02 |
@@ -268,3 +272,5 @@
 40. «Собери базу с нуля и выложи в репозиторий».
 41. «Poll каждые 2 с сбрасывает параметры — не refresh'ить редактируемое; правило проекта; выложить».
 42. «Демо-логика: long при цене выше SMA, short при ниже; пересобрать БД; в репо».
+43. «Из демо убрать counter-сигналы — только long-trend и short-trend».
+44. «Сделки не идут — переделать runner: timeframe в параметрах, цикл в PostgreSQL (pg_cron job), парсинг сигналов в БД; пересобрать БД; в репо».

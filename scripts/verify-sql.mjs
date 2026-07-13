@@ -64,13 +64,16 @@ function sqlFile(name) {
 function prepareSql02(core) {
   const full = fs.readFileSync(sqlFile('02_multilogictrade_functions_and_procedures.sql'), 'utf8');
   if (!core) return full;
-  const marker = '-- @optional-http-block';
-  const idx = full.indexOf(marker);
-  if (idx === -1) {
-    console.error('verify-sql: маркер @optional-http-block не найден в 02');
-    process.exit(1);
+  let sql = full;
+  for (const marker of ['-- @optional-pgcron-block', '-- @optional-http-block']) {
+    const idx = sql.indexOf(marker);
+    if (idx === -1) {
+      console.error(`verify-sql: маркер ${marker} не найден в 02`);
+      process.exit(1);
+    }
+    sql = sql.slice(0, idx).trimEnd() + '\n';
   }
-  return full.slice(0, idx).trimEnd() + '\n';
+  return sql;
 }
 
 const psql = findPsql();
