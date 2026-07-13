@@ -9262,7 +9262,7 @@ EXCEPTION
 END;
 $$;
 
-COMMENT ON PROCEDURE load_prices_from_moex_http(INTEGER, INTEGER, DATE, DATE, VARCHAR) IS 
+COMMENT ON PROCEDURE load_prices_from_moex_http(INTEGER, INTEGER, DATE, DATE, VARCHAR, INTEGER, INTEGER) IS 
 'Загрузка MOEX ISS. p_contract_prefix — тикер контракта; p_moex_interval/p_start — M1 pagination.';
 
 -- @include sql/load_prices_moex_resample.sql (см. sql/load_prices_moex_resample.sql — дублируется ниже)
