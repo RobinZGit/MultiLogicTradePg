@@ -5,7 +5,7 @@
 > Включать **запросы пользователя текстом** (секция «Запросы пользователя»).
 
 **Репозиторий:** https://github.com/RobinZGit/MultiLogicTradePg  
-**Последнее обновление:** 2026-07-13 (fix poll сбрасывал параметры; правило no-refresh-while-editing)
+**Последнее обновление:** 2026-07-13 (v21 demo: long+short по SMA; БД 00→02)
 
 ---
 
@@ -25,7 +25,7 @@
 | Файл | Назначение |
 |------|------------|
 | `00_create_database.sql` | **DROP + CREATE** базы `multilogictrade` (полное пересоздание) |
-| `01_multilogictrade_tables_and_data.sql` | Таблицы, индексы, справочники (идемпотентно, **v20**) |
+| `01_multilogictrade_tables_and_data.sql` | Таблицы, индексы, справочники (идемпотентно, **v21**) |
 | `02_multilogictrade_functions_and_procedures.sql` | Функции и процедуры (идемпотентно) |
 | `03_multilogictrade_examples.sql` | Примеры SELECT (необязательно) |
 
@@ -86,8 +86,8 @@
 - `logics` + `logics_detail` — движок формул **ещё не реализован**;
 - UI **Операции** (`/operations`): пять сворачиваемых блоков — **«Параметры логики»**, **«Сигналы индикаторов»**, **«Стоп-лосс и тейк-профит»**, **«Ценные бумаги»**, **«Сделки»** (по умолчанию свёрнуты);
 - API logics: **`GET/PUT /api/logic-params`** — чтение/запись `logic_params`; signals/stops/securities/trades;
-- **Trade runner** (`api/trade-runner.js`): каждые ~15 с для `logics.is_enabled=TRUE` — **активные сигналы** `logic_indicator_signals` на бумагах `logic_securities`, M15; условие с `pp` (цена) и `VALUE` (индикатор); **trend→Open Long (BUY)**, **counter→Close Long (SELL)** при открытой позиции; лот = `floor(остаток × % / 100 / цена)`; лимит `max_open_positions`; fake→`is_simulated=true` + пересчёт `current_balance`; real→`tbank_post_order`; env `TRADE_RUNNER_ENABLED=0` отключает;
-- **Демо-логика** в `01`: `SMA Price Cross Demo` на `FAKE-EFF-001` — SMA(20): pp>VALUE покупка, pp<VALUE продажа, SBER, депозит 1M, 10%, макс. 3 позиции;
+- **Trade runner** (`api/trade-runner.js`): каждые ~15 с для `logics.is_enabled=TRUE` — **активные сигналы** `logic_indicator_signals` на бумагах `logic_securities`, M15; условие с `pp` (цена) и `VALUE` (индикатор); **long trend→Open Long**, **long counter→Close Long**, **short trend→Open Short**, **short counter→Close Short**; лот = `floor(остаток × % / 100 / цена)`; лимит `max_open_positions`; fake→`is_simulated=true` + пересчёт `current_balance`; real→`tbank_post_order`; env `TRADE_RUNNER_ENABLED=0` отключает;
+- **Демо-логика** в `01`: `SMA Price Cross Demo` на `FAKE-EFF-001` — SMA(20): **long** при `pp > VALUE`, **short** при `pp < VALUE` (+ counter для закрытия), SBER, депозит 1M, 10%, макс. 3 позиции;
 
 ### Правило схемы БД
 
@@ -126,6 +126,7 @@
 35. **logic_indicator_signals.position_side:** Long/Short; кнопки «+ Индикатор Long/Short», тренд/к-тренд на форме picker.
 36. **logic_params (v20):** таблица параметров логики EAV; сохранение через PUT /api/logic-params; runner читает из logic_params.
 37. **Fix poll logics:** цикл 2 с больше не перезагружает «Параметры» и не затирает черновики формул; `paramsDirtyIds`; правило `no-refresh-while-editing.mdc`.
+38. **Демо SMA v21:** 4 сигнала — long trend/counter + short trend/counter; long выше SMA, short ниже SMA.
 
 ### Автотесты
 
@@ -187,6 +188,7 @@
 
 | Дата | Суть |
 |------|------|
+| 2026-07-13 | v21 demo SMA: long выше / short ниже средней; БД 00→02 |
 | 2026-07-13 | fix poll: параметры/формулы не сбрасываются при редактировании; правило UI |
 | 2026-07-13 | v20 logic_params EAV + position_side Long/Short; БД 00→02 |
 | 2026-07-13 | параметры logics (% депозита, макс. позиций, остаток) + SMA demo + sizing в runner |
@@ -265,3 +267,4 @@
 39. «Параметры логики не сохраняются — таблица logic_params (ключ/значение/тип); выложить».
 40. «Собери базу с нуля и выложи в репозиторий».
 41. «Poll каждые 2 с сбрасывает параметры — не refresh'ить редактируемое; правило проекта; выложить».
+42. «Демо-логика: long при цене выше SMA, short при ниже; пересобрать БД; в репо».

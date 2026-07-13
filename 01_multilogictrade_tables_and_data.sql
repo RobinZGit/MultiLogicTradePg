@@ -1,6 +1,6 @@
 -- ============================================
 -- MultiLogicTrade — шаг 1: таблицы и справочники
--- Версия: v20 (идемпотентный запуск)
+-- Версия: v21 (идемпотентный запуск)
 -- ============================================
 -- Подключение: база multilogictrade
 -- Можно выполнять многократно: объекты и строки не дублируются.
@@ -894,7 +894,7 @@ COMMENT ON COLUMN logics.name IS 'Уникальное имя логики';
 COMMENT ON COLUMN logics.account_id IS 'Счёт (accounts), на котором выполняется эта торговля';
 COMMENT ON COLUMN logics.is_enabled IS 'Логика включена (активна) или выключена';
 
--- Пример: логика «цена выше SMA — покупка, ниже — продажа» на фейковом счёте T-Bank
+-- Пример: цена выше SMA — long, ниже SMA — short (фейковый счёт T-Bank)
 INSERT INTO logics (
     name, account_id, is_enabled,
     position_size_pct, max_open_positions, initial_balance, current_balance
@@ -1124,7 +1124,7 @@ COMMENT ON TABLE logic_securities IS
 'Портфель ценных бумаг торговой логики: одна строка — одна бумага в logics';
 COMMENT ON COLUMN logic_securities.display_order IS 'Порядок отображения в UI';
 
--- Демо-логика SMA Price Cross Demo: сигналы и бумага SBER
+-- Демо-логика SMA Price Cross Demo: long выше SMA, short ниже SMA + SBER
 INSERT INTO logic_indicator_signals (logic_id, indicator_id, position_side, signal_kind, formula, display_order)
 SELECT l.id, i.id, 'long', 'trend', '@SMA(period=20,series=VALUE) pp > VALUE', 0
 FROM logics l
@@ -1136,6 +1136,24 @@ ON CONFLICT (logic_id, indicator_id, position_side, signal_kind) DO UPDATE SET
 
 INSERT INTO logic_indicator_signals (logic_id, indicator_id, position_side, signal_kind, formula, display_order)
 SELECT l.id, i.id, 'long', 'counter', '@SMA(period=20,series=VALUE) pp < VALUE', 1
+FROM logics l
+CROSS JOIN indicators i
+WHERE l.name = 'SMA Price Cross Demo' AND i.code = 'SMA'
+ON CONFLICT (logic_id, indicator_id, position_side, signal_kind) DO UPDATE SET
+    formula = EXCLUDED.formula,
+    is_active = TRUE;
+
+INSERT INTO logic_indicator_signals (logic_id, indicator_id, position_side, signal_kind, formula, display_order)
+SELECT l.id, i.id, 'short', 'trend', '@SMA(period=20,series=VALUE) pp < VALUE', 2
+FROM logics l
+CROSS JOIN indicators i
+WHERE l.name = 'SMA Price Cross Demo' AND i.code = 'SMA'
+ON CONFLICT (logic_id, indicator_id, position_side, signal_kind) DO UPDATE SET
+    formula = EXCLUDED.formula,
+    is_active = TRUE;
+
+INSERT INTO logic_indicator_signals (logic_id, indicator_id, position_side, signal_kind, formula, display_order)
+SELECT l.id, i.id, 'short', 'counter', '@SMA(period=20,series=VALUE) pp > VALUE', 3
 FROM logics l
 CROSS JOIN indicators i
 WHERE l.name = 'SMA Price Cross Demo' AND i.code = 'SMA'
