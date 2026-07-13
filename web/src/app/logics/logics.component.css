@@ -840,6 +840,38 @@ tbody tr:hover {
   cursor: pointer;
 }
 
+.trades-token-alert,
+.trades-token-banner {
+  border: 1px solid #dc2626;
+  background: #fee2e2;
+  color: #991b1b;
+  font-weight: 700;
+  cursor: pointer;
+  text-align: left;
+}
+
+.trades-token-alert {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  max-width: min(100%, 22rem);
+  padding: 0.25rem 0.5rem;
+  border-radius: 6px;
+  font-size: 0.78rem;
+}
+
+.trades-token-banner {
+  display: flex;
+  gap: 0.5rem;
+  width: 100%;
+  margin-bottom: 0.65rem;
+  padding: 0.5rem 0.75rem;
+  border-width: 2px;
+  border-radius: 8px;
+  font-size: 0.84rem;
+  line-height: 1.35;
+}
+
 .params-table .params-input {
   width: 100%;
   max-width: 10rem;

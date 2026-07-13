@@ -1301,7 +1301,19 @@
 
                         <span class="signals-summary-actions" (click)="$event.stopPropagation()">
 
-                          @if (row.is_enabled) {
+                          @if (row.is_enabled && tbankTokenAlert) {
+
+                            <button
+                              type="button"
+                              class="trades-token-alert"
+                              (click)="openTbankTokenDialogFromAlert($event)"
+                              [title]="tbankTokenAlert.message"
+                            >
+                              <span aria-hidden="true">⚠</span>
+                              <span>{{ tbankTokenAlertShortLabel() }} — нажмите, чтобы ввести</span>
+                            </button>
+
+                          } @else if (row.is_enabled) {
 
                             <span class="trades-live-badge">активна</span>
 
@@ -1316,6 +1328,19 @@
                       </summary>
 
                       <div class="signals-body">
+
+                        @if (row.is_enabled && tbankTokenAlert) {
+
+                          <button
+                            type="button"
+                            class="trades-token-banner"
+                            (click)="openTbankTokenDialogFromAlert($event)"
+                          >
+                            <span aria-hidden="true">⚠</span>
+                            <span>{{ tbankTokenAlert.message }}</span>
+                          </button>
+
+                        }
 
                         <div class="trades-scroll">
 

@@ -132,6 +132,8 @@ export class LogicsComponent implements OnInit, OnDestroy {
   tbankTokenDialogOpen = false;
   tbankTokenDialogContext: 'prices' | 'logic' | 'trades' = 'logic';
   tbankTokenDialogReason: 'missing' | 'invalid' = 'missing';
+  /** Постоянное предупреждение у блока «Сделки», пока токен невалиден и логика включена. */
+  tbankTokenAlert: { reason: 'missing' | 'invalid'; message: string } | null = null;
   private pendingEnableLogic: LogicRow | null = null;
   private lastTbankTokenCheckAt = 0;
   private readonly tbankTokenCheckMs = 30000;
@@ -1166,9 +1168,15 @@ export class LogicsComponent implements OnInit, OnDestroy {
     this.lastTbankTokenCheckAt = Date.now();
     const row = this.pendingEnableLogic;
     this.pendingEnableLogic = null;
-    if (row) {
-      this.applyEnabledChange(row, true);
-    }
+    this.settings.getTbankTokenStatus(true).subscribe({
+      next: (status) => {
+        this.applyTbankTokenStatus(status);
+        if (row && status.valid) {
+          this.applyEnabledChange(row, true);
+        }
+      },
+      error: () => {},
+    });
   }
 
   onTbankTokenCancelledForLogic(): void {
@@ -1176,27 +1184,60 @@ export class LogicsComponent implements OnInit, OnDestroy {
     this.pendingEnableLogic = null;
   }
 
+  openTbankTokenDialogFromAlert(event: Event): void {
+    event.preventDefault();
+    event.stopPropagation();
+    if (this.tbankTokenDialogOpen) return;
+    const alert = this.tbankTokenAlert;
+    this.tbankTokenDialogContext = 'trades';
+    this.tbankTokenDialogReason = alert?.reason ?? 'missing';
+    this.tbankTokenDialogOpen = true;
+  }
+
+  tbankTokenAlertShortLabel(): string {
+    if (!this.tbankTokenAlert) return '';
+    return this.tbankTokenAlert.reason === 'invalid'
+      ? 'Токен T-Bank неактивен'
+      : 'Токен T-Bank не задан';
+  }
+
   private hasEnabledLogic(): boolean {
     return this.logics.some((l) => l.is_enabled);
   }
 
-  /** Проверка токена для runner: не дублируем диалог, если уже открыт. */
+  private applyTbankTokenStatus(status: {
+    has_token: boolean;
+    valid?: boolean;
+    error_message?: string | null;
+  }): void {
+    if (!this.hasEnabledLogic() || status.valid) {
+      this.tbankTokenAlert = null;
+      return;
+    }
+    const reason: 'missing' | 'invalid' = status.has_token ? 'invalid' : 'missing';
+    this.tbankTokenAlert = {
+      reason,
+      message:
+        status.error_message?.trim() ||
+        (reason === 'invalid'
+          ? 'Токен T-Bank неактивен или просрочен. Нажмите, чтобы ввести новый API-токен.'
+          : 'Токен T-Bank не задан. Нажмите, чтобы ввести API-токен для котировок и сделок.'),
+    };
+  }
+
+  /** Проверка токена для runner: баннер + диалог только по клику. */
   private maybeCheckTbankTokenForTrades(): void {
-    if (this.tbankTokenDialogOpen) return;
-    if (!this.hasEnabledLogic()) return;
+    if (!this.hasEnabledLogic()) {
+      this.tbankTokenAlert = null;
+      return;
+    }
 
     const now = Date.now();
     if (now - this.lastTbankTokenCheckAt < this.tbankTokenCheckMs) return;
     this.lastTbankTokenCheckAt = now;
 
     this.settings.getTbankTokenStatus(true).subscribe({
-      next: (status) => {
-        if (this.tbankTokenDialogOpen) return;
-        if (status.valid) return;
-        this.tbankTokenDialogContext = 'trades';
-        this.tbankTokenDialogReason = status.has_token ? 'invalid' : 'missing';
-        this.tbankTokenDialogOpen = true;
-      },
+      next: (status) => this.applyTbankTokenStatus(status),
       error: () => {},
     });
   }
@@ -1214,6 +1255,12 @@ export class LogicsComponent implements OnInit, OnDestroy {
           checked ? 'Логика включена (UI)' : 'Логика выключена (UI)',
           { logicId: row.id, payload: { is_enabled: checked } }
         );
+        if (checked) {
+          this.lastTbankTokenCheckAt = 0;
+          this.maybeCheckTbankTokenForTrades();
+        } else if (!this.hasEnabledLogic()) {
+          this.tbankTokenAlert = null;
+        }
       },
       error: () => {
         row.is_enabled = previous;
