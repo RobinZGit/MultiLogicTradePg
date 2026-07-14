@@ -35,7 +35,7 @@ describe('signal-formula', () => {
   });
 
   it('signalKindLabel', () => {
-    expect(signalKindLabel('trend')).toBe('Тренд');
-    expect(signalKindLabel('counter')).toBe('К-тренд');
+    expect(signalKindLabel('trend')).toBe('По течению');
+    expect(signalKindLabel('counter')).toBe('Против');
   });
 });

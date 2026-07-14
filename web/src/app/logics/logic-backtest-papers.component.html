@@ -1,12 +1,14 @@
-<div class="papers-block">
-  <button type="button" class="papers-block-toggle" (click)="togglePapersBlock($event)">
-    <span class="signals-chevron" [class.open]="expandedPapers" aria-hidden="true">▸</span>
-    <span class="signals-title">Бумаги</span>
-    <span class="papers-count">{{ paperRows.length }}</span>
-  </button>
+<details class="signals-block positions-sub-block papers-sub-block" [open]="expandedPapers">
+  <summary class="signals-summary">
+    <span class="signals-summary-head" (click)="togglePapersBlock($event)">
+      <span class="signals-chevron" [class.open]="expandedPapers" aria-hidden="true">▸</span>
+      <span class="signals-title">Бумаги</span>
+      <span class="papers-count">{{ paperRows.length }}</span>
+    </span>
+  </summary>
 
   @if (expandedPapers) {
-    <div class="papers-body">
+    <div class="signals-body papers-body">
       @if (paperRows.length === 0) {
         <p class="empty papers-empty">Нет бумаг со сделками в периоде теста</p>
       } @else {
@@ -65,6 +67,15 @@
                   <p class="paper-chart-legend">
                     ▲▼ вход/выход · SL/TP · бледная зона — выкл. · полоса PnL внизу · ⟸сд./сд.⟹ — по сделкам · ⛶ полный экран
                   </p>
+
+                  @if (logicId) {
+                    <app-logic-backtest-ratings
+                      [logicId]="logicId"
+                      [securityId]="paper.security_id"
+                      [runId]="runId"
+                      [reloadToken]="reloadToken"
+                    />
+                  }
                 </div>
               }
             </div>
@@ -73,4 +84,4 @@
       }
     </div>
   }
-</div>
+</details>

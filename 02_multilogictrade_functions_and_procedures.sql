@@ -5248,6 +5248,202 @@ $$;
 COMMENT ON FUNCTION logic_resolve_stop_timeframe_id(INTEGER) IS
 'timeframe_id из logic_params.stop_loss_timeframe (по умолчанию M5)';
 
+-- @include sql/logic_stop_runner.sql (см. sql/logic_stop_runner.sql — дублируется ниже)
+-- ============================================
+-- Stop-loss runner: security / security_resume / portfolio
+-- ============================================
+
+CREATE OR REPLACE FUNCTION logic_resolve_stop_timeframe_id(p_logic_id INTEGER)
+RETURNS INTEGER
+LANGUAGE plpgsql STABLE AS $$
+DECLARE
+    v_tf TEXT;
+    v_id INTEGER;
+BEGIN
+    v_tf := upper(btrim(COALESCE(get_logic_param_text(p_logic_id, 'stop_loss_timeframe'), 'M5')));
+    SELECT t.id INTO v_id
+    FROM timeframes t
+    WHERE upper(t.tf) = v_tf AND COALESCE(t.is_active, TRUE)
+    ORDER BY t.sec
+    LIMIT 1;
+    IF v_id IS NULL THEN
+        SELECT t.id INTO v_id FROM timeframes t WHERE upper(t.tf) = 'M5' LIMIT 1;
+    END IF;
+    RETURN v_id;
+END;
+$$;
+
+COMMENT ON FUNCTION logic_resolve_stop_timeframe_id(INTEGER) IS
+'timeframe_id из logic_params.stop_loss_timeframe (по умолчанию M5)';
+
+-- @include sql/logic_stop_runner.sql (см. sql/logic_stop_runner.sql — дублируется ниже)
+-- ============================================
+-- Stop-loss runner: security / security_resume / portfolio
+-- ============================================
+
+CREATE OR REPLACE FUNCTION logic_resolve_stop_timeframe_id(p_logic_id INTEGER)
+RETURNS INTEGER
+LANGUAGE plpgsql STABLE AS $$
+DECLARE
+    v_tf TEXT;
+    v_id INTEGER;
+BEGIN
+    v_tf := upper(btrim(COALESCE(get_logic_param_text(p_logic_id, 'stop_loss_timeframe'), 'M5')));
+    SELECT t.id INTO v_id
+    FROM timeframes t
+    WHERE upper(t.tf) = v_tf AND COALESCE(t.is_active, TRUE)
+    ORDER BY t.sec
+    LIMIT 1;
+    IF v_id IS NULL THEN
+        SELECT t.id INTO v_id FROM timeframes t WHERE upper(t.tf) = 'M5' LIMIT 1;
+    END IF;
+    RETURN v_id;
+END;
+$$;
+
+COMMENT ON FUNCTION logic_resolve_stop_timeframe_id(INTEGER) IS
+'timeframe_id из logic_params.stop_loss_timeframe (по умолчанию M5)';
+
+-- @include sql/logic_stop_runner.sql (см. sql/logic_stop_runner.sql — дублируется ниже)
+-- ============================================
+-- Stop-loss runner: security / security_resume / portfolio
+-- ============================================
+
+CREATE OR REPLACE FUNCTION logic_resolve_stop_timeframe_id(p_logic_id INTEGER)
+RETURNS INTEGER
+LANGUAGE plpgsql STABLE AS $$
+DECLARE
+    v_tf TEXT;
+    v_id INTEGER;
+BEGIN
+    v_tf := upper(btrim(COALESCE(get_logic_param_text(p_logic_id, 'stop_loss_timeframe'), 'M5')));
+    SELECT t.id INTO v_id
+    FROM timeframes t
+    WHERE upper(t.tf) = v_tf AND COALESCE(t.is_active, TRUE)
+    ORDER BY t.sec
+    LIMIT 1;
+    IF v_id IS NULL THEN
+        SELECT t.id INTO v_id FROM timeframes t WHERE upper(t.tf) = 'M5' LIMIT 1;
+    END IF;
+    RETURN v_id;
+END;
+$$;
+
+COMMENT ON FUNCTION logic_resolve_stop_timeframe_id(INTEGER) IS
+'timeframe_id из logic_params.stop_loss_timeframe (по умолчанию M5)';
+
+-- @include sql/logic_stop_runner.sql (см. sql/logic_stop_runner.sql — дублируется ниже)
+-- ============================================
+-- Stop-loss runner: security / security_resume / portfolio
+-- ============================================
+
+CREATE OR REPLACE FUNCTION logic_resolve_stop_timeframe_id(p_logic_id INTEGER)
+RETURNS INTEGER
+LANGUAGE plpgsql STABLE AS $$
+DECLARE
+    v_tf TEXT;
+    v_id INTEGER;
+BEGIN
+    v_tf := upper(btrim(COALESCE(get_logic_param_text(p_logic_id, 'stop_loss_timeframe'), 'M5')));
+    SELECT t.id INTO v_id
+    FROM timeframes t
+    WHERE upper(t.tf) = v_tf AND COALESCE(t.is_active, TRUE)
+    ORDER BY t.sec
+    LIMIT 1;
+    IF v_id IS NULL THEN
+        SELECT t.id INTO v_id FROM timeframes t WHERE upper(t.tf) = 'M5' LIMIT 1;
+    END IF;
+    RETURN v_id;
+END;
+$$;
+
+COMMENT ON FUNCTION logic_resolve_stop_timeframe_id(INTEGER) IS
+'timeframe_id из logic_params.stop_loss_timeframe (по умолчанию M5)';
+
+-- @include sql/logic_stop_runner.sql (см. sql/logic_stop_runner.sql — дублируется ниже)
+-- ============================================
+-- Stop-loss runner: security / security_resume / portfolio
+-- ============================================
+
+CREATE OR REPLACE FUNCTION logic_resolve_stop_timeframe_id(p_logic_id INTEGER)
+RETURNS INTEGER
+LANGUAGE plpgsql STABLE AS $$
+DECLARE
+    v_tf TEXT;
+    v_id INTEGER;
+BEGIN
+    v_tf := upper(btrim(COALESCE(get_logic_param_text(p_logic_id, 'stop_loss_timeframe'), 'M5')));
+    SELECT t.id INTO v_id
+    FROM timeframes t
+    WHERE upper(t.tf) = v_tf AND COALESCE(t.is_active, TRUE)
+    ORDER BY t.sec
+    LIMIT 1;
+    IF v_id IS NULL THEN
+        SELECT t.id INTO v_id FROM timeframes t WHERE upper(t.tf) = 'M5' LIMIT 1;
+    END IF;
+    RETURN v_id;
+END;
+$$;
+
+COMMENT ON FUNCTION logic_resolve_stop_timeframe_id(INTEGER) IS
+'timeframe_id из logic_params.stop_loss_timeframe (по умолчанию M5)';
+
+-- @include sql/logic_stop_runner.sql (см. sql/logic_stop_runner.sql — дублируется ниже)
+-- ============================================
+-- Stop-loss runner: security / security_resume / portfolio
+-- ============================================
+
+CREATE OR REPLACE FUNCTION logic_resolve_stop_timeframe_id(p_logic_id INTEGER)
+RETURNS INTEGER
+LANGUAGE plpgsql STABLE AS $$
+DECLARE
+    v_tf TEXT;
+    v_id INTEGER;
+BEGIN
+    v_tf := upper(btrim(COALESCE(get_logic_param_text(p_logic_id, 'stop_loss_timeframe'), 'M5')));
+    SELECT t.id INTO v_id
+    FROM timeframes t
+    WHERE upper(t.tf) = v_tf AND COALESCE(t.is_active, TRUE)
+    ORDER BY t.sec
+    LIMIT 1;
+    IF v_id IS NULL THEN
+        SELECT t.id INTO v_id FROM timeframes t WHERE upper(t.tf) = 'M5' LIMIT 1;
+    END IF;
+    RETURN v_id;
+END;
+$$;
+
+COMMENT ON FUNCTION logic_resolve_stop_timeframe_id(INTEGER) IS
+'timeframe_id из logic_params.stop_loss_timeframe (по умолчанию M5)';
+
+-- @include sql/logic_stop_runner.sql (см. sql/logic_stop_runner.sql — дублируется ниже)
+-- ============================================
+-- Stop-loss runner: security / security_resume / portfolio
+-- ============================================
+
+CREATE OR REPLACE FUNCTION logic_resolve_stop_timeframe_id(p_logic_id INTEGER)
+RETURNS INTEGER
+LANGUAGE plpgsql STABLE AS $$
+DECLARE
+    v_tf TEXT;
+    v_id INTEGER;
+BEGIN
+    v_tf := upper(btrim(COALESCE(get_logic_param_text(p_logic_id, 'stop_loss_timeframe'), 'M5')));
+    SELECT t.id INTO v_id
+    FROM timeframes t
+    WHERE upper(t.tf) = v_tf AND COALESCE(t.is_active, TRUE)
+    ORDER BY t.sec
+    LIMIT 1;
+    IF v_id IS NULL THEN
+        SELECT t.id INTO v_id FROM timeframes t WHERE upper(t.tf) = 'M5' LIMIT 1;
+    END IF;
+    RETURN v_id;
+END;
+$$;
+
+COMMENT ON FUNCTION logic_resolve_stop_timeframe_id(INTEGER) IS
+'timeframe_id из logic_params.stop_loss_timeframe (по умолчанию M5)';
+
 CREATE OR REPLACE FUNCTION logic_long_position_qty(
     p_logic_id INTEGER,
     p_security_id INTEGER,
@@ -5675,13 +5871,13 @@ BEGIN
         IF v_quantity >= 1 THEN
             INSERT INTO logic_trades (
                 logic_id, account_id, security_id, timeframe_id,
-                side_id, action_id, position_event, signal_kind, signal_formula,
+                side_id, action_id, signal_kind, signal_formula,
                 quantity, price, bar_dt, is_simulated, is_fictitious, is_shadow, is_test,
                 status
             )
             VALUES (
                 p_logic_id, v_logic.account_id, p_security_id, v_tf_id,
-                v_side_close_id, v_action_long_id, 'close', 'counter', v_formula,
+                v_side_close_id, v_action_long_id, 'counter', v_formula,
                 v_quantity, v_price, v_bar_dt, v_is_simulated, FALSE, p_is_shadow, FALSE,
                 'filled'
             )
@@ -5708,13 +5904,13 @@ BEGIN
         IF v_quantity >= 1 THEN
             INSERT INTO logic_trades (
                 logic_id, account_id, security_id, timeframe_id,
-                side_id, action_id, position_event, signal_kind, signal_formula,
+                side_id, action_id, signal_kind, signal_formula,
                 quantity, price, bar_dt, is_simulated, is_fictitious, is_shadow,
                 status
             )
             VALUES (
                 p_logic_id, v_logic.account_id, p_security_id, v_tf_id,
-                v_side_close_id, v_action_short_id, 'close', 'counter', v_formula,
+                v_side_close_id, v_action_short_id, 'counter', v_formula,
                 v_quantity, v_price, v_bar_dt, v_is_simulated, FALSE, p_is_shadow,
                 'filled'
             )
@@ -6879,13 +7075,13 @@ BEGIN
 
             INSERT INTO logic_trades (
                 logic_id, account_id, security_id, timeframe_id,
-                side_id, action_id, position_event, signal_kind, signal_formula,
+                side_id, action_id, signal_kind, signal_formula,
                 quantity, price, bar_dt, is_simulated, is_fictitious, is_shadow, is_test,
                 broker_order_id, status, note
             )
             VALUES (
                 p_logic_id, v_logic.account_id, v_sec.security_id, v_tf_id,
-                v_side_close_id, v_action_id, 'close', 'counter', v_formula,
+                v_side_close_id, v_action_id, 'counter', v_formula,
                 v_quantity, v_price, v_bar_dt, v_is_simulated, FALSE, FALSE, FALSE,
                 v_broker_order_id, v_status, v_note
             )
@@ -6983,13 +7179,13 @@ BEGIN
 
             INSERT INTO logic_trades (
                 logic_id, account_id, security_id, timeframe_id,
-                side_id, action_id, position_event, signal_kind, signal_formula,
+                side_id, action_id, signal_kind, signal_formula,
                 quantity, price, bar_dt, is_simulated, is_fictitious, is_shadow, is_test,
                 broker_order_id, status, note
             )
             VALUES (
                 p_logic_id, v_logic.account_id, v_sec.security_id, v_tf_id,
-                v_side_close_id, v_action_id, 'close', 'counter', v_formula,
+                v_side_close_id, v_action_id, 'counter', v_formula,
                 v_quantity, v_price, v_bar_dt, v_is_simulated, FALSE, FALSE, FALSE,
                 v_broker_order_id, v_status, v_note
             )
@@ -7045,6 +7241,381 @@ $$;
 COMMENT ON FUNCTION logic_close_all_positions_at_market(INTEGER) IS
 'Ручное закрытие всех открытых long/short; цена из БД или load_prices; PnL через logic_trade_finalize';
 
+-- Рейтинг сигнала на логике: боевой (rating) и тестовый (rating_test) раздельно.
+-- Не путать с рейтингом индикатора в справочнике indicators.
+--
+-- Алгоритм успеха (не «просто сработал»):
+--   1) сигнал сработал на свече → pending (запомнить цену);
+--   2) на СЛЕДУЮЩЕЙ свече TF: ход цены → % годовых за длительность TF;
+--   3) сравнить с base_annual_rate_pct логики (по умолчанию 20);
+--   4) успех → +1, неуспех → −1 (рейтинг может быть отрицательным).
+-- История пишется по (signal × security); график — по бумаге.
+
+DROP FUNCTION IF EXISTS logic_signal_record_fire(INTEGER, INTEGER, INTEGER, INTEGER, TIMESTAMP, NUMERIC, TEXT, TEXT);
+DROP FUNCTION IF EXISTS logic_signal_rating_resolve_pending(INTEGER, INTEGER, TIMESTAMP);
+DROP FUNCTION IF EXISTS logic_signal_rating_resolve_pending(INTEGER, INTEGER, TIMESTAMP, BOOLEAN);
+DROP FUNCTION IF EXISTS logic_signal_rating_resolve_pending(INTEGER, INTEGER, TIMESTAMP, BOOLEAN, BIGINT);
+DROP FUNCTION IF EXISTS logic_backtest_rate_signals(BIGINT, INTEGER, INTEGER, TIMESTAMP);
+DROP FUNCTION IF EXISTS logic_backtest_reset_signal_ratings(INTEGER);
+DROP FUNCTION IF EXISTS logic_signal_move_success(TEXT, TEXT, NUMERIC, NUMERIC, NUMERIC);
+DROP FUNCTION IF EXISTS logic_signal_move_success(TEXT, TEXT, NUMERIC, NUMERIC, INTEGER, NUMERIC);
+DROP FUNCTION IF EXISTS logic_signal_annualized_move_pct(NUMERIC, NUMERIC, INTEGER);
+
+CREATE OR REPLACE FUNCTION logic_signal_annualized_move_pct(
+    p_move_pct NUMERIC,
+    p_tf_sec INTEGER
+)
+RETURNS NUMERIC
+LANGUAGE sql IMMUTABLE AS $$
+    SELECT COALESCE(p_move_pct, 0)
+         * ((365.25 * 24 * 3600) / GREATEST(COALESCE(p_tf_sec, 900), 1)::NUMERIC);
+$$;
+
+COMMENT ON FUNCTION logic_signal_annualized_move_pct(NUMERIC, INTEGER) IS
+'Переводит % хода за одну свечу TF в эквивалент % годовых';
+
+CREATE OR REPLACE FUNCTION logic_bar_annual_threshold_pct(
+    p_tf_sec INTEGER,
+    p_base_annual_pct NUMERIC
+)
+RETURNS NUMERIC
+LANGUAGE sql IMMUTABLE AS $$
+    SELECT GREATEST(
+        0::NUMERIC,
+        COALESCE(p_base_annual_pct, 20)
+            * (GREATEST(COALESCE(p_tf_sec, 900), 1)::NUMERIC / (365.25 * 24 * 3600))
+    );
+$$;
+
+COMMENT ON FUNCTION logic_bar_annual_threshold_pct(INTEGER, NUMERIC) IS
+'Эквивалент порога на 1 свече: base_annual × (tf_sec / год). Согласован с annualized_move >= base.';
+
+-- Успех: годовая ставка хода в ожидаемую сторону >= base_annual_rate_pct
+CREATE OR REPLACE FUNCTION logic_signal_move_success(
+    p_position_side TEXT,
+    p_signal_kind TEXT,
+    p_price_from NUMERIC,
+    p_price_to NUMERIC,
+    p_tf_sec INTEGER,
+    p_base_annual_pct NUMERIC
+)
+RETURNS BOOLEAN
+LANGUAGE plpgsql IMMUTABLE AS $$
+DECLARE
+    v_raw_pct NUMERIC;
+    v_dir_pct NUMERIC;
+    v_annual NUMERIC;
+BEGIN
+    IF p_price_from IS NULL OR p_price_to IS NULL OR p_price_from <= 0 THEN
+        RETURN FALSE;
+    END IF;
+    v_raw_pct := ((p_price_to - p_price_from) / p_price_from) * 100.0;
+
+    -- Ожидаемое направление: long/trend и short/counter — рост; иначе — падение
+    IF lower(p_position_side) = 'long' THEN
+        IF lower(p_signal_kind) = 'trend' THEN
+            v_dir_pct := v_raw_pct;
+        ELSE
+            v_dir_pct := -v_raw_pct;
+        END IF;
+    ELSE
+        IF lower(p_signal_kind) = 'trend' THEN
+            v_dir_pct := -v_raw_pct;
+        ELSE
+            v_dir_pct := v_raw_pct;
+        END IF;
+    END IF;
+
+    v_annual := logic_signal_annualized_move_pct(v_dir_pct, p_tf_sec);
+    RETURN v_annual >= COALESCE(p_base_annual_pct, 20);
+END;
+$$;
+
+COMMENT ON FUNCTION logic_signal_move_success(TEXT, TEXT, NUMERIC, NUMERIC, INTEGER, NUMERIC) IS
+'Успех сигнала: (ход к следующей свече → % годовых в сторону сигнала) >= base_annual_rate_pct';
+
+CREATE OR REPLACE FUNCTION logic_signal_evaluate_at(
+    p_signal_id INTEGER,
+    p_security_id INTEGER,
+    p_tf_id INTEGER,
+    p_bar_dt TIMESTAMP
+)
+RETURNS TABLE (
+    ok BOOLEAN,
+    close_price NUMERIC,
+    ind_value NUMERIC,
+    bar_dt TIMESTAMP,
+    formula TEXT,
+    position_event TEXT,
+    position_side TEXT,
+    signal_kind TEXT,
+    indicator_id INTEGER
+)
+LANGUAGE plpgsql STABLE AS $$
+DECLARE
+    v_sig RECORD;
+    v_parsed RECORD;
+    v_series TEXT;
+    v_bar RECORD;
+BEGIN
+    ok := FALSE;
+    SELECT lis.id, lis.formula, lis.position_event, lis.position_side, lis.signal_kind, lis.indicator_id
+    INTO v_sig
+    FROM logic_indicator_signals lis
+    WHERE lis.id = p_signal_id AND lis.is_active = TRUE;
+    IF NOT FOUND THEN
+        RETURN NEXT;
+        RETURN;
+    END IF;
+
+    formula := v_sig.formula;
+    position_event := v_sig.position_event;
+    position_side := v_sig.position_side;
+    signal_kind := v_sig.signal_kind;
+    indicator_id := v_sig.indicator_id;
+
+    SELECT * INTO v_parsed FROM parse_signal_formula(v_sig.formula);
+    IF NOT COALESCE(v_parsed.valid, FALSE) THEN
+        RETURN NEXT;
+        RETURN;
+    END IF;
+    v_series := parse_signal_series(v_parsed.params);
+    SELECT * INTO v_bar FROM logic_bar_data_at(
+        p_security_id, p_tf_id, v_sig.indicator_id, v_series, p_bar_dt
+    );
+    IF NOT FOUND THEN
+        RETURN NEXT;
+        RETURN;
+    END IF;
+    close_price := v_bar.close_price;
+    ind_value := v_bar.ind_value;
+    bar_dt := v_bar.bar_dt;
+    ok := evaluate_signal_condition(v_parsed.condition, v_bar.close_price, v_bar.ind_value);
+    RETURN NEXT;
+END;
+$$;
+
+CREATE OR REPLACE FUNCTION logic_signal_record_fire(
+    p_signal_id INTEGER,
+    p_logic_id INTEGER,
+    p_security_id INTEGER,
+    p_tf_id INTEGER,
+    p_bar_dt TIMESTAMP,
+    p_price NUMERIC,
+    p_position_side TEXT,
+    p_signal_kind TEXT,
+    p_is_test BOOLEAN DEFAULT FALSE,
+    p_run_id BIGINT DEFAULT NULL
+)
+RETURNS VOID
+LANGUAGE plpgsql AS $$
+BEGIN
+    -- Только запоминаем: ±1 ставится на следующей свече в resolve_pending
+    INSERT INTO logic_signal_rating_pending (
+        signal_id, logic_id, security_id, timeframe_id,
+        bar_dt, price, position_side, signal_kind, is_test, run_id
+    )
+    VALUES (
+        p_signal_id, p_logic_id, p_security_id, p_tf_id,
+        p_bar_dt, p_price, p_position_side, p_signal_kind,
+        COALESCE(p_is_test, FALSE), p_run_id
+    )
+    ON CONFLICT (signal_id, security_id, bar_dt, is_test) DO NOTHING;
+END;
+$$;
+
+CREATE OR REPLACE FUNCTION logic_signal_rating_resolve_pending(
+    p_logic_id INTEGER,
+    p_tf_id INTEGER,
+    p_asof_bar_dt TIMESTAMP DEFAULT NULL,
+    p_is_test BOOLEAN DEFAULT FALSE,
+    p_run_id BIGINT DEFAULT NULL
+)
+RETURNS INTEGER
+LANGUAGE plpgsql AS $$
+DECLARE
+    v_tf_sec INTEGER;
+    v_annual NUMERIC;
+    v_pend RECORD;
+    v_next_dt TIMESTAMP;
+    v_next_close NUMERIC;
+    v_ok BOOLEAN;
+    v_delta INTEGER;
+    v_new_rating INTEGER;
+    v_sec_rating INTEGER;
+    v_resolved INTEGER := 0;
+BEGIN
+    SELECT t.sec INTO v_tf_sec FROM timeframes t WHERE t.id = p_tf_id;
+    v_annual := get_logic_param_numeric(p_logic_id, 'base_annual_rate_pct', 20);
+
+    FOR v_pend IN
+        SELECT p.*
+        FROM logic_signal_rating_pending p
+        WHERE p.logic_id = p_logic_id
+          AND p.timeframe_id = p_tf_id
+          AND p.is_test = COALESCE(p_is_test, FALSE)
+          AND (p_run_id IS NULL OR p.run_id IS NULL OR p.run_id = p_run_id)
+          AND (p_asof_bar_dt IS NULL OR p.bar_dt < p_asof_bar_dt)
+        ORDER BY p.bar_dt, p.id
+    LOOP
+        IF p_run_id IS NOT NULL
+           AND v_resolved > 0
+           AND (v_resolved % 50) = 0
+           AND logic_backtest_cancel_requested(p_run_id) THEN
+            RETURN v_resolved;
+        END IF;
+
+        SELECT p.dt, p.close_price
+        INTO v_next_dt, v_next_close
+        FROM prices p
+        WHERE p.security_id = v_pend.security_id
+          AND p.timeframe_id = p_tf_id
+          AND p.dt > v_pend.bar_dt
+          AND (p_asof_bar_dt IS NULL OR p.dt <= p_asof_bar_dt)
+        ORDER BY p.dt
+        LIMIT 1;
+
+        IF v_next_dt IS NULL THEN
+            CONTINUE;
+        END IF;
+
+        v_ok := logic_signal_move_success(
+            v_pend.position_side, v_pend.signal_kind,
+            v_pend.price, v_next_close, v_tf_sec, v_annual
+        );
+        v_delta := CASE WHEN v_ok THEN 1 ELSE -1 END;
+
+        -- Глобальный рейтинг сигнала (сумма по всем бумагам), может быть < 0
+        IF COALESCE(p_is_test, FALSE) THEN
+            UPDATE logic_indicator_signals lis
+            SET rating_test = lis.rating_test + v_delta
+            WHERE lis.id = v_pend.signal_id
+            RETURNING rating_test INTO v_new_rating;
+        ELSE
+            UPDATE logic_indicator_signals lis
+            SET rating = lis.rating + v_delta
+            WHERE lis.id = v_pend.signal_id
+            RETURNING rating INTO v_new_rating;
+        END IF;
+
+        -- Рейтинг на бумаге для графика
+        SELECT COALESCE((
+            SELECT h.rating
+            FROM logic_signal_rating_history h
+            WHERE h.signal_id = v_pend.signal_id
+              AND h.security_id = v_pend.security_id
+              AND h.is_test = COALESCE(p_is_test, FALSE)
+              AND (p_run_id IS NULL OR h.run_id IS NULL OR h.run_id = p_run_id OR h.run_id = v_pend.run_id)
+            ORDER BY h.bar_dt DESC, h.id DESC
+            LIMIT 1
+        ), 0) + v_delta
+        INTO v_sec_rating;
+
+        INSERT INTO logic_signal_rating_history (
+            signal_id, logic_id, security_id, run_id, bar_dt, rating, delta, is_test
+        )
+        VALUES (
+            v_pend.signal_id, p_logic_id, v_pend.security_id,
+            COALESCE(p_run_id, v_pend.run_id),
+            v_next_dt, v_sec_rating, v_delta,
+            COALESCE(p_is_test, FALSE)
+        );
+
+        DELETE FROM logic_signal_rating_pending WHERE id = v_pend.id;
+        v_resolved := v_resolved + 1;
+    END LOOP;
+
+    RETURN v_resolved;
+END;
+$$;
+
+COMMENT ON FUNCTION logic_signal_rating_resolve_pending(INTEGER, INTEGER, TIMESTAMP, BOOLEAN, BIGINT) IS
+'На следующей свече: годовая ставка хода vs base_annual_rate_pct → ±1; history по бумаге';
+
+CREATE OR REPLACE FUNCTION logic_backtest_rate_signals(
+    p_run_id BIGINT,
+    p_logic_id INTEGER,
+    p_tf_id INTEGER,
+    p_bar_dt TIMESTAMP
+)
+RETURNS INTEGER
+LANGUAGE plpgsql AS $$
+DECLARE
+    v_sec RECORD;
+    v_sig RECORD;
+    v_eval RECORD;
+    v_fires INTEGER := 0;
+BEGIN
+    -- Стоп до тяжёлого resolve/обхода бумаг
+    IF logic_backtest_cancel_requested(p_run_id) THEN
+        RETURN 0;
+    END IF;
+
+    PERFORM logic_signal_rating_resolve_pending(
+        p_logic_id, p_tf_id, p_bar_dt, TRUE, p_run_id
+    );
+
+    IF logic_backtest_cancel_requested(p_run_id) THEN
+        RETURN v_fires;
+    END IF;
+
+    FOR v_sec IN
+        SELECT ls.security_id
+        FROM logic_securities ls
+        WHERE ls.logic_id = p_logic_id AND ls.is_active = TRUE
+    LOOP
+        IF logic_backtest_cancel_requested(p_run_id) THEN
+            RETURN v_fires;
+        END IF;
+
+        FOR v_sig IN
+            SELECT lis.id, lis.position_side, lis.signal_kind
+            FROM logic_indicator_signals lis
+            WHERE lis.logic_id = p_logic_id AND lis.is_active = TRUE
+            ORDER BY lis.display_order, lis.id
+        LOOP
+            SELECT * INTO v_eval
+            FROM logic_signal_evaluate_at(
+                v_sig.id, v_sec.security_id, p_tf_id, p_bar_dt
+            );
+            IF COALESCE(v_eval.ok, FALSE) AND v_eval.close_price IS NOT NULL THEN
+                PERFORM logic_signal_record_fire(
+                    v_sig.id, p_logic_id, v_sec.security_id, p_tf_id,
+                    v_eval.bar_dt, v_eval.close_price,
+                    v_sig.position_side, v_sig.signal_kind,
+                    TRUE, p_run_id
+                );
+                v_fires := v_fires + 1;
+            END IF;
+        END LOOP;
+    END LOOP;
+
+    RETURN v_fires;
+END;
+$$;
+
+COMMENT ON FUNCTION logic_backtest_rate_signals(BIGINT, INTEGER, INTEGER, TIMESTAMP) IS
+'Бэктест: resolve pending (+1/−1 по следующей свече) + запись новых срабатываний в pending';
+
+CREATE OR REPLACE FUNCTION logic_backtest_reset_signal_ratings(p_logic_id INTEGER)
+RETURNS VOID
+LANGUAGE plpgsql AS $$
+BEGIN
+    UPDATE logic_indicator_signals
+    SET rating_test = 0
+    WHERE logic_id = p_logic_id;
+
+    DELETE FROM logic_signal_rating_pending
+    WHERE logic_id = p_logic_id AND is_test = TRUE;
+
+    DELETE FROM logic_signal_rating_history
+    WHERE logic_id = p_logic_id AND is_test = TRUE;
+END;
+$$;
+
+COMMENT ON FUNCTION logic_backtest_reset_signal_ratings(INTEGER) IS
+'Сброс тестового рейтинга и истории перед новым прогоном бэктеста';
+
 CREATE OR REPLACE FUNCTION process_logic_trades(p_logic_id INTEGER)
 RETURNS INTEGER
 LANGUAGE plpgsql AS $$
@@ -7061,12 +7632,10 @@ DECLARE
     v_side_close_id INTEGER;
     v_action_long_id INTEGER;
     v_action_short_id INTEGER;
+    v_grp RECORD;
     v_sig RECORD;
     v_sec RECORD;
-    v_parsed RECORD;
-    v_series TEXT;
-    v_ind_value NUMERIC;
-    v_ind_dt TIMESTAMP;
+    v_eval RECORD;
     v_pp NUMERIC;
     v_held_long NUMERIC;
     v_held_short NUMERIC;
@@ -7088,7 +7657,10 @@ DECLARE
     v_closed_bar_dt TIMESTAMP;
     v_last_bar_raw TEXT;
     v_last_bar_dt TIMESTAMP;
-    v_bar_row RECORD;
+    v_all_ok BOOLEAN;
+    v_formulas TEXT;
+    v_signal_kind TEXT;
+    v_ind_dt TIMESTAMP;
 BEGIN
     SELECT l.id, l.account_id, a.account_type
     INTO v_logic
@@ -7166,10 +7738,13 @@ BEGIN
 
     CALL logic_refresh_market_data(p_logic_id, v_tf_id, v_closed_bar_dt);
 
+    -- Рейтинг сигнала на логике: проверить прошлые срабатывания на следующей свече
+    PERFORM logic_signal_rating_resolve_pending(p_logic_id, v_tf_id, v_closed_bar_dt);
+
     PERFORM logic_trade_log(
         p_logic_id,
         'trade.bar_check',
-        format('Проверка сигналов на закрытой свече %s', v_closed_bar_dt),
+        format('Проверка AND-сигналов на закрытой свече %s', v_closed_bar_dt),
         jsonb_build_object('closed_bar', v_closed_bar_dt, 'timeframe_id', v_tf_id),
         NULL,
         v_tf_id
@@ -7182,79 +7757,129 @@ BEGIN
     LOOP
         v_is_shadow := v_sec.real_trading_paused;
 
-        FOR v_sig IN
-            SELECT lis.id, lis.position_event, lis.position_side, lis.signal_kind, lis.formula, lis.indicator_id
+        FOR v_grp IN
+            SELECT lis.position_event, lis.position_side
             FROM logic_indicator_signals lis
             WHERE lis.logic_id = p_logic_id AND lis.is_active = TRUE
-            ORDER BY lis.display_order, lis.id
+            GROUP BY lis.position_event, lis.position_side
+            ORDER BY lis.position_event, lis.position_side
         LOOP
-            SELECT * INTO v_parsed FROM parse_signal_formula(v_sig.formula);
-            IF NOT COALESCE(v_parsed.valid, FALSE) THEN
-                CONTINUE;
-            END IF;
+            v_all_ok := TRUE;
+            v_formulas := NULL;
+            v_signal_kind := NULL;
+            v_pp := NULL;
+            v_ind_dt := NULL;
 
-            v_series := parse_signal_series(v_parsed.params);
-
-            SELECT * INTO v_bar_row
-            FROM logic_bar_data_at(
-                v_sec.security_id, v_tf_id, v_sig.indicator_id, v_series, v_closed_bar_dt
-            );
-            IF NOT FOUND THEN
-                PERFORM logic_trade_log(
-                    p_logic_id,
-                    'trade.not_ready',
-                    format('Нет данных на свече %s для security=%s signal=%s', v_closed_bar_dt, v_sec.security_id, v_sig.formula),
-                    jsonb_build_object('closed_bar', v_closed_bar_dt, 'security_id', v_sec.security_id, 'formula', v_sig.formula),
-                    v_sec.security_id,
-                    v_tf_id
+            FOR v_sig IN
+                SELECT lis.id, lis.position_event, lis.position_side, lis.signal_kind, lis.formula, lis.indicator_id
+                FROM logic_indicator_signals lis
+                WHERE lis.logic_id = p_logic_id
+                  AND lis.is_active = TRUE
+                  AND lis.position_event = v_grp.position_event
+                  AND lis.position_side = v_grp.position_side
+                ORDER BY lis.display_order, lis.id
+            LOOP
+                SELECT * INTO v_eval
+                FROM logic_signal_evaluate_at(
+                    v_sig.id, v_sec.security_id, v_tf_id, v_closed_bar_dt
                 );
+
+                IF v_eval.close_price IS NULL THEN
+                    v_all_ok := FALSE;
+                    PERFORM logic_trade_log(
+                        p_logic_id,
+                        'trade.not_ready',
+                        format(
+                            'Нет данных на свече %s для security=%s signal=%s',
+                            v_closed_bar_dt, v_sec.security_id, v_sig.formula
+                        ),
+                        jsonb_build_object(
+                            'closed_bar', v_closed_bar_dt,
+                            'security_id', v_sec.security_id,
+                            'formula', v_sig.formula,
+                            'position_event', v_grp.position_event,
+                            'position_side', v_grp.position_side
+                        ),
+                        v_sec.security_id,
+                        v_tf_id
+                    );
+                    CONTINUE;
+                END IF;
+
+                IF v_signal_kind IS NULL THEN
+                    v_signal_kind := v_sig.signal_kind;
+                    v_pp := v_eval.close_price;
+                    v_ind_dt := v_eval.bar_dt;
+                END IF;
+                v_formulas := CASE
+                    WHEN v_formulas IS NULL THEN v_sig.formula
+                    ELSE v_formulas || ' AND ' || v_sig.formula
+                END;
+
+                IF COALESCE(v_eval.ok, FALSE) THEN
+                    PERFORM logic_signal_record_fire(
+                        v_sig.id, p_logic_id, v_sec.security_id, v_tf_id,
+                        v_eval.bar_dt, v_eval.close_price,
+                        v_sig.position_side, v_sig.signal_kind
+                    );
+                    PERFORM logic_trade_log(
+                        p_logic_id,
+                        'trade.signal_hit',
+                        format(
+                            'Сигнал %s/%s/%s: %s',
+                            v_sig.position_event, v_sig.position_side, v_sig.signal_kind, v_sig.formula
+                        ),
+                        jsonb_build_object(
+                            'formula', v_sig.formula,
+                            'position_event', v_sig.position_event,
+                            'pp', v_eval.close_price,
+                            'ind_value', v_eval.ind_value,
+                            'bar_dt', v_eval.bar_dt
+                        ),
+                        v_sec.security_id,
+                        v_tf_id
+                    );
+                ELSE
+                    v_all_ok := FALSE;
+                    PERFORM logic_trade_log(
+                        p_logic_id,
+                        'trade.signal_skip',
+                        format(
+                            'Условие не выполнено: %s (pp=%s, value=%s)',
+                            v_sig.formula, v_eval.close_price, v_eval.ind_value
+                        ),
+                        jsonb_build_object(
+                            'formula', v_sig.formula,
+                            'position_event', v_sig.position_event,
+                            'signal_kind', v_sig.signal_kind,
+                            'position_side', v_sig.position_side,
+                            'pp', v_eval.close_price,
+                            'ind_value', v_eval.ind_value,
+                            'bar_dt', v_eval.bar_dt
+                        ),
+                        v_sec.security_id,
+                        v_tf_id
+                    );
+                END IF;
+            END LOOP;
+
+            IF NOT v_all_ok OR v_pp IS NULL OR v_formulas IS NULL THEN
                 CONTINUE;
             END IF;
 
-            v_ind_dt := v_bar_row.bar_dt;
-            v_ind_value := v_bar_row.ind_value;
-            v_pp := v_bar_row.close_price;
+            v_held_long := CASE
+                WHEN v_grp.position_side = 'long'
+                THEN logic_long_position_qty(p_logic_id, v_sec.security_id, v_is_shadow)
+                ELSE 0
+            END;
+            v_held_short := CASE
+                WHEN v_grp.position_side = 'short'
+                THEN logic_short_position_qty(p_logic_id, v_sec.security_id, v_is_shadow)
+                ELSE 0
+            END;
+            v_is_open_event := COALESCE(v_grp.position_event, 'open') = 'open';
 
-            IF NOT evaluate_signal_condition(v_parsed.condition, v_pp, v_ind_value) THEN
-                PERFORM logic_trade_log(
-                    p_logic_id,
-                    'trade.signal_skip',
-                    format('Условие не выполнено: %s (pp=%s, value=%s)', v_parsed.condition, v_pp, v_ind_value),
-                    jsonb_build_object(
-                        'formula', v_sig.formula,
-                        'position_event', v_sig.position_event,
-                        'signal_kind', v_sig.signal_kind,
-                        'position_side', v_sig.position_side,
-                        'pp', v_pp,
-                        'ind_value', v_ind_value,
-                        'bar_dt', v_ind_dt
-                    ),
-                    v_sec.security_id,
-                    v_tf_id
-                );
-                CONTINUE;
-            END IF;
-
-            PERFORM logic_trade_log(
-                p_logic_id,
-                'trade.signal_hit',
-                format('Сигнал %s/%s/%s: %s', v_sig.position_event, v_sig.position_side, v_sig.signal_kind, v_sig.formula),
-                jsonb_build_object(
-                    'formula', v_sig.formula,
-                    'position_event', v_sig.position_event,
-                    'pp', v_pp,
-                    'ind_value', v_ind_value,
-                    'bar_dt', v_ind_dt
-                ),
-                v_sec.security_id,
-                v_tf_id
-            );
-
-            v_held_long := CASE WHEN v_sig.position_side = 'long' THEN logic_long_position_qty(p_logic_id, v_sec.security_id, v_is_shadow) ELSE 0 END;
-            v_held_short := CASE WHEN v_sig.position_side = 'short' THEN logic_short_position_qty(p_logic_id, v_sec.security_id, v_is_shadow) ELSE 0 END;
-            v_is_open_event := COALESCE(v_sig.position_event, 'open') = 'open';
-
-            IF v_sig.position_side = 'long' THEN
+            IF v_grp.position_side = 'long' THEN
                 IF v_is_open_event THEN
                     IF v_held_long > 0 OR (NOT v_is_shadow AND v_open_positions >= v_max_positions) THEN
                         CONTINUE;
@@ -7354,11 +7979,11 @@ BEGIN
             )
             VALUES (
                 p_logic_id, v_logic.account_id, v_sec.security_id, v_tf_id,
-                v_side_id, v_action_id, v_sig.position_event, v_sig.signal_kind, v_sig.formula,
+                v_side_id, v_action_id, v_grp.position_event, v_signal_kind, v_formulas,
                 v_quantity, v_pp, v_ind_dt, v_is_simulated, FALSE, v_is_shadow, FALSE,
                 v_broker_order_id, v_status, v_note
             )
-            ON CONFLICT (logic_id, security_id, position_event, signal_kind, bar_dt, is_test, is_shadow) DO NOTHING
+            ON CONFLICT (logic_id, security_id, position_event, action_id, bar_dt, is_test, is_shadow) DO NOTHING
             RETURNING id INTO v_trade_id;
 
             IF v_trade_id IS NULL THEN
@@ -7371,7 +7996,7 @@ BEGIN
                 v_balance := logic_trade_finalize(v_trade_id, v_balance);
                 v_notional := v_quantity * v_pp;
                 v_is_open := v_is_open_event;
-                IF v_sig.position_side = 'long' THEN
+                IF v_grp.position_side = 'long' THEN
                     v_balance := v_balance + CASE WHEN v_is_open THEN -v_notional ELSE v_notional END;
                 ELSE
                     v_balance := v_balance + CASE WHEN v_is_open THEN v_notional ELSE -v_notional END;
@@ -7397,9 +8022,10 @@ BEGIN
                     'quantity', v_quantity,
                     'price', v_pp,
                     'status', v_status,
-                    'position_event', v_sig.position_event,
-                    'signal_kind', v_sig.signal_kind,
-                    'formula', v_sig.formula,
+                    'position_event', v_grp.position_event,
+                    'position_side', v_grp.position_side,
+                    'signal_kind', v_signal_kind,
+                    'formula', v_formulas,
                     'bar_dt', v_ind_dt
                 ),
                 v_sec.security_id,
@@ -7437,7 +8063,8 @@ END;
 $$;
 
 COMMENT ON FUNCTION process_logic_trades(INTEGER) IS
-'Сигналы только на последней закрытой свече TF логики; last_trade_bar_dt — идемпотентность по бару';
+'AND по группам (position_event × position_side): сделка только если все активные сигналы группы сработали; '
+'рейтинг сигнала на логике обновляется через pending на следующей свече TF';
 
 CREATE OR REPLACE FUNCTION run_trade_cycle()
 RETURNS JSONB
@@ -7965,7 +8592,7 @@ BEGIN
         p_quantity, p_price, p_bar_dt, TRUE, FALSE,
         p_is_shadow, TRUE, p_trade_reason, 'filled'
     )
-    ON CONFLICT (logic_id, security_id, position_event, signal_kind, bar_dt, is_test, is_shadow) DO NOTHING
+    ON CONFLICT (logic_id, security_id, position_event, action_id, bar_dt, is_test, is_shadow) DO NOTHING
     RETURNING id INTO v_trade_id;
 
     IF v_trade_id IS NULL THEN
@@ -8347,10 +8974,9 @@ DECLARE
     v_action_long_id INTEGER;
     v_action_short_id INTEGER;
     v_sec RECORD;
+    v_grp RECORD;
     v_sig RECORD;
-    v_parsed RECORD;
-    v_series TEXT;
-    v_bar_row RECORD;
+    v_eval RECORD;
     v_is_shadow BOOLEAN;
     v_held_long NUMERIC;
     v_held_short NUMERIC;
@@ -8361,6 +8987,10 @@ DECLARE
     v_trade_id BIGINT;
     v_reason TEXT;
     v_bar_dt TIMESTAMP;
+    v_all_ok BOOLEAN;
+    v_formulas TEXT;
+    v_signal_kind TEXT;
+    v_pp NUMERIC;
 BEGIN
     SELECT id INTO v_side_open_id FROM sides WHERE name = 'Open' LIMIT 1;
     SELECT id INTO v_side_close_id FROM sides WHERE name = 'Close' LIMIT 1;
@@ -8377,48 +9007,75 @@ BEGIN
     LOOP
         v_is_shadow := logic_backtest_sec_shadow(p_run_id, v_sec.security_id);
 
-        FOR v_sig IN
-            SELECT lis.* FROM logic_indicator_signals lis
+        FOR v_grp IN
+            SELECT lis.position_event, lis.position_side
+            FROM logic_indicator_signals lis
             WHERE lis.logic_id = p_logic_id AND lis.is_active = TRUE
-            ORDER BY lis.display_order, lis.id
+            GROUP BY lis.position_event, lis.position_side
+            ORDER BY lis.position_event, lis.position_side
         LOOP
-            SELECT * INTO v_parsed FROM parse_signal_formula(v_sig.formula);
-            IF NOT COALESCE(v_parsed.valid, FALSE) THEN
+            v_all_ok := TRUE;
+            v_formulas := NULL;
+            v_signal_kind := NULL;
+            v_pp := NULL;
+            v_bar_dt := NULL;
+
+            FOR v_sig IN
+                SELECT lis.id, lis.position_event, lis.position_side, lis.signal_kind, lis.formula, lis.indicator_id
+                FROM logic_indicator_signals lis
+                WHERE lis.logic_id = p_logic_id
+                  AND lis.is_active = TRUE
+                  AND lis.position_event = v_grp.position_event
+                  AND lis.position_side = v_grp.position_side
+                ORDER BY lis.display_order, lis.id
+            LOOP
+                SELECT * INTO v_eval
+                FROM logic_signal_evaluate_at(
+                    v_sig.id, v_sec.security_id, p_tf_id, p_bar_dt
+                );
+
+                IF v_eval.close_price IS NULL THEN
+                    v_all_ok := FALSE;
+                    CONTINUE;
+                END IF;
+
+                IF v_signal_kind IS NULL THEN
+                    v_signal_kind := v_sig.signal_kind;
+                    v_pp := v_eval.close_price;
+                    v_bar_dt := v_eval.bar_dt;
+                END IF;
+                v_formulas := CASE
+                    WHEN v_formulas IS NULL THEN v_sig.formula
+                    ELSE v_formulas || ' AND ' || v_sig.formula
+                END;
+
+                IF NOT COALESCE(v_eval.ok, FALSE) THEN
+                    v_all_ok := FALSE;
+                END IF;
+            END LOOP;
+
+            IF NOT v_all_ok OR v_pp IS NULL OR v_formulas IS NULL THEN
                 CONTINUE;
             END IF;
-            v_series := parse_signal_series(v_parsed.params);
 
-            SELECT * INTO v_bar_row FROM logic_bar_data_at(
-                v_sec.security_id, p_tf_id, v_sig.indicator_id, v_series, p_bar_dt
-            );
-            IF NOT FOUND THEN
-                CONTINUE;
-            END IF;
-
-            v_bar_dt := v_bar_row.bar_dt;
-
-            IF NOT evaluate_signal_condition(v_parsed.condition, v_bar_row.close_price, v_bar_row.ind_value) THEN
-                CONTINUE;
-            END IF;
-
-            v_held_long := CASE WHEN v_sig.position_side = 'long'
+            v_held_long := CASE WHEN v_grp.position_side = 'long'
                 THEN logic_long_position_qty(p_logic_id, v_sec.security_id, v_is_shadow, TRUE) ELSE 0 END;
-            v_held_short := CASE WHEN v_sig.position_side = 'short'
+            v_held_short := CASE WHEN v_grp.position_side = 'short'
                 THEN logic_short_position_qty(p_logic_id, v_sec.security_id, v_is_shadow, TRUE) ELSE 0 END;
-            v_is_open_event := COALESCE(v_sig.position_event, 'open') = 'open';
+            v_is_open_event := COALESCE(v_grp.position_event, 'open') = 'open';
             v_reason := format(
-                'signal:%s/%s/%s %s',
-                v_sig.position_event, v_sig.position_side, v_sig.signal_kind, v_sig.formula
+                'signal:AND:%s/%s %s',
+                v_grp.position_event, v_grp.position_side, v_formulas
             );
 
-            IF v_sig.position_side = 'long' THEN
+            IF v_grp.position_side = 'long' THEN
                 IF v_is_open_event THEN
                     IF v_held_long > 0 OR (NOT v_is_shadow AND v_open_positions >= v_max_positions) THEN
                         CONTINUE;
                     END IF;
-                    v_quantity := logic_calc_open_quantity(p_balance, v_position_size_pct, v_bar_row.close_price);
+                    v_quantity := logic_calc_open_quantity(p_balance, v_position_size_pct, v_pp);
                     IF v_quantity < 1 THEN
-                        IF p_balance >= v_bar_row.close_price THEN
+                        IF p_balance >= v_pp THEN
                             v_quantity := 1;
                         ELSE
                             CONTINUE;
@@ -8437,9 +9094,9 @@ BEGIN
                     IF v_held_short > 0 OR (NOT v_is_shadow AND v_open_positions >= v_max_positions) THEN
                         CONTINUE;
                     END IF;
-                    v_quantity := logic_calc_open_quantity(p_balance, v_position_size_pct, v_bar_row.close_price);
+                    v_quantity := logic_calc_open_quantity(p_balance, v_position_size_pct, v_pp);
                     IF v_quantity < 1 THEN
-                        IF p_balance >= v_bar_row.close_price THEN
+                        IF p_balance >= v_pp THEN
                             v_quantity := 1;
                         ELSE
                             CONTINUE;
@@ -8459,20 +9116,20 @@ BEGIN
             INTO v_trade_id, p_balance
             FROM logic_backtest_insert_trade(
                 p_run_id, p_logic_id, p_account_id, v_sec.security_id, p_tf_id,
-                v_side_id, v_action_id, v_sig.signal_kind, v_sig.formula,
-                v_quantity, v_bar_row.close_price, v_bar_dt, v_is_shadow, v_reason,
-                p_balance, v_sig.position_event
+                v_side_id, v_action_id, v_signal_kind, v_formulas,
+                v_quantity, v_pp, v_bar_dt, v_is_shadow, v_reason,
+                p_balance, v_grp.position_event
             );
 
             IF v_trade_id IS NOT NULL THEN
                 PERFORM logic_backtest_log(
                     p_run_id, p_logic_id, 'backtest.trade_created',
-                    format('Тест-сделка #%s qty=%s price=%s', v_trade_id, v_quantity, v_bar_row.close_price),
+                    format('Тест-сделка #%s qty=%s price=%s', v_trade_id, v_quantity, v_pp),
                     jsonb_build_object(
                         'trade_id', v_trade_id, 'bar_dt', v_bar_dt, 'quantity', v_quantity,
-                        'price', v_bar_row.close_price, 'formula', v_sig.formula,
-                        'position_event', v_sig.position_event,
-                        'pp', v_bar_row.close_price, 'ind_value', v_bar_row.ind_value
+                        'price', v_pp, 'formula', v_formulas,
+                        'position_event', v_grp.position_event,
+                        'position_side', v_grp.position_side
                     ),
                     v_sec.security_id, p_tf_id
                 );
@@ -8552,6 +9209,7 @@ BEGIN
     v_point_count := GREATEST(500, CEIL(v_days_span * (86400.0 / GREATEST(v_tf_sec, 60)))::INTEGER + 200);
 
     DELETE FROM logic_trades WHERE logic_id = p_logic_id AND is_test = TRUE;
+    PERFORM logic_backtest_reset_signal_ratings(p_logic_id);
 
     INSERT INTO logic_backtest_runs (
         logic_id, date_from, date_to, status, progress_pct,
@@ -8702,6 +9360,7 @@ BEGIN
         END IF;
 
         v_bar_dt := v_bars[v_i];
+        PERFORM logic_backtest_rate_signals(v_run_id, p_logic_id, v_tf_id, v_bar_dt);
         v_balance := logic_backtest_process_risk(
             v_run_id, p_logic_id, v_logic.account_id, v_tf_id, v_bar_dt, v_balance
         );

@@ -66,6 +66,27 @@ async function backtestLog(pool, runId, logicId, operation, message, payload = n
 }
 
 async function updateRun(pool, runId, patch) {
+  const { rows: curRows } = await pool.query(
+    `SELECT status, cancel_requested FROM logic_backtest_runs WHERE id = $1`,
+    [runId]
+  );
+  const cur = curRows[0];
+  if (!cur) return;
+
+  // После Стоп не воскрешаем прогон и не затираем «Отменено»
+  if (cur.status === 'cancelled' || cur.cancel_requested) {
+    if (patch.status && patch.status !== 'cancelled') {
+      delete patch.status;
+    }
+    if (
+      (cur.status === 'cancelled' || cur.cancel_requested) &&
+      patch.phase_message &&
+      !String(patch.phase_message).includes('Отмен')
+    ) {
+      delete patch.phase_message;
+    }
+  }
+
   const fields = [];
   const values = [runId];
   let i = 2;
@@ -501,6 +522,7 @@ async function runBacktestAsync(pool, logicId, dateFrom, dateTo, runId) {
 
     await pool.query('DELETE FROM logic_trades WHERE logic_id = $1 AND is_test = TRUE', [logicId]);
     await pool.query('DELETE FROM logic_backtest_security_state WHERE run_id = $1', [runId]);
+    await pool.query('SELECT logic_backtest_reset_signal_ratings($1)', [logicId]);
 
     const { rows: tfMetaRows } = await pool.query(
       `SELECT t.sec AS tf_sec, t.tf AS tf_name FROM timeframes t WHERE t.id = $1`,
@@ -718,23 +740,49 @@ async function runBacktestAsync(pool, logicId, dateFrom, dateTo, runId) {
           stats,
           `Обновление на баре ${bi + 1}/${totalBars}`
         );
+        if (await isCancelRequested(pool, runId)) {
+          await finishCancelled(pool, runId, logicId, balance, bi, totalBars);
+          return;
+        }
       }
 
       const barDt = bars[bi];
+
+      // Независимый рейтинг каждого сигнала (не зависит от AND/сделок)
+      await pool.query(
+        `SELECT logic_backtest_rate_signals($1, $2, $3, $4)`,
+        [runId, logicId, tfId, barDt]
+      );
+      if (await isCancelRequested(pool, runId)) {
+        await finishCancelled(pool, runId, logicId, balance, bi, totalBars);
+        return;
+      }
 
       const { rows: riskRows } = await pool.query(
         `SELECT logic_backtest_process_risk($1, $2, $3, $4, $5, $6::numeric) AS balance`,
         [runId, logicId, logic.account_id, tfId, barDt, balance]
       );
       balance = Number(riskRows[0]?.balance ?? balance);
+      if (await isCancelRequested(pool, runId)) {
+        await finishCancelled(pool, runId, logicId, balance, bi, totalBars);
+        return;
+      }
 
       const { rows: sigRows } = await pool.query(
         `SELECT logic_backtest_process_signals($1, $2, $3, $4, $5, $6::numeric) AS balance`,
         [runId, logicId, logic.account_id, tfId, barDt, balance]
       );
       balance = Number(sigRows[0]?.balance ?? balance);
+      if (await isCancelRequested(pool, runId)) {
+        await finishCancelled(pool, runId, logicId, balance, bi + 1, totalBars);
+        return;
+      }
 
       if (bi % 3 === 0 || bi === bars.length - 1) {
+        if (await isCancelRequested(pool, runId)) {
+          await finishCancelled(pool, runId, logicId, balance, bi + 1, totalBars);
+          return;
+        }
         const pnl = await sumTestPnl(pool, logicId);
         const { rows: tcRows } = await pool.query(
           `SELECT trades_created FROM logic_backtest_runs WHERE id = $1`,
@@ -826,20 +874,43 @@ async function sumTestPnl(pool, logicId) {
 }
 
 async function finishCancelled(pool, runId, logicId, balance, processed, total) {
+  // Ничего не удаляем: сделки/рейтинги теста остаются как есть
   const pnl = await sumTestPnl(pool, logicId);
-  await backtestLog(pool, runId, logicId, 'backtest.cancelled', `Отменено на ${processed}/${total}`, {
-    processed,
-    total,
-    financial_result: pnl,
-  });
-  await updateRun(pool, runId, {
-    status: 'cancelled',
-    phase_message: 'Отменено',
-    phase_detail: `${processed} / ${total}`,
-    test_balance: balance,
-    financial_result: pnl,
-    finished_at: new Date(),
-  });
+  const { rows } = await pool.query(
+    `SELECT status, processed_bars, total_bars FROM logic_backtest_runs WHERE id = $1`,
+    [runId]
+  );
+  const already = rows[0]?.status === 'cancelled';
+  const proc = processed ?? rows[0]?.processed_bars ?? 0;
+  const tot = total ?? rows[0]?.total_bars ?? 0;
+  if (!already) {
+    await backtestLog(pool, runId, logicId, 'backtest.cancelled', `Отменено на ${proc}/${tot}`, {
+      processed: proc,
+      total: tot,
+      financial_result: pnl,
+    });
+  }
+  await pool.query(
+    `
+    UPDATE logic_backtest_runs
+    SET cancel_requested = TRUE,
+        status = 'cancelled',
+        phase_message = 'Отменено',
+        phase_detail = $2,
+        test_balance = COALESCE($3::numeric, test_balance),
+        financial_result = $4,
+        processed_bars = GREATEST(COALESCE(processed_bars, 0), $5::int),
+        finished_at = COALESCE(finished_at, CURRENT_TIMESTAMP)
+    WHERE id = $1
+    `,
+    [
+      runId,
+      tot > 0 ? `${proc} / ${tot} баров (сохранено)` : 'Остановлено, результат сохранён',
+      balance,
+      pnl,
+      proc,
+    ]
+  );
 }
 
 async function startBacktest(pool, logicId, dateFrom, dateTo) {
@@ -883,15 +954,56 @@ async function getBacktestStatus(pool, logicId, runId) {
 }
 
 async function cancelBacktest(pool, runId) {
-  const { rowCount } = await pool.query(
+  const { rows } = await pool.query(
     `
-    UPDATE logic_backtest_runs
-    SET cancel_requested = TRUE
+    SELECT id, logic_id, status, processed_bars, total_bars, test_balance
+    FROM logic_backtest_runs
     WHERE id = $1
-      AND status IN ('pending', 'loading_prices', 'loading_indicators', 'running')
     `,
     [runId]
   );
+  if (rows.length === 0) return false;
+  const run = rows[0];
+  if (!['pending', 'loading_prices', 'loading_indicators', 'running'].includes(run.status)) {
+    return run.status === 'cancelled';
+  }
+
+  // Сразу status=cancelled — UI не висит на «Останавливаю…».
+  // Фоновый воркер добьёт текущий SQL и выйдет; данные теста не трогаем.
+  const pnl = await sumTestPnl(pool, run.logic_id);
+  const proc = Number(run.processed_bars ?? 0);
+  const tot = Number(run.total_bars ?? 0);
+  const { rowCount } = await pool.query(
+    `
+    UPDATE logic_backtest_runs
+    SET cancel_requested = TRUE,
+        status = 'cancelled',
+        phase_message = 'Отменено',
+        phase_detail = CASE
+          WHEN $3::int > 0 THEN $2::text || ' / ' || $3::text || ' баров (сохранено)'
+          ELSE COALESCE(phase_detail, 'Остановлено, результат сохранён')
+        END,
+        financial_result = $4,
+        finished_at = COALESCE(finished_at, CURRENT_TIMESTAMP)
+    WHERE id = $1
+      AND status IN ('pending', 'loading_prices', 'loading_indicators', 'running')
+    `,
+    [runId, proc, tot, pnl]
+  );
+
+  try {
+    await backtestLog(
+      pool,
+      runId,
+      run.logic_id,
+      'backtest.cancel_requested',
+      `Стоп пользователем на ${proc}/${tot}`,
+      { processed: proc, total: tot, financial_result: pnl }
+    );
+  } catch (_e) {
+    /* ignore */
+  }
+
   return rowCount > 0;
 }
 

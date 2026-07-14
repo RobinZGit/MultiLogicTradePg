@@ -160,6 +160,7 @@ app.get('/api/indicators', async (req, res) => {
         i.is_active,
         i.sig_trend_def,
         i.sig_ct_def,
+        i.sig_profile,
         COALESCE(
           json_agg(
             json_build_object(
@@ -1458,6 +1459,8 @@ app.get('/api/logic-indicator-signals', async (req, res) => {
         lis.position_side,
         lis.signal_kind,
         lis.formula,
+        lis.rating,
+        lis.rating_test,
         lis.display_order,
         lis.is_active,
         i.code AS indicator_code,
@@ -1472,6 +1475,113 @@ app.get('/api/logic-indicator-signals', async (req, res) => {
     res.json(rows);
   } catch (err) {
     console.error('GET /api/logic-indicator-signals', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.get('/api/logic-signal-ratings/history', async (req, res) => {
+  const logicId = Number(req.query.logic_id);
+  const isTest = req.query.is_test === '1' || req.query.is_test === 'true';
+  const runId = req.query.run_id != null && req.query.run_id !== ''
+    ? Number(req.query.run_id)
+    : null;
+  const signalId = req.query.signal_id != null && req.query.signal_id !== ''
+    ? Number(req.query.signal_id)
+    : null;
+  const securityId = req.query.security_id != null && req.query.security_id !== ''
+    ? Number(req.query.security_id)
+    : null;
+  if (!Number.isInteger(logicId) || logicId <= 0) {
+    res.status(400).json({ error: 'logic_id required' });
+    return;
+  }
+  try {
+    const { rows: signals } = await pool.query(
+      `
+      SELECT
+        lis.id AS signal_id,
+        lis.logic_id,
+        lis.position_event,
+        lis.position_side,
+        lis.signal_kind,
+        lis.formula,
+        lis.rating,
+        lis.rating_test,
+        lis.is_active,
+        i.code AS indicator_code,
+        i.name AS indicator_name
+      FROM logic_indicator_signals lis
+      JOIN indicators i ON i.id = lis.indicator_id
+      WHERE lis.logic_id = $1
+        AND ($2::int IS NULL OR lis.id = $2)
+      ORDER BY lis.display_order, lis.id
+      `,
+      [logicId, signalId]
+    );
+
+    const histParams = [logicId, isTest];
+    let histSql = `
+      SELECT h.signal_id, h.bar_dt, h.rating, h.delta, h.security_id, h.run_id
+      FROM logic_signal_rating_history h
+      WHERE h.logic_id = $1 AND h.is_test = $2
+    `;
+    if (runId != null && Number.isInteger(runId)) {
+      histParams.push(runId);
+      histSql += ` AND h.run_id = $${histParams.length}`;
+    }
+    if (signalId != null && Number.isInteger(signalId)) {
+      histParams.push(signalId);
+      histSql += ` AND h.signal_id = $${histParams.length}`;
+    }
+    if (securityId != null && Number.isInteger(securityId)) {
+      histParams.push(securityId);
+      histSql += ` AND h.security_id = $${histParams.length}`;
+    }
+    histSql += ' ORDER BY h.signal_id, h.bar_dt, h.id';
+
+    const { rows: hist } = await pool.query(histSql, histParams);
+    const bySignal = new Map();
+    for (const s of signals) {
+      bySignal.set(s.signal_id, {
+        ...s,
+        // При фильтре по бумаге rating_test в ответе = рейтинг на этой бумаге
+        paper_rating: 0,
+        points: [],
+      });
+    }
+    for (const h of hist) {
+      const row = bySignal.get(h.signal_id);
+      if (!row) continue;
+      const dt = h.bar_dt;
+      const value = Number(h.rating);
+      const point = {
+        dt,
+        value,
+        delta: Number(h.delta),
+      };
+      const pts = row.points;
+      const last = pts[pts.length - 1];
+      if (last && String(last.dt) === String(dt)) {
+        pts[pts.length - 1] = point;
+      } else {
+        pts.push(point);
+      }
+      row.paper_rating = value;
+    }
+    if (securityId != null && Number.isInteger(securityId)) {
+      for (const row of bySignal.values()) {
+        row.rating_test = row.paper_rating;
+      }
+    }
+    res.json({
+      logic_id: logicId,
+      is_test: isTest,
+      run_id: runId,
+      security_id: securityId,
+      signals: [...bySignal.values()],
+    });
+  } catch (err) {
+    console.error('GET /api/logic-signal-ratings/history', err);
     res.status(500).json({ error: err.message });
   }
 });
@@ -1522,7 +1632,7 @@ app.post('/api/logic-indicator-signals', async (req, res) => {
       ON CONFLICT (logic_id, indicator_id, position_event, position_side, signal_kind) DO UPDATE SET
         formula = EXCLUDED.formula,
         is_active = TRUE
-      RETURNING id, logic_id, indicator_id, position_event, position_side, signal_kind, formula, display_order, is_active
+      RETURNING id, logic_id, indicator_id, position_event, position_side, signal_kind, formula, rating, rating_test, display_order, is_active
     `,
       [logicId, indicatorId, positionEvent, positionSide, signalKind, formula, displayOrder]
     );
@@ -1557,7 +1667,7 @@ app.put('/api/logic-indicator-signals/:id', async (req, res) => {
       SET formula = $2,
           is_active = COALESCE($3::boolean, is_active)
       WHERE id = $1
-      RETURNING id, logic_id, indicator_id, position_event, position_side, signal_kind, formula, display_order, is_active
+      RETURNING id, logic_id, indicator_id, position_event, position_side, signal_kind, formula, rating, rating_test, display_order, is_active
     `,
       [id, formula, isActive === undefined ? null : isActive]
     );
@@ -2543,6 +2653,15 @@ function parseLogicTradingParams(body) {
       return { error: 'Таймфрейм SL: код вида M5, M15, H1' };
     }
     out.stop_loss_timeframe = tf;
+    hasField = true;
+  }
+
+  if (body?.base_annual_rate_pct !== undefined) {
+    const v = Number(body.base_annual_rate_pct);
+    if (!Number.isFinite(v) || v < 0 || v > 1000) {
+      return { error: 'Базовая ставка (% годовых): число от 0 до 1000' };
+    }
+    out.base_annual_rate_pct = v;
     hasField = true;
   }
 

@@ -71,56 +71,65 @@
         }
       </span>
 
-      <span class="signals-summary-actions backtest-run-controls">
-        @if (isTest) {
-          <button
-            type="button"
-            class="btn-run-backtest"
-            [class.btn-stop]="isBacktestRunning"
-            [title]="isBacktestRunning ? 'Остановить тестирование' : 'Запустить тестирование'"
-            (click)="onPlayOrStop($event)"
-            (mousedown)="$event.preventDefault()"
-          >
-            @if (isBacktestRunning) {
-              Стоп
-            } @else {
-              ▶
-            }
-          </button>
-        } @else {
-        @if (hasOpenPositions()) {
-          <button
-            type="button"
-            class="btn-close-all-positions"
-            [disabled]="closeAllLoading"
-            (click)="onCloseAll($event)"
-          >
-            @if (closeAllLoading) {
-              закрытие…
-            } @else {
-              Закрыть всё по рынку
-            }
-          </button>
-        }
+      @if (!isTest) {
+        <span class="signals-summary-actions backtest-run-controls">
+          @if (hasOpenPositions()) {
+            <button
+              type="button"
+              class="btn-close-all-positions"
+              [disabled]="closeAllLoading"
+              (click)="onCloseAll($event)"
+            >
+              @if (closeAllLoading) {
+                закрытие…
+              } @else {
+                Закрыть всё по рынку
+              }
+            </button>
+          }
 
-        @if (logicRow.is_enabled && tbankTokenAlert) {
-          <button
-            type="button"
-            class="trades-token-alert"
-            (click)="onOpenTokenDialog($event)"
-            [title]="tbankTokenAlert.message"
-          >
-            <span aria-hidden="true">⚠</span>
-            <span>Токен — нажмите</span>
-          </button>
-        } @else if (logicRow.is_enabled) {
-          <span class="trades-live-badge">активна</span>
-        } @else {
-          <span class="trades-paused-badge">логика выкл.</span>
-        }
+          @if (logicRow.is_enabled && tbankTokenAlert) {
+            <button
+              type="button"
+              class="trades-token-alert"
+              (click)="onOpenTokenDialog($event)"
+              [title]="tbankTokenAlert.message"
+            >
+              <span aria-hidden="true">⚠</span>
+              <span>Токен — нажмите</span>
+            </button>
+          } @else if (logicRow.is_enabled) {
+            <span class="trades-live-badge">активна</span>
+          } @else {
+            <span class="trades-paused-badge">логика выкл.</span>
+          }
+        </span>
       }
-    </span>
   </summary>
+
+  @if (isTest) {
+    <div class="backtest-toolbar" (click)="$event.stopPropagation()">
+      <button
+        type="button"
+        class="btn-run-backtest"
+        [class.btn-stop]="isBacktestRunning"
+        [disabled]="isCancelling"
+        [title]="isBacktestRunning ? 'Остановить тестирование' : 'Запустить тестирование'"
+        (click)="onPlayOrStop($event)"
+      >
+        @if (isCancelling) {
+          Останавливаю…
+        } @else if (isBacktestRunning) {
+          Стоп
+        } @else {
+          ▶ Запуск
+        }
+      </button>
+      @if (isBacktestRunning) {
+        <span class="backtest-toolbar-hint">Сворачивание блока тест не останавливает</span>
+      }
+    </div>
+  }
 
   @if (isTest && isBacktestRunning) {
     <div class="backtest-progress backtest-progress-in-block">
@@ -377,6 +386,15 @@
 
     @if (isTest) {
       <app-logic-backtest-papers
+        [logicId]="logicRow.id"
+        [runId]="backtestRun?.id ?? null"
+        [reloadToken]="
+          (backtestRun?.id ?? '') +
+          ':' +
+          (backtestRun?.status ?? '') +
+          ':' +
+          (backtestRun?.processed_bars ?? 0)
+        "
         [trades]="trades"
         [dateFrom]="backtestRun?.date_from ?? null"
         [dateTo]="backtestRun?.date_to ?? null"
@@ -389,7 +407,8 @@
       @if (isTest) {
         Историческое тестирование на выбранном периоде. Сделки помечены <strong>тест</strong> и не смешиваются с боевыми.
         Теневые сделки в тесте — отдельно от теневых на реальном счёте.
-        Блок <strong>Бумаги</strong> — графики только по инструментам со сделками: входы/выходы, стопы, PnL, периоды выключения.
+        Блок <strong>Бумаги</strong> — график; под ним <strong>Рейтинги сигналов на бумаге</strong>
+        (сработал → следующая свеча → % годовых vs базовая ставка → +1/−1).
       } @else {
         <strong>Сделки открытия</strong> — покупки (long) или продажи в шорт с ненулевым остатком.
         <strong>Сделки закрытия</strong> — продажи или покрытие шорта; раскройте строку для пакетов FIFO/средней.

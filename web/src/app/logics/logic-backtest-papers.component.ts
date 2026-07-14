@@ -12,6 +12,7 @@ import {
 import { Subscription, of } from 'rxjs';
 import { catchError, finalize } from 'rxjs/operators';
 import { PriceChartComponent } from '../price-chart/price-chart.component';
+import { LogicBacktestRatingsComponent } from './logic-backtest-ratings.component';
 import {
   ChartEquityPoint,
   ChartIndicatorSeries,
@@ -94,7 +95,7 @@ const MAX_LOAD_PAGES = 12;
 @Component({
   selector: 'app-logic-backtest-papers',
   standalone: true,
-  imports: [CommonModule, PriceChartComponent],
+  imports: [CommonModule, PriceChartComponent, LogicBacktestRatingsComponent],
   templateUrl: './logic-backtest-papers.component.html',
   styleUrl: './logic-backtest-papers.component.css',
   changeDetection: ChangeDetectionStrategy.OnPush,
@@ -103,6 +104,9 @@ export class LogicBacktestPapersComponent implements OnChanges, OnDestroy {
   private readonly securitiesApi = inject(SecuritiesService);
   private readonly cdr = inject(ChangeDetectorRef);
 
+  @Input() logicId: number | null = null;
+  @Input() runId: number | null = null;
+  @Input() reloadToken: string | number | null = null;
   @Input() trades: LogicTradeRow[] = [];
   @Input() dateFrom: string | null = null;
   @Input() dateTo: string | null = null;

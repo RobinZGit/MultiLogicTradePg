@@ -10,6 +10,7 @@ const PARAM_KEYS = {
   COMMISSION_PCT: 'commission_pct',
   COST_METHOD: 'cost_method',
   STOP_LOSS_TIMEFRAME: 'stop_loss_timeframe',
+  BASE_ANNUAL_RATE_PCT: 'base_annual_rate_pct',
 };
 
 const DEFAULTS = {
@@ -21,6 +22,7 @@ const DEFAULTS = {
   [PARAM_KEYS.COMMISSION_PCT]: { value: '0.05', type: 'number' },
   [PARAM_KEYS.COST_METHOD]: { value: 'FIFO', type: 'text' },
   [PARAM_KEYS.STOP_LOSS_TIMEFRAME]: { value: 'M5', type: 'text' },
+  [PARAM_KEYS.BASE_ANNUAL_RATE_PCT]: { value: '20', type: 'number' },
 };
 
 function parseParamValue(paramKey, raw, valueType) {
@@ -85,6 +87,10 @@ function rowsToTradingParams(rows) {
       String(map[PARAM_KEYS.STOP_LOSS_TIMEFRAME]).trim() !== ''
         ? String(map[PARAM_KEYS.STOP_LOSS_TIMEFRAME]).trim().toUpperCase()
         : 'M5',
+    base_annual_rate_pct:
+      map[PARAM_KEYS.BASE_ANNUAL_RATE_PCT] != null
+        ? Number(map[PARAM_KEYS.BASE_ANNUAL_RATE_PCT])
+        : 20,
   };
 }
 
@@ -211,6 +217,20 @@ async function saveTradingParams(pool, logicId, payload) {
       throw new Error('stop_loss_timeframe required');
     }
     await upsertParam(pool, logicId, PARAM_KEYS.STOP_LOSS_TIMEFRAME, tf, 'text');
+  }
+
+  if (payload.base_annual_rate_pct !== undefined) {
+    const v = Number(payload.base_annual_rate_pct);
+    if (!Number.isFinite(v) || v < 0 || v > 1000) {
+      throw new Error('Базовая ставка (% годовых): число от 0 до 1000');
+    }
+    await upsertParam(
+      pool,
+      logicId,
+      PARAM_KEYS.BASE_ANNUAL_RATE_PCT,
+      v,
+      'number'
+    );
   }
 
   return getTradingParams(pool, logicId);

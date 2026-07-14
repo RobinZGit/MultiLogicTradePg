@@ -452,7 +452,7 @@ BEGIN
         p_quantity, p_price, p_bar_dt, TRUE, FALSE,
         p_is_shadow, TRUE, p_trade_reason, 'filled'
     )
-    ON CONFLICT (logic_id, security_id, position_event, signal_kind, bar_dt, is_test, is_shadow) DO NOTHING
+    ON CONFLICT (logic_id, security_id, position_event, action_id, bar_dt, is_test, is_shadow) DO NOTHING
     RETURNING id INTO v_trade_id;
 
     IF v_trade_id IS NULL THEN
@@ -834,10 +834,9 @@ DECLARE
     v_action_long_id INTEGER;
     v_action_short_id INTEGER;
     v_sec RECORD;
+    v_grp RECORD;
     v_sig RECORD;
-    v_parsed RECORD;
-    v_series TEXT;
-    v_bar_row RECORD;
+    v_eval RECORD;
     v_is_shadow BOOLEAN;
     v_held_long NUMERIC;
     v_held_short NUMERIC;
@@ -848,6 +847,10 @@ DECLARE
     v_trade_id BIGINT;
     v_reason TEXT;
     v_bar_dt TIMESTAMP;
+    v_all_ok BOOLEAN;
+    v_formulas TEXT;
+    v_signal_kind TEXT;
+    v_pp NUMERIC;
 BEGIN
     SELECT id INTO v_side_open_id FROM sides WHERE name = 'Open' LIMIT 1;
     SELECT id INTO v_side_close_id FROM sides WHERE name = 'Close' LIMIT 1;
@@ -864,48 +867,75 @@ BEGIN
     LOOP
         v_is_shadow := logic_backtest_sec_shadow(p_run_id, v_sec.security_id);
 
-        FOR v_sig IN
-            SELECT lis.* FROM logic_indicator_signals lis
+        FOR v_grp IN
+            SELECT lis.position_event, lis.position_side
+            FROM logic_indicator_signals lis
             WHERE lis.logic_id = p_logic_id AND lis.is_active = TRUE
-            ORDER BY lis.display_order, lis.id
+            GROUP BY lis.position_event, lis.position_side
+            ORDER BY lis.position_event, lis.position_side
         LOOP
-            SELECT * INTO v_parsed FROM parse_signal_formula(v_sig.formula);
-            IF NOT COALESCE(v_parsed.valid, FALSE) THEN
+            v_all_ok := TRUE;
+            v_formulas := NULL;
+            v_signal_kind := NULL;
+            v_pp := NULL;
+            v_bar_dt := NULL;
+
+            FOR v_sig IN
+                SELECT lis.id, lis.position_event, lis.position_side, lis.signal_kind, lis.formula, lis.indicator_id
+                FROM logic_indicator_signals lis
+                WHERE lis.logic_id = p_logic_id
+                  AND lis.is_active = TRUE
+                  AND lis.position_event = v_grp.position_event
+                  AND lis.position_side = v_grp.position_side
+                ORDER BY lis.display_order, lis.id
+            LOOP
+                SELECT * INTO v_eval
+                FROM logic_signal_evaluate_at(
+                    v_sig.id, v_sec.security_id, p_tf_id, p_bar_dt
+                );
+
+                IF v_eval.close_price IS NULL THEN
+                    v_all_ok := FALSE;
+                    CONTINUE;
+                END IF;
+
+                IF v_signal_kind IS NULL THEN
+                    v_signal_kind := v_sig.signal_kind;
+                    v_pp := v_eval.close_price;
+                    v_bar_dt := v_eval.bar_dt;
+                END IF;
+                v_formulas := CASE
+                    WHEN v_formulas IS NULL THEN v_sig.formula
+                    ELSE v_formulas || ' AND ' || v_sig.formula
+                END;
+
+                IF NOT COALESCE(v_eval.ok, FALSE) THEN
+                    v_all_ok := FALSE;
+                END IF;
+            END LOOP;
+
+            IF NOT v_all_ok OR v_pp IS NULL OR v_formulas IS NULL THEN
                 CONTINUE;
             END IF;
-            v_series := parse_signal_series(v_parsed.params);
 
-            SELECT * INTO v_bar_row FROM logic_bar_data_at(
-                v_sec.security_id, p_tf_id, v_sig.indicator_id, v_series, p_bar_dt
-            );
-            IF NOT FOUND THEN
-                CONTINUE;
-            END IF;
-
-            v_bar_dt := v_bar_row.bar_dt;
-
-            IF NOT evaluate_signal_condition(v_parsed.condition, v_bar_row.close_price, v_bar_row.ind_value) THEN
-                CONTINUE;
-            END IF;
-
-            v_held_long := CASE WHEN v_sig.position_side = 'long'
+            v_held_long := CASE WHEN v_grp.position_side = 'long'
                 THEN logic_long_position_qty(p_logic_id, v_sec.security_id, v_is_shadow, TRUE) ELSE 0 END;
-            v_held_short := CASE WHEN v_sig.position_side = 'short'
+            v_held_short := CASE WHEN v_grp.position_side = 'short'
                 THEN logic_short_position_qty(p_logic_id, v_sec.security_id, v_is_shadow, TRUE) ELSE 0 END;
-            v_is_open_event := COALESCE(v_sig.position_event, 'open') = 'open';
+            v_is_open_event := COALESCE(v_grp.position_event, 'open') = 'open';
             v_reason := format(
-                'signal:%s/%s/%s %s',
-                v_sig.position_event, v_sig.position_side, v_sig.signal_kind, v_sig.formula
+                'signal:AND:%s/%s %s',
+                v_grp.position_event, v_grp.position_side, v_formulas
             );
 
-            IF v_sig.position_side = 'long' THEN
+            IF v_grp.position_side = 'long' THEN
                 IF v_is_open_event THEN
                     IF v_held_long > 0 OR (NOT v_is_shadow AND v_open_positions >= v_max_positions) THEN
                         CONTINUE;
                     END IF;
-                    v_quantity := logic_calc_open_quantity(p_balance, v_position_size_pct, v_bar_row.close_price);
+                    v_quantity := logic_calc_open_quantity(p_balance, v_position_size_pct, v_pp);
                     IF v_quantity < 1 THEN
-                        IF p_balance >= v_bar_row.close_price THEN
+                        IF p_balance >= v_pp THEN
                             v_quantity := 1;
                         ELSE
                             CONTINUE;
@@ -924,9 +954,9 @@ BEGIN
                     IF v_held_short > 0 OR (NOT v_is_shadow AND v_open_positions >= v_max_positions) THEN
                         CONTINUE;
                     END IF;
-                    v_quantity := logic_calc_open_quantity(p_balance, v_position_size_pct, v_bar_row.close_price);
+                    v_quantity := logic_calc_open_quantity(p_balance, v_position_size_pct, v_pp);
                     IF v_quantity < 1 THEN
-                        IF p_balance >= v_bar_row.close_price THEN
+                        IF p_balance >= v_pp THEN
                             v_quantity := 1;
                         ELSE
                             CONTINUE;
@@ -946,20 +976,20 @@ BEGIN
             INTO v_trade_id, p_balance
             FROM logic_backtest_insert_trade(
                 p_run_id, p_logic_id, p_account_id, v_sec.security_id, p_tf_id,
-                v_side_id, v_action_id, v_sig.signal_kind, v_sig.formula,
-                v_quantity, v_bar_row.close_price, v_bar_dt, v_is_shadow, v_reason,
-                p_balance, v_sig.position_event
+                v_side_id, v_action_id, v_signal_kind, v_formulas,
+                v_quantity, v_pp, v_bar_dt, v_is_shadow, v_reason,
+                p_balance, v_grp.position_event
             );
 
             IF v_trade_id IS NOT NULL THEN
                 PERFORM logic_backtest_log(
                     p_run_id, p_logic_id, 'backtest.trade_created',
-                    format('Тест-сделка #%s qty=%s price=%s', v_trade_id, v_quantity, v_bar_row.close_price),
+                    format('Тест-сделка #%s qty=%s price=%s', v_trade_id, v_quantity, v_pp),
                     jsonb_build_object(
                         'trade_id', v_trade_id, 'bar_dt', v_bar_dt, 'quantity', v_quantity,
-                        'price', v_bar_row.close_price, 'formula', v_sig.formula,
-                        'position_event', v_sig.position_event,
-                        'pp', v_bar_row.close_price, 'ind_value', v_bar_row.ind_value
+                        'price', v_pp, 'formula', v_formulas,
+                        'position_event', v_grp.position_event,
+                        'position_side', v_grp.position_side
                     ),
                     v_sec.security_id, p_tf_id
                 );
@@ -1039,6 +1069,7 @@ BEGIN
     v_point_count := GREATEST(500, CEIL(v_days_span * (86400.0 / GREATEST(v_tf_sec, 60)))::INTEGER + 200);
 
     DELETE FROM logic_trades WHERE logic_id = p_logic_id AND is_test = TRUE;
+    PERFORM logic_backtest_reset_signal_ratings(p_logic_id);
 
     INSERT INTO logic_backtest_runs (
         logic_id, date_from, date_to, status, progress_pct,
@@ -1189,6 +1220,7 @@ BEGIN
         END IF;
 
         v_bar_dt := v_bars[v_i];
+        PERFORM logic_backtest_rate_signals(v_run_id, p_logic_id, v_tf_id, v_bar_dt);
         v_balance := logic_backtest_process_risk(
             v_run_id, p_logic_id, v_logic.account_id, v_tf_id, v_bar_dt, v_balance
         );

@@ -12,6 +12,7 @@ export interface LogicRow {
   commission_pct?: number;
   cost_method?: 'FIFO' | 'AVERAGE';
   stop_loss_timeframe?: string;
+  base_annual_rate_pct?: number;
   account_code: string;
   account_name: string;
   account_type: 'real' | 'fake';
@@ -29,6 +30,7 @@ export interface LogicTradingParamsPayload {
   commission_pct?: number;
   cost_method?: 'FIFO' | 'AVERAGE';
   stop_loss_timeframe?: string;
+  base_annual_rate_pct?: number;
 }
 
 export interface LogicTradingParamsResponse {
@@ -40,6 +42,7 @@ export interface LogicTradingParamsResponse {
   commission_pct: number;
   cost_method: 'FIFO' | 'AVERAGE';
   stop_loss_timeframe: string;
+  base_annual_rate_pct: number;
 }
 
 export interface LogicParamRow {
@@ -67,6 +70,10 @@ export interface LogicIndicatorSignalRow {
   position_side: 'long' | 'short';
   signal_kind: 'trend' | 'counter';
   formula: string;
+  /** Боевой рейтинг сигнала на логике (не справочник indicators). */
+  rating: number;
+  /** Тестовый рейтинг (бэктест), не смешивается с rating. */
+  rating_test?: number;
   display_order: number;
   is_active: boolean;
   indicator_code: string;

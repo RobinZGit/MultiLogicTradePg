@@ -1,11 +1,60 @@
-.papers-block {
-  margin-top: 0.5rem;
+:host {
+  display: block;
+}
+
+.papers-sub-block {
+  margin-top: 0.55rem;
   border: 1px solid #e2e8f0;
-  border-radius: 6px;
+  border-radius: 8px;
+  padding: 0.25rem 0.65rem 0.55rem;
   background: #fff;
 }
 
-.papers-block-toggle,
+.papers-sub-block summary {
+  list-style: none;
+}
+
+.papers-sub-block summary::-webkit-details-marker {
+  display: none;
+}
+
+.signals-chevron {
+  display: inline-block;
+  font-size: 1.15rem;
+  line-height: 1;
+  font-weight: 700;
+  color: #374151;
+  transition: transform 0.15s ease;
+  flex-shrink: 0;
+}
+
+.signals-chevron.open {
+  transform: rotate(90deg);
+}
+
+.signals-summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  padding: 0.35rem 0;
+}
+
+.signals-summary-head {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  flex: 1;
+  min-width: 0;
+  cursor: pointer;
+  font-weight: 600;
+}
+
+.signals-title {
+  white-space: nowrap;
+  font-weight: 600;
+}
+
 .paper-item-toggle {
   display: flex;
   align-items: center;
@@ -21,7 +70,6 @@
   color: inherit;
 }
 
-.papers-block-toggle:hover,
 .paper-item-toggle:hover {
   background: #f8fafc;
 }
@@ -34,8 +82,7 @@
 }
 
 .papers-body {
-  border-top: 1px solid #e2e8f0;
-  padding: 0.4rem;
+  padding-top: 0.35rem;
 }
 
 .papers-empty {
@@ -54,7 +101,7 @@
 
 .paper-item {
   border: 1px solid #e2e8f0;
-  border-radius: 6px;
+  border-radius: 8px;
   background: #fff;
 }
 
@@ -85,6 +132,14 @@
   padding: 0.35rem 0.5rem 0.6rem;
   border-top: 1px solid #eef2f7;
   background: #f8fafc;
+  display: flex;
+  flex-direction: column;
+  gap: 0.45rem;
+}
+
+.paper-chart-wrap app-logic-backtest-ratings {
+  display: block;
+  margin-top: 0.15rem;
 }
 
 .paper-chart-host {
@@ -149,18 +204,4 @@
 
 .trade-pnl-neg {
   color: #b91c1c;
-}
-
-.signals-chevron {
-  display: inline-block;
-  transition: transform 0.12s ease;
-  color: #64748b;
-}
-
-.signals-chevron.open {
-  transform: rotate(90deg);
-}
-
-.signals-title {
-  font-weight: 600;
 }

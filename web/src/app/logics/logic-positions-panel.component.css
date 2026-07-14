@@ -12,11 +12,24 @@
 }
 
 .positions-panel-outer details.positions-sub-block {
-  border: none;
-  border-radius: 0;
-  padding: 0;
-  background: transparent;
-  margin-top: 0.35rem;
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+  padding: 0.25rem 0.65rem 0.55rem;
+  background: #fff;
+  margin-top: 0.55rem;
+}
+
+.positions-panel-outer .backtest-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 0.65rem;
+  padding: 0.35rem 0 0.15rem;
+  flex-wrap: wrap;
+}
+
+.positions-panel-outer .backtest-toolbar-hint {
+  font-size: 0.75rem;
+  color: #94a3b8;
 }
 
 .positions-panel-outer details.positions-panel summary,

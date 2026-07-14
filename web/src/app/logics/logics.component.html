@@ -345,6 +345,29 @@
 
                             <tr>
 
+                              <td>Базовая ставка (% годовых)</td>
+
+                              <td>
+
+                                <input
+                                  type="text"
+                                  inputmode="decimal"
+                                  class="params-input"
+                                  [ngModel]="getParamsDraft(row.id).base_annual_rate_pct"
+                                  (ngModelChange)="onParamsBaseAnnualRateChange(row.id, $event)"
+                                  (click)="$event.stopPropagation()"
+                                />
+
+                              </td>
+
+                              <td class="params-hint">
+                                Порог успеха рейтинга сигнала на логике: доля ставки на одну свечу TF
+                              </td>
+
+                            </tr>
+
+                            <tr>
+
                               <td>Макс. открытых позиций</td>
 
                               <td>
@@ -515,7 +538,7 @@
                             aria-hidden="true"
                           >▸</span>
 
-                          <span class="signals-title">Сигналы индикаторов</span>
+                          <span class="signals-title">Сигналы на логике</span>
 
                           @if (isSignalsLoading(row.id)) {
 
@@ -548,6 +571,15 @@
                       </summary>
 
                       <div class="signals-body">
+
+                      <p class="signals-and-hint">
+                        Сделка только если <strong>все</strong> активные сигналы той же стороны и
+                        того же действия сработали вместе (AND). Для OR — отдельные логики.
+                        Тип сигнала: <strong>по течению</strong> (follow / пробой / импульс) или
+                        <strong>против</strong> (fade / возврат от края). Не смешивайте в одном AND
+                        пробой и mean-reversion — сделок почти не будет.
+                        «Рейтинг» — оценка строки сигнала на этой логике, не индикатора из справочника.
+                      </p>
 
                       @if (isPickerOpen(row.id) && signalPicker) {
 
@@ -591,7 +623,7 @@
                                 [checked]="signalPicker.signalKind === 'trend'"
                                 (change)="onPickerSignalKindChange('trend')"
                               />
-                              Тренд
+                              По течению
                             </label>
 
                             <label class="picker-radio">
@@ -601,16 +633,16 @@
                                 [checked]="signalPicker.signalKind === 'counter'"
                                 (change)="onPickerSignalKindChange('counter')"
                               />
-                              К-тренд
+                              Против
                             </label>
 
                           </div>
 
                           <p class="picker-hint">
                             Действие: <strong>{{ positionEventLabel(signalPicker.positionEvent) }}</strong>.
-                            Формула по умолчанию — из
-                            <code>sig_trend_def</code> / <code>sig_ct_def</code>
-                            ({{ signalKindLabel(signalPicker.signalKind) }}).
+                            Шаблон формулы — <code>sig_trend_def</code> (по течению) /
+                            <code>sig_ct_def</code> (против); для коридоров: пробой UPPER / зона LOWER.
+                            Сейчас: {{ signalKindLabel(signalPicker.signalKind) }}.
                           </p>
 
                           @if (!indicatorsLoaded) {
@@ -690,6 +722,10 @@
 
                             <th>Индикатор</th>
 
+                            <th
+                              title="Боевой / тестовый рейтинг сигнала на логике"
+                            >Рейтинг бой/тест</th>
+
                             <th>Формула сигнала</th>
 
                             <th class="col-sig-actions"></th>
@@ -748,6 +784,14 @@
 
                                 <span class="sig-ind-name">{{ sig.indicator_name }}</span>
 
+                              </td>
+
+                              <td
+                                class="col-sig-rating"
+                                title="Боевой / тестовый рейтинг сигнала на этой логике"
+                              >
+                                {{ sig.rating ?? 0 }}
+                                <span class="sig-rating-test" title="Тестовый">/ {{ sig.rating_test ?? 0 }}</span>
                               </td>
 
                               <td class="col-formula">

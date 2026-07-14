@@ -1,6 +1,7 @@
 -- ============================================
 -- MultiLogicTrade — шаг 1: таблицы и справочники
--- Версия: v39 (идемпотентный запуск)
+-- Версия: v40 (идемпотентный запуск)
+-- v40: сигналы AND (все open/close стороны); rating; base_annual_rate_pct; pending рейтинга
 -- v39: DROP logics_detail; убраны дубликаты колонок logics → logic_params;
 --      legacy-поля indicator_values/parameter_*; prices.trades
 -- v38: logic_indicator_signals.position_event (open|close); logic_trades.position_event
@@ -601,12 +602,17 @@ ALTER TABLE indicators ADD COLUMN IF NOT EXISTS formula TEXT;
 ALTER TABLE indicators ADD COLUMN IF NOT EXISTS is_custom BOOLEAN NOT NULL DEFAULT FALSE;
 ALTER TABLE indicators ADD COLUMN IF NOT EXISTS sig_trend_def TEXT;
 ALTER TABLE indicators ADD COLUMN IF NOT EXISTS sig_ct_def TEXT;
+-- Профиль шаблонов сигнала: какие двоичные смыслы «по течению / против» типичны для индикатора
+ALTER TABLE indicators ADD COLUMN IF NOT EXISTS sig_profile VARCHAR(20);
 
 COMMENT ON COLUMN indicators.sig_trend_def IS
-'Условие трендового сигнала по умолчанию (на сериях индикатора: VALUE, K, MIDDLE …)';
+'Шаблон follow («по течению»): пробой/импульс/бычья половина. В logic_indicator_signals.signal_kind=trend';
 
 COMMENT ON COLUMN indicators.sig_ct_def IS
-'Условие контртрендового сигнала по умолчанию';
+'Шаблон fade («против»): возврат от края/перепроданность. В logic_indicator_signals.signal_kind=counter';
+
+COMMENT ON COLUMN indicators.sig_profile IS
+'Как читать двоичность follow/fade: trend_line | oscillator | channel | zero_line | strength | volume';
 
 -- Многочленные формулы (массивный расчёт — единый парсер, без SELECT)
 UPDATE indicators SET formula = 'sma', is_custom = FALSE WHERE code = 'SMA';
@@ -614,29 +620,61 @@ UPDATE indicators SET formula = 'ema', is_custom = FALSE WHERE code = 'EMA';
 UPDATE indicators SET formula = 'pp * (1; -2; 1)', is_custom = TRUE WHERE code = 'PACC';
 UPDATE indicators SET formula = 'sma(period=20, series=VALUE) * sma(period=20, series=VALUE) * sma(period=20, series=VALUE)', is_custom = TRUE WHERE code = 'SMAT3';
 
--- Формулы сигналов по умолчанию (условие на серии; в логике: @CODE(params) + условие)
-UPDATE indicators SET sig_trend_def = 'pp > VALUE', sig_ct_def = 'pp < VALUE'
-WHERE category = 'trend'
-  AND code NOT IN ('ADX', 'DMI', 'AROON', 'PSAR', 'SAR', 'ICHIMOKU');
+-- Профили + шаблоны follow(trend) / fade(counter)
+-- trend_line: цена относительно линии
+UPDATE indicators SET
+    sig_profile = 'trend_line',
+    sig_trend_def = 'pp > VALUE',
+    sig_ct_def = 'pp < VALUE'
+WHERE code IN ('SMA', 'EMA', 'WMA', 'HMA', 'ZLEMA', 'SMAT3', 'ICHIMOKU', 'PSAR', 'SAR');
 
-UPDATE indicators SET sig_trend_def = 'VALUE > 50', sig_ct_def = 'VALUE < 30'
-WHERE category = 'momentum'
-  AND code NOT IN ('MACD', 'STOCH', 'PACC');
+-- oscillator 0..100: follow = бычья половина / кросс; fade = зона перепроданности
+UPDATE indicators SET
+    sig_profile = 'oscillator',
+    sig_trend_def = 'VALUE > 50',
+    sig_ct_def = 'VALUE < 30'
+WHERE code IN ('RSI', 'CCI', 'CMO', 'MFI', 'WILLR', 'UO', 'RVI', 'ROC', 'TRIX', 'TSI', 'KDJ');
 
-UPDATE indicators SET sig_trend_def = 'VALUE > 0', sig_ct_def = 'VALUE < 0' WHERE code IN ('MACD', 'PACC', 'ATR');
-UPDATE indicators SET sig_trend_def = 'K > D', sig_ct_def = 'K < 20' WHERE code = 'STOCH';
-UPDATE indicators SET sig_trend_def = 'pp > MIDDLE', sig_ct_def = 'pp < LOWER'
+UPDATE indicators SET
+    sig_profile = 'oscillator',
+    sig_trend_def = 'K > D',
+    sig_ct_def = 'K < 20'
+WHERE code = 'STOCH';
+
+-- channel: follow = пробой верхней (breakout up); fade = цена у нижней (reversion long-zone)
+UPDATE indicators SET
+    sig_profile = 'channel',
+    sig_trend_def = 'pp > UPPER',
+    sig_ct_def = 'pp < LOWER'
 WHERE code IN ('BB', 'KELTNER', 'DONCHIAN');
-UPDATE indicators SET sig_trend_def = 'VALUE > 0', sig_ct_def = 'VALUE < 0' WHERE category = 'volume';
-UPDATE indicators SET sig_trend_def = 'VALUE > 25', sig_ct_def = 'VALUE < 20' WHERE code IN ('ADX', 'DMI');
-UPDATE indicators SET sig_trend_def = 'UP > DOWN', sig_ct_def = 'DOWN > UP' WHERE code = 'AROON';
-UPDATE indicators SET sig_trend_def = 'pp > VALUE', sig_ct_def = 'pp < VALUE'
-WHERE code IN ('PSAR', 'SAR', 'ICHIMOKU', 'SMAT3');
+
+-- zero_line: выше/ниже нуля
+UPDATE indicators SET
+    sig_profile = 'zero_line',
+    sig_trend_def = 'VALUE > 0',
+    sig_ct_def = 'VALUE < 0'
+WHERE code IN ('MACD', 'PACC', 'ATR', 'OBV', 'VWAP');
+
+UPDATE indicators SET sig_profile = 'volume' WHERE category = 'volume' AND sig_profile IS NULL;
+
+-- strength: сила тренда / направление
+UPDATE indicators SET
+    sig_profile = 'strength',
+    sig_trend_def = 'VALUE > 25',
+    sig_ct_def = 'VALUE < 20'
+WHERE code IN ('ADX', 'DMI');
+
+UPDATE indicators SET
+    sig_profile = 'strength',
+    sig_trend_def = 'UP > DOWN',
+    sig_ct_def = 'DOWN > UP'
+WHERE code = 'AROON';
 
 UPDATE indicators SET
     sig_trend_def = COALESCE(sig_trend_def, 'VALUE > 50'),
-    sig_ct_def = COALESCE(sig_ct_def, 'VALUE < 50')
-WHERE sig_trend_def IS NULL OR sig_ct_def IS NULL;
+    sig_ct_def = COALESCE(sig_ct_def, 'VALUE < 50'),
+    sig_profile = COALESCE(sig_profile, 'oscillator')
+WHERE sig_trend_def IS NULL OR sig_ct_def IS NULL OR sig_profile IS NULL;
 
 -- Подробные описания индикаторов с функциями расчёта в PostgreSQL
 UPDATE indicators SET description = $desc$
@@ -927,6 +965,8 @@ INSERT INTO logic_param_defs (param_key, name_ru, value_type, default_value, des
      'FIFO — по очереди покупок; AVERAGE — по средней цене остатка', 6),
     ('stop_loss_timeframe', 'Таймфрейм стоп-лосса', 'text', 'M5',
      'TF для проверки стоп-лоссов (по умолчанию M5)', 7),
+    ('base_annual_rate_pct', 'Базовая ставка (% годовых)', 'number', '20',
+     'Порог для рейтинга сигнала: ход цены на следующей свече в годовых ≥ этой ставки', 8),
     ('last_stop_bar_dt', 'Последняя свеча стоп-лосса', 'text', '',
      'Служебный: open time закрытой свечи TF стоп-лосса', 97),
     ('last_trade_check_at', 'Последняя проверка сигналов', 'text', '',
@@ -1022,7 +1062,8 @@ CROSS JOIN (VALUES
     ('current_balance', '1000000', 'money'),
     ('commission_pct', '0.05', 'number'),
     ('cost_method', 'FIFO', 'text'),
-    ('stop_loss_timeframe', 'M5', 'text')
+    ('stop_loss_timeframe', 'M5', 'text'),
+    ('base_annual_rate_pct', '20', 'number')
 ) AS v(param_key, param_value, value_type)
 WHERE l.name = 'SMA Price Cross Demo'
 ON CONFLICT (logic_id, param_key) DO UPDATE SET
@@ -1055,11 +1096,21 @@ CREATE TABLE IF NOT EXISTS logic_indicator_signals (
     position_side VARCHAR(10) NOT NULL DEFAULT 'long' CHECK (position_side IN ('long', 'short')),
     signal_kind VARCHAR(10) NOT NULL CHECK (signal_kind IN ('trend', 'counter')),
     formula TEXT NOT NULL,
+    rating INTEGER NOT NULL DEFAULT 0,
+    rating_test INTEGER NOT NULL DEFAULT 0,
     display_order INTEGER NOT NULL DEFAULT 0,
     is_active BOOLEAN NOT NULL DEFAULT TRUE,
     created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
     UNIQUE (logic_id, indicator_id, position_event, position_side, signal_kind)
 );
+
+ALTER TABLE logic_indicator_signals ADD COLUMN IF NOT EXISTS rating INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE logic_indicator_signals ADD COLUMN IF NOT EXISTS rating_test INTEGER NOT NULL DEFAULT 0;
+-- Рейтинг может быть отрицательным (успех +1 / неуспех −1 по следующей свече)
+ALTER TABLE logic_indicator_signals DROP CONSTRAINT IF EXISTS logic_indicator_signals_rating_check;
+ALTER TABLE logic_indicator_signals DROP CONSTRAINT IF EXISTS logic_indicator_signals_rating_test_check;
+UPDATE logic_indicator_signals SET rating = 0 WHERE rating IS NULL;
+UPDATE logic_indicator_signals SET rating_test = 0 WHERE rating_test IS NULL;
 
 -- Миграция v18 → v19: position_side (long | short)
 ALTER TABLE logic_indicator_signals ADD COLUMN IF NOT EXISTS position_side VARCHAR(10) NOT NULL DEFAULT 'long';
@@ -1113,12 +1164,78 @@ CREATE INDEX IF NOT EXISTS idx_logic_indicator_signals_indicator_id
     ON logic_indicator_signals(indicator_id);
 
 COMMENT ON TABLE logic_indicator_signals IS
-'Сигналы индикаторов для logics: position_event open|close, сторона long|short, тип trend|counter';
+'Сигналы индикаторов для logics: position_event open|close, сторона long|short, тип trend|counter. '
+'В одной логике для сделки нужны ВСЕ активные сигналы той же стороны и того же open/close (AND).';
 COMMENT ON COLUMN logic_indicator_signals.position_event IS 'open | close — открытие или закрытие позиции';
 COMMENT ON COLUMN logic_indicator_signals.position_side IS 'long | short — сторона позиции сигнала';
 COMMENT ON COLUMN logic_indicator_signals.signal_kind IS 'trend | counter';
 COMMENT ON COLUMN logic_indicator_signals.formula IS
 'Редактируемая формула: @RSI(period=14,series=VALUE) VALUE > 50';
+COMMENT ON COLUMN logic_indicator_signals.rating IS
+'Боевой рейтинг сигнала на логике (может быть <0): сработал → pending; на следующей свече '
+'ход → % годовых vs base_annual_rate_pct → +1/−1. Не рейтинг индикатора из справочника.';
+COMMENT ON COLUMN logic_indicator_signals.rating_test IS
+'Тестовый рейтинг сигнала (is_test), сумма по бумагам; не смешивается с rating.';
+
+-- Ожидание проверки рейтинга сигнала: сработал на баре → на следующей свече TF оцениваем ход цены
+CREATE TABLE IF NOT EXISTS logic_signal_rating_pending (
+    id BIGSERIAL PRIMARY KEY,
+    signal_id INTEGER NOT NULL REFERENCES logic_indicator_signals(id) ON DELETE CASCADE,
+    logic_id INTEGER NOT NULL REFERENCES logics(id) ON DELETE CASCADE,
+    security_id INTEGER NOT NULL REFERENCES securities(id) ON DELETE CASCADE,
+    timeframe_id INTEGER NOT NULL REFERENCES timeframes(id) ON DELETE RESTRICT,
+    bar_dt TIMESTAMP NOT NULL,
+    price NUMERIC(18, 6) NOT NULL CHECK (price > 0),
+    position_side VARCHAR(10) NOT NULL CHECK (position_side IN ('long', 'short')),
+    signal_kind VARCHAR(10) NOT NULL CHECK (signal_kind IN ('trend', 'counter')),
+    is_test BOOLEAN NOT NULL DEFAULT FALSE,
+    run_id BIGINT,
+    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+ALTER TABLE logic_signal_rating_pending ADD COLUMN IF NOT EXISTS is_test BOOLEAN NOT NULL DEFAULT FALSE;
+ALTER TABLE logic_signal_rating_pending ADD COLUMN IF NOT EXISTS run_id BIGINT;
+
+ALTER TABLE logic_signal_rating_pending
+    DROP CONSTRAINT IF EXISTS logic_signal_rating_pending_signal_id_security_id_bar_dt_key;
+DROP INDEX IF EXISTS logic_signal_rating_pending_signal_id_security_id_bar_dt_key;
+CREATE UNIQUE INDEX IF NOT EXISTS idx_logic_signal_rating_pending_uniq
+    ON logic_signal_rating_pending (signal_id, security_id, bar_dt, is_test);
+
+CREATE INDEX IF NOT EXISTS idx_logic_signal_rating_pending_logic
+    ON logic_signal_rating_pending(logic_id, timeframe_id, is_test);
+
+COMMENT ON TABLE logic_signal_rating_pending IS
+'Срабатывания сигналов логики, ожидающие проверки на следующей свече TF; is_test отделяет тест от боя.';
+
+-- История рейтинга для графиков (шаг на каждом resolve)
+CREATE TABLE IF NOT EXISTS logic_signal_rating_history (
+    id BIGSERIAL PRIMARY KEY,
+    signal_id INTEGER NOT NULL REFERENCES logic_indicator_signals(id) ON DELETE CASCADE,
+    logic_id INTEGER NOT NULL REFERENCES logics(id) ON DELETE CASCADE,
+    security_id INTEGER REFERENCES securities(id) ON DELETE SET NULL,
+    run_id BIGINT,
+    bar_dt TIMESTAMP NOT NULL,
+    rating INTEGER NOT NULL,
+    delta SMALLINT NOT NULL CHECK (delta IN (-1, 1)),
+    is_test BOOLEAN NOT NULL DEFAULT FALSE,
+    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+ALTER TABLE logic_signal_rating_history DROP CONSTRAINT IF EXISTS logic_signal_rating_history_rating_check;
+
+CREATE INDEX IF NOT EXISTS idx_logic_signal_rating_history_signal
+    ON logic_signal_rating_history (signal_id, is_test, bar_dt);
+CREATE INDEX IF NOT EXISTS idx_logic_signal_rating_history_run
+    ON logic_signal_rating_history (run_id, signal_id, bar_dt)
+    WHERE run_id IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_logic_signal_rating_history_logic_test
+    ON logic_signal_rating_history (logic_id, is_test, bar_dt);
+CREATE INDEX IF NOT EXISTS idx_logic_signal_rating_history_sec
+    ON logic_signal_rating_history (logic_id, security_id, is_test, signal_id, bar_dt);
+
+COMMENT ON TABLE logic_signal_rating_history IS
+'Рейтинг сигнала на бумаге во времени: rating — кумулятив по (signal×security), delta ±1 после проверки следующей свечи';
 
 -- Стоп-лосс и тейк-профит по торговой логике
 CREATE TABLE IF NOT EXISTS logic_stops (
@@ -1189,7 +1306,8 @@ ALTER TABLE logic_securities ADD COLUMN IF NOT EXISTS stop_resume_equity NUMERIC
 ALTER TABLE logic_securities ADD COLUMN IF NOT EXISTS stop_resume_baseline NUMERIC(20, 6);
 ALTER TABLE logic_securities ADD COLUMN IF NOT EXISTS stop_resume_triggered_at TIMESTAMP;
 
--- Демо-логика SMA Price Cross Demo (v38): open/close × long/short, все акции, SL 1%, TP 3%
+-- Демо (v40b): follow/breakout — SMA + подтверждение BB/STOCH на OPEN; CLOSE только по SMA
+-- (mean-reversion BB/STOCH вместе с SMA в AND почти никогда не срабатывает)
 DELETE FROM logic_indicator_signals lis
 USING logics l
 WHERE lis.logic_id = l.id
@@ -1200,14 +1318,22 @@ INSERT INTO logic_indicator_signals (
 )
 SELECT l.id, i.id, v.position_event, v.position_side, v.signal_kind, v.formula, v.display_order
 FROM logics l
-CROSS JOIN indicators i
 CROSS JOIN (VALUES
-    ('open',  'long',  'trend',   '@SMA(period=20,series=VALUE) pp > VALUE', 0),
-    ('close', 'long',  'counter', '@SMA(period=20,series=VALUE) pp < VALUE', 1),
-    ('open',  'short', 'trend',   '@SMA(period=20,series=VALUE) pp < VALUE', 2),
-    ('close', 'short', 'counter', '@SMA(period=20,series=VALUE) pp > VALUE', 3)
-) AS v(position_event, position_side, signal_kind, formula, display_order)
-WHERE l.name = 'SMA Price Cross Demo' AND i.code = 'SMA'
+    -- Open long (AND follow): выше SMA + пробой верхней BB + импульс STOCH
+    ('SMA',   'open',  'long',  'trend',   '@SMA(period=20,series=VALUE) pp > VALUE', 0),
+    ('BB',    'open',  'long',  'trend',   '@BB(period=20,series=UPPER) pp > VALUE', 1),
+    ('STOCH', 'open',  'long',  'trend',   '@STOCH(series=K) VALUE > 50', 2),
+    -- Close long: только потеря тренда по SMA (без жёсткого AND по коридору)
+    ('SMA',   'close', 'long',  'counter', '@SMA(period=20,series=VALUE) pp < VALUE', 3),
+    -- Open short (AND follow): ниже SMA + пробой нижней BB + слабый STOCH
+    ('SMA',   'open',  'short', 'trend',   '@SMA(period=20,series=VALUE) pp < VALUE', 4),
+    ('BB',    'open',  'short', 'trend',   '@BB(period=20,series=LOWER) pp < VALUE', 5),
+    ('STOCH', 'open',  'short', 'trend',   '@STOCH(series=K) VALUE < 50', 6),
+    -- Close short: только SMA
+    ('SMA',   'close', 'short', 'counter', '@SMA(period=20,series=VALUE) pp > VALUE', 7)
+) AS v(ind_code, position_event, position_side, signal_kind, formula, display_order)
+JOIN indicators i ON i.code = v.ind_code
+WHERE l.name = 'SMA Price Cross Demo'
 ON CONFLICT (logic_id, indicator_id, position_event, position_side, signal_kind) DO UPDATE SET
     formula = EXCLUDED.formula,
     display_order = EXCLUDED.display_order,
@@ -1306,9 +1432,10 @@ WHERE s.id = lt.side_id AND s.name = 'Open' AND lt.position_event = 'close';
 
 ALTER TABLE logic_trades DROP CONSTRAINT IF EXISTS logic_trades_logic_id_security_id_signal_kind_bar_dt_key;
 DROP INDEX IF EXISTS logic_trades_logic_id_security_id_signal_kind_bar_dt_key;
+-- v40: одна сделка на open/close × сторону (action) на баре — сигналы объединяются AND
 DROP INDEX IF EXISTS idx_logic_trades_signal_bar_book;
 CREATE UNIQUE INDEX IF NOT EXISTS idx_logic_trades_signal_bar_book
-    ON logic_trades (logic_id, security_id, position_event, signal_kind, bar_dt, is_test, is_shadow);
+    ON logic_trades (logic_id, security_id, position_event, action_id, bar_dt, is_test, is_shadow);
 
 CREATE INDEX IF NOT EXISTS idx_logic_trades_test ON logic_trades(logic_id) WHERE is_test;
 
@@ -1580,8 +1707,10 @@ COMMENT ON COLUMN indicators.name IS 'Полное английское назв
 COMMENT ON COLUMN indicators.category IS 'Группа: trend, momentum, volatility …';
 COMMENT ON COLUMN indicators.is_active IS 'Индикатор доступен в UI и расчётах';
 COMMENT ON COLUMN indicators.created_at IS 'Дата создания';
-COMMENT ON COLUMN indicators.sig_trend_def IS 'Шаблон условия trend-сигнала (legacy/справка)';
-COMMENT ON COLUMN indicators.sig_ct_def IS 'Шаблон условия counter-сигнала (legacy/справка)';
+COMMENT ON COLUMN indicators.sig_trend_def IS 'Шаблон follow (signal_kind=trend): по течению / пробой';
+COMMENT ON COLUMN indicators.sig_ct_def IS 'Шаблон fade (signal_kind=counter): против / возврат от края';
+COMMENT ON COLUMN indicators.sig_profile IS
+'Профиль шаблонов: trend_line | oscillator | channel | zero_line | strength | volume';
 
 -- indicator_value_types
 COMMENT ON TABLE indicator_value_types IS 'Линии/серии индикатора: RSI, OVERBOUGHT, MACD, UPPER …';

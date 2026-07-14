@@ -1,4 +1,12 @@
-import { Component, EventEmitter, HostBinding, Input, Output } from '@angular/core';
+import {
+  Component,
+  EventEmitter,
+  HostBinding,
+  Input,
+  OnChanges,
+  Output,
+  SimpleChanges,
+} from '@angular/core';
 
 import { CommonModule } from '@angular/common';
 
@@ -64,7 +72,11 @@ export interface BacktestRunStatus {
 
   standalone: true,
 
-  imports: [CommonModule, FormsModule, LogicBacktestPapersComponent],
+  imports: [
+    CommonModule,
+    FormsModule,
+    LogicBacktestPapersComponent,
+  ],
 
   templateUrl: './logic-positions-panel.component.html',
 
@@ -72,7 +84,7 @@ export interface BacktestRunStatus {
 
 })
 
-export class LogicPositionsPanelComponent {
+export class LogicPositionsPanelComponent implements OnChanges {
 
   @Input({ required: true }) logicRow!: LogicRow;
 
@@ -164,7 +176,16 @@ export class LogicPositionsPanelComponent {
 
   }
 
+  ngOnChanges(changes: SimpleChanges): void {
+    if (changes['backtestRun'] && !this.isBacktestRunning) {
+      this.cancelling = false;
+    }
+  }
 
+
+
+  /** Локальный флаг сразу после нажатия «Стоп», пока статус ещё running. */
+  cancelling = false;
 
   get isBacktestRunning(): boolean {
 
@@ -172,6 +193,16 @@ export class LogicPositionsPanelComponent {
 
     return s === 'pending' || s === 'loading_prices' || s === 'loading_indicators' || s === 'running';
 
+  }
+
+  get isCancelling(): boolean {
+    if (!this.isBacktestRunning) {
+      return false;
+    }
+    return (
+      this.cancelling ||
+      String(this.backtestRun?.phase_message ?? '').includes('Остановка')
+    );
   }
 
 
@@ -547,8 +578,11 @@ export class LogicPositionsPanelComponent {
     event.preventDefault();
     event.stopPropagation();
     if (this.isBacktestRunning) {
+      if (this.isCancelling) return;
+      this.cancelling = true;
       this.cancelBacktest.emit();
     } else {
+      this.cancelling = false;
       this.openRunDialog(event);
     }
   }

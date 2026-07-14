@@ -99,6 +99,8 @@ export interface IndicatorRow {
   is_active: boolean;
   sig_trend_def: string | null;
   sig_ct_def: string | null;
+  /** trend_line | oscillator | channel | zero_line | strength | volume */
+  sig_profile?: string | null;
   value_types: IndicatorValueTypeRow[];
 }
 

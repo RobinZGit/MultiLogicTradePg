@@ -515,12 +515,10 @@ DECLARE
     v_side_close_id INTEGER;
     v_action_long_id INTEGER;
     v_action_short_id INTEGER;
+    v_grp RECORD;
     v_sig RECORD;
     v_sec RECORD;
-    v_parsed RECORD;
-    v_series TEXT;
-    v_ind_value NUMERIC;
-    v_ind_dt TIMESTAMP;
+    v_eval RECORD;
     v_pp NUMERIC;
     v_held_long NUMERIC;
     v_held_short NUMERIC;
@@ -542,7 +540,10 @@ DECLARE
     v_closed_bar_dt TIMESTAMP;
     v_last_bar_raw TEXT;
     v_last_bar_dt TIMESTAMP;
-    v_bar_row RECORD;
+    v_all_ok BOOLEAN;
+    v_formulas TEXT;
+    v_signal_kind TEXT;
+    v_ind_dt TIMESTAMP;
 BEGIN
     SELECT l.id, l.account_id, a.account_type
     INTO v_logic
@@ -620,10 +621,13 @@ BEGIN
 
     CALL logic_refresh_market_data(p_logic_id, v_tf_id, v_closed_bar_dt);
 
+    -- Рейтинг сигнала на логике: проверить прошлые срабатывания на следующей свече
+    PERFORM logic_signal_rating_resolve_pending(p_logic_id, v_tf_id, v_closed_bar_dt);
+
     PERFORM logic_trade_log(
         p_logic_id,
         'trade.bar_check',
-        format('Проверка сигналов на закрытой свече %s', v_closed_bar_dt),
+        format('Проверка AND-сигналов на закрытой свече %s', v_closed_bar_dt),
         jsonb_build_object('closed_bar', v_closed_bar_dt, 'timeframe_id', v_tf_id),
         NULL,
         v_tf_id
@@ -636,79 +640,129 @@ BEGIN
     LOOP
         v_is_shadow := v_sec.real_trading_paused;
 
-        FOR v_sig IN
-            SELECT lis.id, lis.position_event, lis.position_side, lis.signal_kind, lis.formula, lis.indicator_id
+        FOR v_grp IN
+            SELECT lis.position_event, lis.position_side
             FROM logic_indicator_signals lis
             WHERE lis.logic_id = p_logic_id AND lis.is_active = TRUE
-            ORDER BY lis.display_order, lis.id
+            GROUP BY lis.position_event, lis.position_side
+            ORDER BY lis.position_event, lis.position_side
         LOOP
-            SELECT * INTO v_parsed FROM parse_signal_formula(v_sig.formula);
-            IF NOT COALESCE(v_parsed.valid, FALSE) THEN
-                CONTINUE;
-            END IF;
+            v_all_ok := TRUE;
+            v_formulas := NULL;
+            v_signal_kind := NULL;
+            v_pp := NULL;
+            v_ind_dt := NULL;
 
-            v_series := parse_signal_series(v_parsed.params);
-
-            SELECT * INTO v_bar_row
-            FROM logic_bar_data_at(
-                v_sec.security_id, v_tf_id, v_sig.indicator_id, v_series, v_closed_bar_dt
-            );
-            IF NOT FOUND THEN
-                PERFORM logic_trade_log(
-                    p_logic_id,
-                    'trade.not_ready',
-                    format('Нет данных на свече %s для security=%s signal=%s', v_closed_bar_dt, v_sec.security_id, v_sig.formula),
-                    jsonb_build_object('closed_bar', v_closed_bar_dt, 'security_id', v_sec.security_id, 'formula', v_sig.formula),
-                    v_sec.security_id,
-                    v_tf_id
+            FOR v_sig IN
+                SELECT lis.id, lis.position_event, lis.position_side, lis.signal_kind, lis.formula, lis.indicator_id
+                FROM logic_indicator_signals lis
+                WHERE lis.logic_id = p_logic_id
+                  AND lis.is_active = TRUE
+                  AND lis.position_event = v_grp.position_event
+                  AND lis.position_side = v_grp.position_side
+                ORDER BY lis.display_order, lis.id
+            LOOP
+                SELECT * INTO v_eval
+                FROM logic_signal_evaluate_at(
+                    v_sig.id, v_sec.security_id, v_tf_id, v_closed_bar_dt
                 );
+
+                IF v_eval.close_price IS NULL THEN
+                    v_all_ok := FALSE;
+                    PERFORM logic_trade_log(
+                        p_logic_id,
+                        'trade.not_ready',
+                        format(
+                            'Нет данных на свече %s для security=%s signal=%s',
+                            v_closed_bar_dt, v_sec.security_id, v_sig.formula
+                        ),
+                        jsonb_build_object(
+                            'closed_bar', v_closed_bar_dt,
+                            'security_id', v_sec.security_id,
+                            'formula', v_sig.formula,
+                            'position_event', v_grp.position_event,
+                            'position_side', v_grp.position_side
+                        ),
+                        v_sec.security_id,
+                        v_tf_id
+                    );
+                    CONTINUE;
+                END IF;
+
+                IF v_signal_kind IS NULL THEN
+                    v_signal_kind := v_sig.signal_kind;
+                    v_pp := v_eval.close_price;
+                    v_ind_dt := v_eval.bar_dt;
+                END IF;
+                v_formulas := CASE
+                    WHEN v_formulas IS NULL THEN v_sig.formula
+                    ELSE v_formulas || ' AND ' || v_sig.formula
+                END;
+
+                IF COALESCE(v_eval.ok, FALSE) THEN
+                    PERFORM logic_signal_record_fire(
+                        v_sig.id, p_logic_id, v_sec.security_id, v_tf_id,
+                        v_eval.bar_dt, v_eval.close_price,
+                        v_sig.position_side, v_sig.signal_kind
+                    );
+                    PERFORM logic_trade_log(
+                        p_logic_id,
+                        'trade.signal_hit',
+                        format(
+                            'Сигнал %s/%s/%s: %s',
+                            v_sig.position_event, v_sig.position_side, v_sig.signal_kind, v_sig.formula
+                        ),
+                        jsonb_build_object(
+                            'formula', v_sig.formula,
+                            'position_event', v_sig.position_event,
+                            'pp', v_eval.close_price,
+                            'ind_value', v_eval.ind_value,
+                            'bar_dt', v_eval.bar_dt
+                        ),
+                        v_sec.security_id,
+                        v_tf_id
+                    );
+                ELSE
+                    v_all_ok := FALSE;
+                    PERFORM logic_trade_log(
+                        p_logic_id,
+                        'trade.signal_skip',
+                        format(
+                            'Условие не выполнено: %s (pp=%s, value=%s)',
+                            v_sig.formula, v_eval.close_price, v_eval.ind_value
+                        ),
+                        jsonb_build_object(
+                            'formula', v_sig.formula,
+                            'position_event', v_sig.position_event,
+                            'signal_kind', v_sig.signal_kind,
+                            'position_side', v_sig.position_side,
+                            'pp', v_eval.close_price,
+                            'ind_value', v_eval.ind_value,
+                            'bar_dt', v_eval.bar_dt
+                        ),
+                        v_sec.security_id,
+                        v_tf_id
+                    );
+                END IF;
+            END LOOP;
+
+            IF NOT v_all_ok OR v_pp IS NULL OR v_formulas IS NULL THEN
                 CONTINUE;
             END IF;
 
-            v_ind_dt := v_bar_row.bar_dt;
-            v_ind_value := v_bar_row.ind_value;
-            v_pp := v_bar_row.close_price;
+            v_held_long := CASE
+                WHEN v_grp.position_side = 'long'
+                THEN logic_long_position_qty(p_logic_id, v_sec.security_id, v_is_shadow)
+                ELSE 0
+            END;
+            v_held_short := CASE
+                WHEN v_grp.position_side = 'short'
+                THEN logic_short_position_qty(p_logic_id, v_sec.security_id, v_is_shadow)
+                ELSE 0
+            END;
+            v_is_open_event := COALESCE(v_grp.position_event, 'open') = 'open';
 
-            IF NOT evaluate_signal_condition(v_parsed.condition, v_pp, v_ind_value) THEN
-                PERFORM logic_trade_log(
-                    p_logic_id,
-                    'trade.signal_skip',
-                    format('Условие не выполнено: %s (pp=%s, value=%s)', v_parsed.condition, v_pp, v_ind_value),
-                    jsonb_build_object(
-                        'formula', v_sig.formula,
-                        'position_event', v_sig.position_event,
-                        'signal_kind', v_sig.signal_kind,
-                        'position_side', v_sig.position_side,
-                        'pp', v_pp,
-                        'ind_value', v_ind_value,
-                        'bar_dt', v_ind_dt
-                    ),
-                    v_sec.security_id,
-                    v_tf_id
-                );
-                CONTINUE;
-            END IF;
-
-            PERFORM logic_trade_log(
-                p_logic_id,
-                'trade.signal_hit',
-                format('Сигнал %s/%s/%s: %s', v_sig.position_event, v_sig.position_side, v_sig.signal_kind, v_sig.formula),
-                jsonb_build_object(
-                    'formula', v_sig.formula,
-                    'position_event', v_sig.position_event,
-                    'pp', v_pp,
-                    'ind_value', v_ind_value,
-                    'bar_dt', v_ind_dt
-                ),
-                v_sec.security_id,
-                v_tf_id
-            );
-
-            v_held_long := CASE WHEN v_sig.position_side = 'long' THEN logic_long_position_qty(p_logic_id, v_sec.security_id, v_is_shadow) ELSE 0 END;
-            v_held_short := CASE WHEN v_sig.position_side = 'short' THEN logic_short_position_qty(p_logic_id, v_sec.security_id, v_is_shadow) ELSE 0 END;
-            v_is_open_event := COALESCE(v_sig.position_event, 'open') = 'open';
-
-            IF v_sig.position_side = 'long' THEN
+            IF v_grp.position_side = 'long' THEN
                 IF v_is_open_event THEN
                     IF v_held_long > 0 OR (NOT v_is_shadow AND v_open_positions >= v_max_positions) THEN
                         CONTINUE;
@@ -808,11 +862,11 @@ BEGIN
             )
             VALUES (
                 p_logic_id, v_logic.account_id, v_sec.security_id, v_tf_id,
-                v_side_id, v_action_id, v_sig.position_event, v_sig.signal_kind, v_sig.formula,
+                v_side_id, v_action_id, v_grp.position_event, v_signal_kind, v_formulas,
                 v_quantity, v_pp, v_ind_dt, v_is_simulated, FALSE, v_is_shadow, FALSE,
                 v_broker_order_id, v_status, v_note
             )
-            ON CONFLICT (logic_id, security_id, position_event, signal_kind, bar_dt, is_test, is_shadow) DO NOTHING
+            ON CONFLICT (logic_id, security_id, position_event, action_id, bar_dt, is_test, is_shadow) DO NOTHING
             RETURNING id INTO v_trade_id;
 
             IF v_trade_id IS NULL THEN
@@ -825,7 +879,7 @@ BEGIN
                 v_balance := logic_trade_finalize(v_trade_id, v_balance);
                 v_notional := v_quantity * v_pp;
                 v_is_open := v_is_open_event;
-                IF v_sig.position_side = 'long' THEN
+                IF v_grp.position_side = 'long' THEN
                     v_balance := v_balance + CASE WHEN v_is_open THEN -v_notional ELSE v_notional END;
                 ELSE
                     v_balance := v_balance + CASE WHEN v_is_open THEN v_notional ELSE -v_notional END;
@@ -851,9 +905,10 @@ BEGIN
                     'quantity', v_quantity,
                     'price', v_pp,
                     'status', v_status,
-                    'position_event', v_sig.position_event,
-                    'signal_kind', v_sig.signal_kind,
-                    'formula', v_sig.formula,
+                    'position_event', v_grp.position_event,
+                    'position_side', v_grp.position_side,
+                    'signal_kind', v_signal_kind,
+                    'formula', v_formulas,
                     'bar_dt', v_ind_dt
                 ),
                 v_sec.security_id,
@@ -891,7 +946,8 @@ END;
 $$;
 
 COMMENT ON FUNCTION process_logic_trades(INTEGER) IS
-'Сигналы только на последней закрытой свече TF логики; last_trade_bar_dt — идемпотентность по бару';
+'AND по группам (position_event × position_side): сделка только если все активные сигналы группы сработали; '
+'рейтинг сигнала на логике обновляется через pending на следующей свече TF';
 
 CREATE OR REPLACE FUNCTION run_trade_cycle()
 RETURNS JSONB

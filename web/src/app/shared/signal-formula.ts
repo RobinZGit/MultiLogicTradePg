@@ -119,9 +119,12 @@ export function parseSignalFormula(raw: string): ParsedSignalFormula {
   };
 }
 
-/** Краткая подпись вида сигнала для UI. */
+/**
+ * Подпись вида сигнала для UI.
+ * В БД остаются trend|counter; смысл: follow (по течению) | fade (против / возврат).
+ */
 export function signalKindLabel(kind: SignalKind): string {
-  return kind === 'trend' ? 'Тренд' : 'К-тренд';
+  return kind === 'trend' ? 'По течению' : 'Против';
 }
 
 /** Подпись стороны позиции для UI. */

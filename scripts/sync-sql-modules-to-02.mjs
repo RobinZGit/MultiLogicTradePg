@@ -51,18 +51,30 @@ const tradeEnd = tradeTail.indexOf('COMMENT ON FUNCTION run_trade_cycle()');
 if (tradeStart === -1 || tradeEnd === -1) {
   throw new Error('sync-02: process_logic_trades / run_trade_cycle not found in logic_trade_runner.sql');
 }
+const ratingBlock = read('sql/logic_signal_and_rating.sql').trimEnd() + '\n\n';
 const tradeBlock =
+  ratingBlock +
   tradeTail.slice(tradeStart, tradeEnd).trimEnd() +
   '\n\n' +
   tradeTail.slice(tradeEnd).trimEnd() +
   '\n';
 
+// Рейтинг-хелперы идут перед process_logic_trades; при повторном sync не дублировать
+const ratingMarker = '-- AND-группы сигналов + рейтинг сигнала на логике';
+const tradeMarker = 'CREATE OR REPLACE FUNCTION process_logic_trades(p_logic_id INTEGER)';
+const ratingIdx = sql02.indexOf(ratingMarker);
+const tradeIdx = sql02.indexOf(tradeMarker);
+const tradeSyncStart =
+  ratingIdx !== -1 && (tradeIdx === -1 || ratingIdx < tradeIdx)
+    ? ratingMarker
+    : tradeMarker;
+
 sql02 = replaceBetween(
   sql02,
-  'CREATE OR REPLACE FUNCTION process_logic_trades(p_logic_id INTEGER)',
+  tradeSyncStart,
   '-- @optional-pgcron-block',
   tradeBlock + '\n',
-  'process_logic_trades + run_trade_cycle'
+  'signal rating + process_logic_trades + run_trade_cycle'
 );
 
 const backtestBlock = read('sql/logic_backtest_runner.sql').trimEnd() + '\n\n';

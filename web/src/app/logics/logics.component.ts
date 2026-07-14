@@ -172,6 +172,7 @@ export class LogicsComponent implements OnInit, OnDestroy {
       commission_pct: string;
       cost_method: 'FIFO' | 'AVERAGE';
       stop_loss_timeframe: string;
+      base_annual_rate_pct: string;
       reset_balance: boolean;
     }
   >();
@@ -218,6 +219,7 @@ export class LogicsComponent implements OnInit, OnDestroy {
                     position_size_pct: local.position_size_pct,
                     max_open_positions: local.max_open_positions,
                     initial_balance: local.initial_balance,
+                    base_annual_rate_pct: local.base_annual_rate_pct,
                     // current_balance — только для отображения, берём с сервера
                   }
                 : row;
@@ -330,6 +332,12 @@ export class LogicsComponent implements OnInit, OnDestroy {
     this.paramsSaveErrors.delete(logicId);
   }
 
+  onParamsBaseAnnualRateChange(logicId: number, value: string): void {
+    this.getParamsDraft(logicId).base_annual_rate_pct = value;
+    this.paramsDirtyIds.add(logicId);
+    this.paramsSaveErrors.delete(logicId);
+  }
+
   onParamsMaxPositionsChange(logicId: number, value: string): void {
     this.getParamsDraft(logicId).max_open_positions = value;
     this.paramsDirtyIds.add(logicId);
@@ -434,6 +442,7 @@ export class LogicsComponent implements OnInit, OnDestroy {
       commission_pct?: number;
       cost_method?: 'FIFO' | 'AVERAGE';
       stop_loss_timeframe?: string;
+      base_annual_rate_pct?: number;
     }
   ): void {
     const idx = this.logics.findIndex((l) => l.id === logicId);
@@ -451,6 +460,7 @@ export class LogicsComponent implements OnInit, OnDestroy {
     commission_pct?: number;
     cost_method?: 'FIFO' | 'AVERAGE';
     stop_loss_timeframe?: string;
+    base_annual_rate_pct?: number;
   }): {
     timeframe: string;
     position_size_pct: string;
@@ -459,6 +469,7 @@ export class LogicsComponent implements OnInit, OnDestroy {
     commission_pct: string;
     cost_method: 'FIFO' | 'AVERAGE';
     stop_loss_timeframe: string;
+    base_annual_rate_pct: string;
     reset_balance: boolean;
   } {
     const method: 'FIFO' | 'AVERAGE' =
@@ -471,6 +482,7 @@ export class LogicsComponent implements OnInit, OnDestroy {
       commission_pct: this.formatPctParam(trading.commission_pct ?? 0.05),
       cost_method: method,
       stop_loss_timeframe: (trading.stop_loss_timeframe ?? 'M5').toUpperCase(),
+      base_annual_rate_pct: this.formatPctParam(trading.base_annual_rate_pct ?? 20),
       reset_balance: false,
     };
   }
@@ -505,6 +517,7 @@ export class LogicsComponent implements OnInit, OnDestroy {
       commission_pct: row.commission_pct,
       cost_method: row.cost_method,
       stop_loss_timeframe: row.stop_loss_timeframe,
+      base_annual_rate_pct: row.base_annual_rate_pct,
     });
   }
 
@@ -521,6 +534,7 @@ export class LogicsComponent implements OnInit, OnDestroy {
     const initial_balance =
       initialRaw === '' ? null : this.parseDecimalInput(initialRaw.replace(',', '.'));
     const commission_pct = this.parseDecimalInput(draft.commission_pct);
+    const base_annual_rate_pct = this.parseDecimalInput(draft.base_annual_rate_pct);
 
     if (!Number.isFinite(position_size_pct) || position_size_pct <= 0 || position_size_pct > 100) {
       this.paramsSaveErrors.set(
@@ -541,6 +555,14 @@ export class LogicsComponent implements OnInit, OnDestroy {
       this.paramsSaveErrors.set(row.id, '% комиссии: число от 0 до 100');
       return;
     }
+    if (
+      !Number.isFinite(base_annual_rate_pct) ||
+      base_annual_rate_pct < 0 ||
+      base_annual_rate_pct > 1000
+    ) {
+      this.paramsSaveErrors.set(row.id, 'Базовая ставка (% годовых): число от 0 до 1000');
+      return;
+    }
 
     this.paramsSaveErrors.delete(row.id);
     this.savingParamsIds.add(row.id);
@@ -553,6 +575,7 @@ export class LogicsComponent implements OnInit, OnDestroy {
         commission_pct,
         cost_method: draft.cost_method,
         stop_loss_timeframe: draft.stop_loss_timeframe,
+        base_annual_rate_pct,
         reset_balance: draft.reset_balance,
       })
       .subscribe({
@@ -1631,6 +1654,11 @@ export class LogicsComponent implements OnInit, OnDestroy {
   cancelBacktestRun(logicId: number): void {
     const run = this.backtestRuns.get(logicId);
     if (!run?.id) return;
+    this.backtestRuns.set(logicId, {
+      ...run,
+      phase_message: 'Остановка…',
+      phase_detail: run.phase_detail || 'Запрос на остановку принят',
+    });
     this.logicsService.cancelBacktest(run.id).subscribe({
       next: () => this.refreshBacktestStatus(logicId),
       error: (err) => alert(err?.error?.error || 'Не удалось остановить тест'),

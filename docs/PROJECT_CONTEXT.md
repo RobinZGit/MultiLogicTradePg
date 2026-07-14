@@ -5,7 +5,7 @@
 > Включать **запросы пользователя текстом** (секция «Запросы пользователя»).
 
 **Репозиторий:** https://github.com/RobinZGit/MultiLogicTradePg  
-**Последнее обновление:** 2026-07-14 (выкладка: v39 + диаграмма схемы + PnL/%; GitHub Pages)
+**Последнее обновление:** 2026-07-14 — push: v40 рейтинги сигналов (успех на след. свече / base_annual), UI под бумагой, мгновенный Стоп бэктеста; БД 00→02
 
 ---
 
@@ -25,7 +25,7 @@
 | Файл | Назначение |
 |------|------------|
 | `00_create_database.sql` | **DROP + CREATE** базы `multilogictrade` (полное пересоздание) |
-| `01_multilogictrade_tables_and_data.sql` | Таблицы, индексы, справочники (идемпотентно, **v39**) |
+| `01_multilogictrade_tables_and_data.sql` | Таблицы, индексы, справочники (идемпотентно, **v40**) |
 | `02_multilogictrade_functions_and_procedures.sql` | Функции и процедуры (идемпотентно) |
 | `03_multilogictrade_examples.sql` | Примеры SELECT (необязательно) |
 
@@ -72,12 +72,15 @@
 
 - справочник `indicators` (32 шт.: + **SMAT3**), классические + **PACC** + пользовательские через `formula`;
 - **`indicators.sig_trend_def`**, **`indicators.sig_ct_def`** — условия тренда/контртренда по умолчанию (на сериях: `VALUE > 50`, `pp > VALUE`, …);
-- **`logic_indicator_signals`** — сигналы на логике: **`position_event`** open|close, **`position_side`** long|short, **`signal_kind`** trend|counter, `formula`;
-- **`logic_stops`** — стоп-лосс и тейк-профит по логике (`rule_kind` stop_loss|take_profit, `scope_type` security|portfolio, `value`, `value_unit` percent|atr);
+- **`logic_indicator_signals`** — сигналы на логике: **`position_event`** open|close, **`position_side`** long|short, **`signal_kind`** trend|counter, `formula`, **`rating`** / **`rating_test`** (могут быть &lt;0; агрегат по всем бумагам; не рейтинг справочника `indicators`);
+- **AND:** сделка только если **все** активные сигналы одной группы `(position_event × position_side)` сработали; OR → отдельные logics;
+- **`logic_signal_rating_pending`** + **`logic_signal_rating_history`**: сработал → pending; на **следующей** свече ход → **% годовых** vs **`base_annual_rate_pct`** (дефолт 20) → `±1`; history с `logic_id`+`security_id`+`signal_id` для графика **на бумаге**;
+- **Бэктест Стоп:** `cancel` сразу ставит `status=cancelled`, результат теста **не удаляется**; UI не висит на «Останавливаю…»;
+- **`logic_stops`** — стоп-лосс и тейк-профит по логике (`rule_kind` stop_loss|take_profit, `scope_type` security|portfolio|security_resume, `value`, `value_unit` percent|atr);
 - **`logic_securities`** — портфель бумаг логики (`logic_id`, `security_id`, `display_order`, `is_active`);
-- **`logic_trades`** — сделки: `position_event`, `signal_kind`, `is_simulated`, **`is_fictitious`**, `commission`, **`financial_result`** (только Close), `bar_dt`, `status`; side Open/Close через `sides`;
+- **`logic_trades`** — сделки: `position_event`, `signal_kind`, `is_simulated`, **`is_fictitious`**, `commission`, **`financial_result`** (только Close), `bar_dt`, `status`; side Open/Close через `sides`; уникальность бара: `(logic_id, security_id, position_event, action_id, bar_dt, is_test, is_shadow)`;
 - **`logic_trade_lots`** — пакеты закрытия (FIFO / средняя): связь close↔open, суммы, комиссии, PnL по пакету;
-- **`logic_param_defs`** + **`logic_params`** — параметры торговли (EAV): **`timeframe`**, `position_size_pct`, `max_open_positions`, `initial_balance`, `current_balance`, **`commission_pct`**, **`cost_method`** (FIFO|AVERAGE), `last_trade_check_at`;
+- **`logic_param_defs`** + **`logic_params`** — параметры торговли (EAV): **`timeframe`**, `position_size_pct`, `max_open_positions`, `initial_balance`, `current_balance`, **`commission_pct`**, **`cost_method`** (FIFO|AVERAGE), **`base_annual_rate_pct`** (порог рейтинга сигнала), `last_trade_check_at`;
 - **`indicators.formula`** — многочлен для `calc_poly_formula_array`; **`is_custom`** — подсветка в списке;
 - **`sma`**, **`ema`**, **`ww()`** — от close; **`sma(period=20)`**, **`sma(period=20, series=VALUE)`** — параметры в ();
 - **`@CODE`**, `*`, `#`, ядра `(1;-2;1)` — единый парсер `poly_*` в `02`;
@@ -85,14 +88,16 @@
 - UI: **«+»** у «Индикаторы» → форма (код, название, описание, формула); **«И.»** — справка по синтаксису;
 - API: `GET/POST /api/indicators`, `PUT /api/indicators/:id` (formula для `is_custom`);
 - `logics` + `logic_indicator_signals` / `logic_params` — торговые правила и параметры (EAV); таблица **`logics_detail` удалена** (v39);
-- UI **Операции** (`/operations`): пять сворачиваемых блоков — **«Параметры логики»**, **«Сигналы индикаторов»**, **«Стоп-лосс и тейк-профит»**, **«Ценные бумаги»**, **«Сделки»** (по умолчанию свёрнуты);
+- UI **Операции** (`/operations`): пять сворачиваемых блоков — **«Параметры логики»**, **«Сигналы на логике»**, **«Стоп-лосс и тейк-профит»**, **«Ценные бумаги»**, **«Сделки»** (по умолчанию свёрнуты);
 - API logics: **`GET/PUT /api/logic-params`** — чтение/запись `logic_params`; signals/stops/securities/trades;
-- **Trade runner (PostgreSQL):** `run_trade_cycle()` → `process_logic_trades()` — open/close по **`position_event`** (не выводится из trend/counter); **перед сигналами** `logic_refresh_market_data`; парсинг `@CODE(...) condition` на **`timeframe` из logic_params**; **сигналы только на последней закрытой свече TF**; fake/real; idempotency `(logic_id, security_id, position_event, signal_kind, bar_dt, is_test, is_shadow)`;
+- **Trade runner (PostgreSQL):** `run_trade_cycle()` → `process_logic_trades()` — **AND-группы** `(position_event × position_side)`; **перед сигналами** `logic_refresh_market_data` + `logic_signal_rating_resolve_pending`; парсинг `@CODE(...) condition` на **`timeframe` из logic_params**; **сигналы только на последней закрытой свече TF**; fake/real; idempotency `(logic_id, security_id, position_event, action_id, bar_dt, is_test, is_shadow)`; модули `sql/logic_signal_and_rating.sql`, `sql/logic_trade_runner.sql`;
 - **Расписание:** **Node fallback** каждые **15 с** (`TRADE_RUNNER_INTERVAL_MS`, Windows); **pg_cron** раз в минуту (Linux); **только при открытом Angular** (heartbeat → `APP_TRADE_RUNNER_HB`, TTL 90 с); ручной `POST /api/logic-trades/run`;
-- **Демо-логика** в `01`: `SMA Price Cross Demo` — SMA(20) M15: open long trend / close long counter / open short trend / close short counter; **все акции** (`instrument_market=stock`); SL **1%** (`security_resume` — по бумаге с возобновлением), TP **3%** (security); 1M, 10%, max 3;
+- **Демо-логика** в `01`: `SMA Price Cross Demo` — **follow/breakout**: open AND (SMA + BB UPPER/LOWER + STOCH 50), close **только SMA**; **все акции**; SL **1%** / TP **3%**;
+- **`indicators.sig_profile`**: `trend_line` | `oscillator` | `channel` | `zero_line` | `strength` | `volume`; шаблоны `sig_trend_def`=follow, `sig_ct_def`=fade (для channel: UPPER / LOWER);
+- UI тип сигнала: **«По течению» / «Против»** (в БД по-прежнему `trend`/`counter`);
 - UI **Позиции / Тестирование**: в шапке рядом с фин. результатом — **% от нач.** и **год.** (простая аннуализация);
 - График бумаги в тесте: линия PnL (фиолетовый ноль) с **начала периода теста** (`date_from`), не с первой сделки;
-- UI сигналов: кнопки **«+ Открытие» / «+ Закрытие»**, в picker — сторона Long/Short и тип Тренд/К-тренд; таблица: Действие | Сторона | Тип | …;
+- UI сигналов: блок **«Сигналы на логике»**, предупреждение AND, колонка **«Рейтинг сигнала»**, параметр **базовая ставка % годовых**;
 
 ### Правило схемы БД
 
@@ -145,6 +150,9 @@
 49. **v33 позиции UI + runner:** блок «Сделки» → **«Позиции»**; подблоки **Открытые** / **Закрытые**; общий фин. результат сверху; runner не блокирует цикл из‑за одной бумаги без данных M1.
 50. **v38 сигналы open/close:** `logic_indicator_signals.position_event`, `logic_trades.position_event`; UI «+ Открытие/+ Закрытие»; runner по `position_event`; демо — 4 сигнала SMA, все акции, SL1%/TP3%; графики бумаг теста (PnL-полоса, ⟸сд./сд.⟹, fullscreen); БД 00→02.
 51. **v39 чистка схемы:** DROP `logics_detail`; с `logics` убраны дубли `position_size_pct`/`max_open_positions`/`initial_balance`/`current_balance` (истина — `logic_params`); убраны legacy `indicator_values.is_signal/signal_type`, `parameter_types.is_control/is_fake_only/min/max/description`, `parameter_sets` extras, `parameter_values.record_date`, `prices.trades`/`created_at`, audit `created_at` у brokers/accounts, `security_types.note`.
+52. **v40 AND + рейтинг сигнала на логике:** группа сигналов одной стороны/действия — все должны сработать; `logic_indicator_signals.rating` + `logic_signal_rating_pending` + `base_annual_rate_pct`; демо SMA/BB/STOCH; UI: «Рейтинг сигнала» на закладке логики (не рейтинг индикатора из справочника); backtest тоже AND.
+53. **v40b рейтинги в тесте:** `rating_test` + `logic_signal_rating_history` (logic+signal+security); успех = ход на **след.** свече → % годовых vs `base_annual_rate_pct` → ±1 (без пола 0); UI — «Рейтинги сигналов на бумаге» под графиком в блоке Бумаги; модуль `sql/logic_signal_and_rating.sql`.
+54. **Бэктест Стоп:** сразу `status=cancelled`, результат сохранён; не зависать на длинном `rate_signals`; демо follow/breakout (SMA+BB+STOCH).
 
 ### Автотесты
 
@@ -180,8 +188,9 @@
 
 ## Открытые задачи / следующие шаги
 
-- [ ] Расширить оценку формул сигналов (CROSS, AND/OR).
-- [ ] `logic_stops` в runner, `is_fictitious` — логика заполнения.
+- [x] Выложить v40/v40b (commit/push) и прогнать `00`→`02` на рабочей БД (2026-07-14).
+- [ ] Расширить оценку формул сигналов (CROSS; AND внутри одной формулы).
+- [ ] `is_fictitious` — логика заполнения.
 - [ ] Заполнить `tbank_figi` где возможно (частично через `resolve_tbank_instrument_id`).
 - [ ] Влить реструктуризацию параметров индикаторов (черновик `Indicators_parameters_todo`).
 - [ ] Прогнать полный UI-тест загрузки для вечных (`USDRUBF` и др.).
@@ -205,6 +214,12 @@
 
 | Дата | Суть |
 |------|------|
+| 2026-07-14 | Push v40b + БД 00→02: рейтинги на бумаге, мгновенный Стоп, демо follow/breakout |
+| 2026-07-14 | Рейтинг: успех на след. свече (годовые vs base_annual); ±1 без пола 0; UI «Рейтинги на бумаге» под графиком |
+| 2026-07-14 | Тест: рейтинги сигналов независимо от сделок; rating_test + history; блок «Рейтинги сигналов» с графиком |
+| 2026-07-14 | Демо v40b follow/breakout (8 сигналов); sig_profile; UI по течению/против; mean-reversion+SMA AND убран |
+| 2026-07-14 | БД 00→02: демо SMA+BB/STOCH (коридор), 12 сигналов, SL1%/TP3%; fix пустого UI (не было rating в старой БД) |
+| 2026-07-14 | v40: AND-сигналы; рейтинг сигнала на логике (+pending, base_annual_rate_pct); демо SMA+BB+STOCH; UI подписи |
 | 2026-07-14 | Выкладка main → GitHub Pages: v39, диаграмма FK, PnL с date_from, %/год. |
 | 2026-07-14 | Gear/структура БД: вкладка «Диаграмма» (таблицы + FK поле→поле); БД 00→02 |
 | 2026-07-14 | v39: DROP logics_detail; дубли колонок logics; legacy is_signal/parameter_*/prices.trades |
@@ -307,3 +322,10 @@
 50. «Сводка лишнего в БД → удалить: logics_detail, дубли колонок logics, legacy write-only колонки» (v39).
 51. «Комментарии таблиц/колонок оставить; в окне структуры (шестерёнка) — вкладка диаграммы со связями полей; потом БД с нуля».
 52. «Выложить в репозиторий для публикации на GitHub Pages».
+53. «Сигналы одной стороны — AND (все open/close); рейтинг сигнала на логике (+1/−1 по следующей свече, порог от годовой ставки); демо SMA+BB+STOCH; предупреждение в UI».
+54. «The rating of indicators is not quite accurate — rating of the indicator signal is exactly the one on the logic bookmark».
+55. «Тест логики без сделок — сигналы слишком жёсткие; оставить SMA+BB+STOCH, сделать логичнее; возможно follow/fade и профили по индикаторам».
+56. «В Тестировании — блок рейтингов сигналов с графиком; считать независимо от сделок; test/combat раздельно».
+57. «Рейтинги не отдельным блоком, а под графиком бумаги; по ценам этой бумаги; не +1 за срабатывание, а pending → следующая свеча → % годовых vs base_annual (20) → +1/−1».
+58. «Стоп зависает — остановить сразу; после стопа всё протестированное оставить».
+59. «Выложить в репозиторий и собрать базу с нуля».
