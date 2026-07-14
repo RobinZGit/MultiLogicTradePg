@@ -1,6 +1,7 @@
 -- ============================================
 -- MultiLogicTrade — шаг 1: таблицы и справочники
--- Версия: v40 (идемпотентный запуск)
+-- Версия: v41 (идемпотентный запуск)
+-- v41: пакет из 10 классических логик (OsEngine-style) + демо; все на FAKE, все акции
 -- v40: сигналы AND (все open/close стороны); rating; base_annual_rate_pct; pending рейтинга
 -- v39: DROP logics_detail; убраны дубликаты колонок logics → logic_params;
 --      legacy-поля indicator_values/parameter_*; prices.trades
@@ -1368,6 +1369,275 @@ CROSS JOIN (VALUES
     ('take_profit',  'security', 3.0, 'percent', 1)
 ) AS v(rule_kind, scope_type, value, value_unit, display_order)
 WHERE l.name = 'SMA Price Cross Demo';
+
+-- =====================================================================
+-- v41: классические стратегии (по мотивам OsEngine Robots / Custom)
+-- Демо «SMA Price Cross Demo» выше не трогаем.
+-- Все на FAKE-EFF-001, выключены, все акции, SL 1% resume / TP 3%.
+-- =====================================================================
+
+INSERT INTO logics (name, account_id, is_enabled)
+SELECT v.name, a.id, FALSE
+FROM accounts a
+JOIN brokers b ON b.id = a.broker_id
+CROSS JOIN (VALUES
+    ('RSI Mean Reversion'),
+    ('Bollinger Bounce'),
+    ('Bollinger Breakout'),
+    ('MACD Zero Line'),
+    ('Stochastic Levels'),
+    ('EMA Price Cross'),
+    ('Dual MA Trend'),
+    ('SMA Stoch Pullback'),
+    ('BB Stoch Bounce'),
+    ('SMAT3 Trend')
+) AS v(name)
+WHERE b.code = 'T-BANK' AND a.account_code = 'FAKE-EFF-001'
+ON CONFLICT (name) DO NOTHING;
+
+-- Параметры как у демо (перекрывают пустые default_value из logic_param_defs)
+INSERT INTO logic_params (logic_id, param_key, param_value, value_type)
+SELECT l.id, v.param_key, v.param_value, v.value_type
+FROM logics l
+CROSS JOIN (VALUES
+    ('timeframe', 'M15', 'text'),
+    ('position_size_pct', '10', 'number'),
+    ('max_open_positions', '3', 'integer'),
+    ('initial_balance', '1000000', 'money'),
+    ('current_balance', '1000000', 'money'),
+    ('commission_pct', '0.05', 'number'),
+    ('cost_method', 'FIFO', 'text'),
+    ('stop_loss_timeframe', 'M5', 'text'),
+    ('base_annual_rate_pct', '20', 'number')
+) AS v(param_key, param_value, value_type)
+WHERE l.name IN (
+    'RSI Mean Reversion', 'Bollinger Bounce', 'Bollinger Breakout', 'MACD Zero Line',
+    'Stochastic Levels', 'EMA Price Cross', 'Dual MA Trend', 'SMA Stoch Pullback',
+    'BB Stoch Bounce', 'SMAT3 Trend'
+)
+ON CONFLICT (logic_id, param_key) DO UPDATE SET
+    param_value = EXCLUDED.param_value,
+    updated_at = CURRENT_TIMESTAMP;
+
+-- Дозаполнение любых отсутствующих ключей из справочника
+INSERT INTO logic_params (logic_id, param_key, param_value, value_type)
+SELECT l.id, d.param_key, d.default_value, d.value_type
+FROM logics l
+CROSS JOIN logic_param_defs d
+WHERE l.name IN (
+    'RSI Mean Reversion', 'Bollinger Bounce', 'Bollinger Breakout', 'MACD Zero Line',
+    'Stochastic Levels', 'EMA Price Cross', 'Dual MA Trend', 'SMA Stoch Pullback',
+    'BB Stoch Bounce', 'SMAT3 Trend'
+)
+ON CONFLICT (logic_id, param_key) DO NOTHING;
+
+-- Сброс сигналов seed-логик перед повторной вставкой
+DELETE FROM logic_indicator_signals lis
+USING logics l
+WHERE lis.logic_id = l.id
+  AND l.name IN (
+    'RSI Mean Reversion', 'Bollinger Bounce', 'Bollinger Breakout', 'MACD Zero Line',
+    'Stochastic Levels', 'EMA Price Cross', 'Dual MA Trend', 'SMA Stoch Pullback',
+    'BB Stoch Bounce', 'SMAT3 Trend'
+  );
+
+-- RSI Mean Reversion (OsEngine RsiTrade)
+INSERT INTO logic_indicator_signals (
+    logic_id, indicator_id, position_event, position_side, signal_kind, formula, display_order
+)
+SELECT l.id, i.id, v.position_event, v.position_side, v.signal_kind, v.formula, v.display_order
+FROM logics l
+CROSS JOIN (VALUES
+    ('RSI', 'open',  'long',  'counter', '@RSI(period=14,series=VALUE) VALUE < 30', 0),
+    ('RSI', 'close', 'long',  'trend',   '@RSI(period=14,series=VALUE) VALUE > 50', 1),
+    ('RSI', 'open',  'short', 'counter', '@RSI(period=14,series=VALUE) VALUE > 70', 2),
+    ('RSI', 'close', 'short', 'trend',   '@RSI(period=14,series=VALUE) VALUE < 50', 3)
+) AS v(ind_code, position_event, position_side, signal_kind, formula, display_order)
+JOIN indicators i ON i.code = v.ind_code
+WHERE l.name = 'RSI Mean Reversion';
+
+-- Bollinger Bounce (OsEngine StrategyBollinger)
+INSERT INTO logic_indicator_signals (
+    logic_id, indicator_id, position_event, position_side, signal_kind, formula, display_order
+)
+SELECT l.id, i.id, v.position_event, v.position_side, v.signal_kind, v.formula, v.display_order
+FROM logics l
+CROSS JOIN (VALUES
+    ('BB',  'open',  'long',  'counter', '@BB(period=20,series=LOWER) pp < VALUE', 0),
+    ('BB',  'close', 'long',  'trend',   '@BB(period=20,series=MIDDLE) pp > VALUE', 1),
+    ('BB',  'open',  'short', 'counter', '@BB(period=20,series=UPPER) pp > VALUE', 2),
+    ('BB',  'close', 'short', 'trend',   '@BB(period=20,series=MIDDLE) pp < VALUE', 3)
+) AS v(ind_code, position_event, position_side, signal_kind, formula, display_order)
+JOIN indicators i ON i.code = v.ind_code
+WHERE l.name = 'Bollinger Bounce';
+
+-- Bollinger Breakout (OsEngine BollingerRevers)
+INSERT INTO logic_indicator_signals (
+    logic_id, indicator_id, position_event, position_side, signal_kind, formula, display_order
+)
+SELECT l.id, i.id, v.position_event, v.position_side, v.signal_kind, v.formula, v.display_order
+FROM logics l
+CROSS JOIN (VALUES
+    ('BB',  'open',  'long',  'trend',   '@BB(period=20,series=UPPER) pp > VALUE', 0),
+    ('BB',  'close', 'long',  'counter', '@BB(period=20,series=MIDDLE) pp < VALUE', 1),
+    ('BB',  'open',  'short', 'trend',   '@BB(period=20,series=LOWER) pp < VALUE', 2),
+    ('BB',  'close', 'short', 'counter', '@BB(period=20,series=MIDDLE) pp > VALUE', 3)
+) AS v(ind_code, position_event, position_side, signal_kind, formula, display_order)
+JOIN indicators i ON i.code = v.ind_code
+WHERE l.name = 'Bollinger Breakout';
+
+-- MACD Zero Line (OsEngine MacdRevers упрощённо: пересечение нуля)
+INSERT INTO logic_indicator_signals (
+    logic_id, indicator_id, position_event, position_side, signal_kind, formula, display_order
+)
+SELECT l.id, i.id, v.position_event, v.position_side, v.signal_kind, v.formula, v.display_order
+FROM logics l
+CROSS JOIN (VALUES
+    ('MACD', 'open',  'long',  'trend',   '@MACD(series=MACD) VALUE > 0', 0),
+    ('MACD', 'close', 'long',  'counter', '@MACD(series=MACD) VALUE < 0', 1),
+    ('MACD', 'open',  'short', 'trend',   '@MACD(series=MACD) VALUE < 0', 2),
+    ('MACD', 'close', 'short', 'counter', '@MACD(series=MACD) VALUE > 0', 3)
+) AS v(ind_code, position_event, position_side, signal_kind, formula, display_order)
+JOIN indicators i ON i.code = v.ind_code
+WHERE l.name = 'MACD Zero Line';
+
+-- Stochastic Levels (контртренд по уровням, как RsiTrade для Stoch)
+INSERT INTO logic_indicator_signals (
+    logic_id, indicator_id, position_event, position_side, signal_kind, formula, display_order
+)
+SELECT l.id, i.id, v.position_event, v.position_side, v.signal_kind, v.formula, v.display_order
+FROM logics l
+CROSS JOIN (VALUES
+    ('STOCH', 'open',  'long',  'counter', '@STOCH(series=K) VALUE < 20', 0),
+    ('STOCH', 'close', 'long',  'trend',   '@STOCH(series=K) VALUE > 50', 1),
+    ('STOCH', 'open',  'short', 'counter', '@STOCH(series=K) VALUE > 80', 2),
+    ('STOCH', 'close', 'short', 'trend',   '@STOCH(series=K) VALUE < 50', 3)
+) AS v(ind_code, position_event, position_side, signal_kind, formula, display_order)
+JOIN indicators i ON i.code = v.ind_code
+WHERE l.name = 'Stochastic Levels';
+
+-- EMA Price Cross (OsEngine SmaTrendSample на EMA)
+INSERT INTO logic_indicator_signals (
+    logic_id, indicator_id, position_event, position_side, signal_kind, formula, display_order
+)
+SELECT l.id, i.id, v.position_event, v.position_side, v.signal_kind, v.formula, v.display_order
+FROM logics l
+CROSS JOIN (VALUES
+    ('EMA', 'open',  'long',  'trend',   '@EMA(period=20,series=VALUE) pp > VALUE', 0),
+    ('EMA', 'close', 'long',  'counter', '@EMA(period=20,series=VALUE) pp < VALUE', 1),
+    ('EMA', 'open',  'short', 'trend',   '@EMA(period=20,series=VALUE) pp < VALUE', 2),
+    ('EMA', 'close', 'short', 'counter', '@EMA(period=20,series=VALUE) pp > VALUE', 3)
+) AS v(ind_code, position_event, position_side, signal_kind, formula, display_order)
+JOIN indicators i ON i.code = v.ind_code
+WHERE l.name = 'EMA Price Cross';
+
+-- Dual MA Trend (SMA+EMA как в SmaWithAShift: фильтр «цена выше/ниже обеих»)
+INSERT INTO logic_indicator_signals (
+    logic_id, indicator_id, position_event, position_side, signal_kind, formula, display_order
+)
+SELECT l.id, i.id, v.position_event, v.position_side, v.signal_kind, v.formula, v.display_order
+FROM logics l
+CROSS JOIN (VALUES
+    ('SMA', 'open',  'long',  'trend',   '@SMA(period=20,series=VALUE) pp > VALUE', 0),
+    ('EMA', 'open',  'long',  'trend',   '@EMA(period=50,series=VALUE) pp > VALUE', 1),
+    ('SMA', 'close', 'long',  'counter', '@SMA(period=20,series=VALUE) pp < VALUE', 2),
+    ('SMA', 'open',  'short', 'trend',   '@SMA(period=20,series=VALUE) pp < VALUE', 3),
+    ('EMA', 'open',  'short', 'trend',   '@EMA(period=50,series=VALUE) pp < VALUE', 4),
+    ('SMA', 'close', 'short', 'counter', '@SMA(period=20,series=VALUE) pp > VALUE', 5)
+) AS v(ind_code, position_event, position_side, signal_kind, formula, display_order)
+JOIN indicators i ON i.code = v.ind_code
+WHERE l.name = 'Dual MA Trend';
+
+-- SMA Stoch Pullback (OsEngine SmaStochastic: тренд SMA + откат Stoch)
+INSERT INTO logic_indicator_signals (
+    logic_id, indicator_id, position_event, position_side, signal_kind, formula, display_order
+)
+SELECT l.id, i.id, v.position_event, v.position_side, v.signal_kind, v.formula, v.display_order
+FROM logics l
+CROSS JOIN (VALUES
+    ('SMA',   'open',  'long',  'trend',   '@SMA(period=20,series=VALUE) pp > VALUE', 0),
+    ('STOCH', 'open',  'long',  'counter', '@STOCH(series=K) VALUE < 30', 1),
+    ('SMA',   'close', 'long',  'counter', '@SMA(period=20,series=VALUE) pp < VALUE', 2),
+    ('SMA',   'open',  'short', 'trend',   '@SMA(period=20,series=VALUE) pp < VALUE', 3),
+    ('STOCH', 'open',  'short', 'counter', '@STOCH(series=K) VALUE > 70', 4),
+    ('SMA',   'close', 'short', 'counter', '@SMA(period=20,series=VALUE) pp > VALUE', 5)
+) AS v(ind_code, position_event, position_side, signal_kind, formula, display_order)
+JOIN indicators i ON i.code = v.ind_code
+WHERE l.name = 'SMA Stoch Pullback';
+
+-- BB Stoch Bounce (OsEngine StrategyBollingerAndStochastic)
+INSERT INTO logic_indicator_signals (
+    logic_id, indicator_id, position_event, position_side, signal_kind, formula, display_order
+)
+SELECT l.id, i.id, v.position_event, v.position_side, v.signal_kind, v.formula, v.display_order
+FROM logics l
+CROSS JOIN (VALUES
+    ('BB',    'open',  'long',  'counter', '@BB(period=20,series=LOWER) pp < VALUE', 0),
+    ('STOCH', 'open',  'long',  'counter', '@STOCH(series=K) VALUE < 20', 1),
+    ('BB',    'close', 'long',  'trend',   '@BB(period=20,series=MIDDLE) pp > VALUE', 2),
+    ('BB',    'open',  'short', 'counter', '@BB(period=20,series=UPPER) pp > VALUE', 3),
+    ('STOCH', 'open',  'short', 'counter', '@STOCH(series=K) VALUE > 80', 4),
+    ('BB',    'close', 'short', 'trend',   '@BB(period=20,series=MIDDLE) pp < VALUE', 5)
+) AS v(ind_code, position_event, position_side, signal_kind, formula, display_order)
+JOIN indicators i ON i.code = v.ind_code
+WHERE l.name = 'BB Stoch Bounce';
+
+-- SMAT3 Trend (тройное SMA как сглаженный тренд)
+INSERT INTO logic_indicator_signals (
+    logic_id, indicator_id, position_event, position_side, signal_kind, formula, display_order
+)
+SELECT l.id, i.id, v.position_event, v.position_side, v.signal_kind, v.formula, v.display_order
+FROM logics l
+CROSS JOIN (VALUES
+    ('SMAT3', 'open',  'long',  'trend',   '@SMAT3(series=VALUE) pp > VALUE', 0),
+    ('SMAT3', 'close', 'long',  'counter', '@SMAT3(series=VALUE) pp < VALUE', 1),
+    ('SMAT3', 'open',  'short', 'trend',   '@SMAT3(series=VALUE) pp < VALUE', 2),
+    ('SMAT3', 'close', 'short', 'counter', '@SMAT3(series=VALUE) pp > VALUE', 3)
+) AS v(ind_code, position_event, position_side, signal_kind, formula, display_order)
+JOIN indicators i ON i.code = v.ind_code
+WHERE l.name = 'SMAT3 Trend';
+
+-- Все акции во все seed-логики (включая уже существующие строки)
+INSERT INTO logic_securities (logic_id, security_id, display_order)
+SELECT l.id, q.security_id, ROW_NUMBER() OVER (PARTITION BY l.id ORDER BY q.sort_key) - 1
+FROM logics l
+CROSS JOIN LATERAL (
+    SELECT DISTINCT ON (s.id)
+        s.id AS security_id,
+        COALESCE(sp.prefix, s.name) AS sort_key
+    FROM securities s
+    JOIN security_prefixes sp ON sp.security_id = s.id AND sp.instrument_market = 'stock'
+    ORDER BY s.id, sp.prefix
+) q
+WHERE l.name IN (
+    'RSI Mean Reversion', 'Bollinger Bounce', 'Bollinger Breakout', 'MACD Zero Line',
+    'Stochastic Levels', 'EMA Price Cross', 'Dual MA Trend', 'SMA Stoch Pullback',
+    'BB Stoch Bounce', 'SMAT3 Trend'
+)
+ON CONFLICT (logic_id, security_id) DO UPDATE SET is_active = TRUE;
+
+-- SL/TP как у демо
+DELETE FROM logic_stops ls
+USING logics l
+WHERE ls.logic_id = l.id
+  AND l.name IN (
+    'RSI Mean Reversion', 'Bollinger Bounce', 'Bollinger Breakout', 'MACD Zero Line',
+    'Stochastic Levels', 'EMA Price Cross', 'Dual MA Trend', 'SMA Stoch Pullback',
+    'BB Stoch Bounce', 'SMAT3 Trend'
+  );
+
+INSERT INTO logic_stops (logic_id, rule_kind, scope_type, value, value_unit, display_order, is_active)
+SELECT l.id, v.rule_kind, v.scope_type, v.value, v.value_unit, v.display_order, TRUE
+FROM logics l
+CROSS JOIN (VALUES
+    ('stop_loss',   'security_resume', 1.0, 'percent', 0),
+    ('take_profit', 'security',        3.0, 'percent', 1)
+) AS v(rule_kind, scope_type, value, value_unit, display_order)
+WHERE l.name IN (
+    'RSI Mean Reversion', 'Bollinger Bounce', 'Bollinger Breakout', 'MACD Zero Line',
+    'Stochastic Levels', 'EMA Price Cross', 'Dual MA Trend', 'SMA Stoch Pullback',
+    'BB Stoch Bounce', 'SMAT3 Trend'
+);
 
 -- Сделки по торговой логике (исполнение по сигналам индикаторов)
 CREATE TABLE IF NOT EXISTS logic_trades (

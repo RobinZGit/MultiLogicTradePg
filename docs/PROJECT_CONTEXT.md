@@ -5,7 +5,7 @@
 > Включать **запросы пользователя текстом** (секция «Запросы пользователя»).
 
 **Репозиторий:** https://github.com/RobinZGit/MultiLogicTradePg  
-**Последнее обновление:** 2026-07-14 — push: v40 рейтинги сигналов (успех на след. свече / base_annual), UI под бумагой, мгновенный Стоп бэктеста; БД 00→02
+**Последнее обновление:** 2026-07-14 — push v41: 10 классических логик (OsEngine) + демо; FAKE; все акции; БД 00→02
 
 ---
 
@@ -25,7 +25,7 @@
 | Файл | Назначение |
 |------|------------|
 | `00_create_database.sql` | **DROP + CREATE** базы `multilogictrade` (полное пересоздание) |
-| `01_multilogictrade_tables_and_data.sql` | Таблицы, индексы, справочники (идемпотентно, **v40**) |
+| `01_multilogictrade_tables_and_data.sql` | Таблицы, индексы, справочники (идемпотентно, **v41**) |
 | `02_multilogictrade_functions_and_procedures.sql` | Функции и процедуры (идемпотентно) |
 | `03_multilogictrade_examples.sql` | Примеры SELECT (необязательно) |
 
@@ -93,6 +93,7 @@
 - **Trade runner (PostgreSQL):** `run_trade_cycle()` → `process_logic_trades()` — **AND-группы** `(position_event × position_side)`; **перед сигналами** `logic_refresh_market_data` + `logic_signal_rating_resolve_pending`; парсинг `@CODE(...) condition` на **`timeframe` из logic_params**; **сигналы только на последней закрытой свече TF**; fake/real; idempotency `(logic_id, security_id, position_event, action_id, bar_dt, is_test, is_shadow)`; модули `sql/logic_signal_and_rating.sql`, `sql/logic_trade_runner.sql`;
 - **Расписание:** **Node fallback** каждые **15 с** (`TRADE_RUNNER_INTERVAL_MS`, Windows); **pg_cron** раз в минуту (Linux); **только при открытом Angular** (heartbeat → `APP_TRADE_RUNNER_HB`, TTL 90 с); ручной `POST /api/logic-trades/run`;
 - **Демо-логика** в `01`: `SMA Price Cross Demo` — **follow/breakout**: open AND (SMA + BB UPPER/LOWER + STOCH 50), close **только SMA**; **все акции**; SL **1%** / TP **3%**;
+- **v41 пакет логик** (по мотивам OsEngine): ещё **10** логик на `FAKE-EFF-001`, `is_enabled=FALSE`, все акции, SL/TP как у демо — RSI Mean Reversion, Bollinger Bounce/Breakout, MACD Zero Line, Stochastic Levels, EMA Price Cross, Dual MA Trend, SMA Stoch Pullback, BB Stoch Bounce, SMAT3 Trend;
 - **`indicators.sig_profile`**: `trend_line` | `oscillator` | `channel` | `zero_line` | `strength` | `volume`; шаблоны `sig_trend_def`=follow, `sig_ct_def`=fade (для channel: UPPER / LOWER);
 - UI тип сигнала: **«По течению» / «Против»** (в БД по-прежнему `trend`/`counter`);
 - UI **Позиции / Тестирование**: в шапке рядом с фин. результатом — **% от нач.** и **год.** (простая аннуализация);
@@ -153,6 +154,7 @@
 52. **v40 AND + рейтинг сигнала на логике:** группа сигналов одной стороны/действия — все должны сработать; `logic_indicator_signals.rating` + `logic_signal_rating_pending` + `base_annual_rate_pct`; демо SMA/BB/STOCH; UI: «Рейтинг сигнала» на закладке логики (не рейтинг индикатора из справочника); backtest тоже AND.
 53. **v40b рейтинги в тесте:** `rating_test` + `logic_signal_rating_history` (logic+signal+security); успех = ход на **след.** свече → % годовых vs `base_annual_rate_pct` → ±1 (без пола 0); UI — «Рейтинги сигналов на бумаге» под графиком в блоке Бумаги; модуль `sql/logic_signal_and_rating.sql`.
 54. **Бэктест Стоп:** сразу `status=cancelled`, результат сохранён; не зависать на длинном `rate_signals`; демо follow/breakout (SMA+BB+STOCH).
+55. **v41 seed логик:** 10 классических стратегий (OsEngine-style) + неизменённое демо; все на фейк-счёте, все акции.
 
 ### Автотесты
 
@@ -189,6 +191,7 @@
 ## Открытые задачи / следующие шаги
 
 - [x] Выложить v40/v40b (commit/push) и прогнать `00`→`02` на рабочей БД (2026-07-14).
+- [x] Seed ~10 классических логик (OsEngine) + демо; FAKE; все акции (v41).
 - [ ] Расширить оценку формул сигналов (CROSS; AND внутри одной формулы).
 - [ ] `is_fictitious` — логика заполнения.
 - [ ] Заполнить `tbank_figi` где возможно (частично через `resolve_tbank_instrument_id`).
@@ -214,6 +217,7 @@
 
 | Дата | Суть |
 |------|------|
+| 2026-07-14 | v41: 10 классических логик (OsEngine) + демо; push + БД 00→02 |
 | 2026-07-14 | Push v40b + БД 00→02: рейтинги на бумаге, мгновенный Стоп, демо follow/breakout |
 | 2026-07-14 | Рейтинг: успех на след. свече (годовые vs base_annual); ±1 без пола 0; UI «Рейтинги на бумаге» под графиком |
 | 2026-07-14 | Тест: рейтинги сигналов независимо от сделок; rating_test + history; блок «Рейтинги сигналов» с графиком |
@@ -329,3 +333,4 @@
 57. «Рейтинги не отдельным блоком, а под графиком бумаги; по ценам этой бумаги; не +1 за срабатывание, а pending → следующая свеча → % годовых vs base_annual (20) → +1/−1».
 58. «Стоп зависает — остановить сразу; после стопа всё протестированное оставить».
 59. «Выложить в репозиторий и собрать базу с нуля».
+60. «Добавить ~10 частых успешных стратегий из OsEngine; демо оставить; все на фейк + все акции; можно в репо».
