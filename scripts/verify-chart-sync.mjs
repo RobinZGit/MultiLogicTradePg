@@ -91,5 +91,6 @@ assertIncludes(backtestPapersSpec, 'chartIndicatorsForDisplay returns EMPTY whil
 assertIncludes(backtestPapersSpec, 'onVisibleRange auto emit does not suppress', 'unit test auto range papers');
 assertIncludes(backtestPapersSpec, 'caches overlays so expand does not rebuild', 'unit test overlay cache');
 assertIncludes(overlaysSpec, 'buildEquityPoints accumulates close PnL', 'unit test equity overlays');
+assertIncludes(overlaysSpec, 'buildEquityPoints anchors zero at period start', 'unit test equity from test start');
 
 console.log('verify-chart-sync: OK source guards + unit test names');

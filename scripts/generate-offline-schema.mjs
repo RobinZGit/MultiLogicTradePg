@@ -87,6 +87,28 @@ function parseTables(sql01Text) {
       if (!t.columns.find((c) => c.name === col.name)) {
         t.columns.push(col);
       }
+      // Offline: FK из inline REFERENCES — для вкладки «Диаграмма»
+      const ref = col.type.match(/REFERENCES\s+(\w+)\s*\((\w+)\)/i);
+      if (ref) {
+        const conName = `${name}_${col.name}_fkey`;
+        if (!t.constraints.find((c) => c.name === conName)) {
+          t.constraints.push({
+            name: conName,
+            type: 'FOREIGN KEY',
+            definition: `FOREIGN KEY (${col.name}) REFERENCES ${ref[1]}(${ref[2]})`,
+          });
+        }
+      }
+      if (/\bPRIMARY KEY\b/i.test(col.type)) {
+        const pkName = `${name}_pkey`;
+        if (!t.constraints.find((c) => c.name === pkName)) {
+          t.constraints.push({
+            name: pkName,
+            type: 'PRIMARY KEY',
+            definition: `PRIMARY KEY (${col.name})`,
+          });
+        }
+      }
     }
   }
 

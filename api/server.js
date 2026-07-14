@@ -1318,13 +1318,6 @@ app.put('/api/logics/:id', async (req, res) => {
       res.status(404).json({ error: 'Logic not found' });
       return;
     }
-    const oldName = existing.rows[0].name;
-    if (oldName !== parsed.name) {
-      await client.query(
-        'UPDATE logics_detail SET logic_name = $1 WHERE logic_name = $2',
-        [parsed.name, oldName]
-      );
-    }
     const { rows } = await client.query(
       `
       UPDATE logics
@@ -1371,9 +1364,6 @@ app.delete('/api/logics/:id', async (req, res) => {
       res.status(404).json({ error: 'Logic not found' });
       return;
     }
-    await client.query('DELETE FROM logics_detail WHERE logic_name = $1', [
-      existing.rows[0].name,
-    ]);
     await client.query('DELETE FROM logics WHERE id = $1', [id]);
     await client.query('COMMIT');
     res.json({ ok: true, id });

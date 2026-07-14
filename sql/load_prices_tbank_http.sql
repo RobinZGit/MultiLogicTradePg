@@ -192,7 +192,6 @@ BEGIN
                         v_candle_close,
                         v_candle_volume,
                         NULL,
-                        NULL,
                         v_store_contract
                     );
 

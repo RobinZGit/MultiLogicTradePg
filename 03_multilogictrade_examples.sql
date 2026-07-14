@@ -91,9 +91,7 @@ SELECT
     ivt.code AS line_code,
     ivt.name AS line_name,
     iv.dt,
-    iv.value,
-    iv.is_signal,
-    iv.signal_type
+    iv.value
 FROM indicator_values iv
 JOIN indicators i ON iv.indicator_id = i.id
 JOIN indicator_value_types ivt ON iv.indicator_value_type_id = ivt.id
@@ -241,34 +239,20 @@ SELECT
     pt.name,
     pt.short_name,
     pt.value_type,
-    pt.is_control,
-    pt.default_value,
-    pt.min_value,
-    pt.max_value
+    pt.default_value
 FROM parameter_types pt
-ORDER BY pt.is_control DESC, pt.name;
+ORDER BY pt.name;
 
 -- 4.2 Значения параметров в конкретном сете
 SELECT 
     ps.name AS set_name,
     pt.name AS param_name,
     pt.short_name,
-    pv.value,
-    pv.record_date
+    pv.value
 FROM parameter_values pv
 JOIN parameter_sets ps ON pv.parameter_set_id = ps.id
 JOIN parameter_types pt ON pv.parameter_type_id = pt.id
 WHERE ps.name = 'Default'
-ORDER BY pt.name;
-
--- 4.3 Управляющие параметры (is_control = TRUE)
-SELECT 
-    pt.name,
-    pt.short_name,
-    pt.description,
-    pt.default_value
-FROM parameter_types pt
-WHERE pt.is_control = TRUE
 ORDER BY pt.name;
 
 -- ============================================
@@ -301,44 +285,47 @@ WHERE a.is_active = TRUE
   AND a.token_encrypted IS NOT NULL;
 
 -- ============================================
--- 6. ЛОГИКИ (logics + logics_detail)
+-- 6. ЛОГИКИ (logics + logic_indicator_signals + logic_params)
 -- ============================================
 
--- 6.1 Все логики с деталями
+-- 6.1 Все логики с сигналами
 SELECT 
     l.name AS logic_name,
-    ld.formula,
-    s.name AS side,
-    a.name AS action
+    lis.position_event,
+    lis.position_side,
+    lis.signal_kind,
+    lis.formula,
+    i.code AS indicator
 FROM logics l
-JOIN logics_detail ld ON l.name = ld.logic_name
-JOIN sides s ON ld.side_id = s.id
-JOIN actions a ON ld.action_id = a.id
-ORDER BY l.name;
+JOIN logic_indicator_signals lis ON lis.logic_id = l.id
+JOIN indicators i ON i.id = lis.indicator_id
+ORDER BY l.name, lis.display_order;
 
--- 6.2 Логики на открытие лонга
+-- 6.2 Сигналы на открытие лонга
 SELECT 
     l.name,
-    ld.formula
+    lis.formula,
+    i.code AS indicator
 FROM logics l
-JOIN logics_detail ld ON l.name = ld.logic_name
-JOIN sides s ON ld.side_id = s.id
-JOIN actions a ON ld.action_id = a.id
-WHERE s.name = 'Open' AND a.name = 'Long';
+JOIN logic_indicator_signals lis ON lis.logic_id = l.id
+JOIN indicators i ON i.id = lis.indicator_id
+WHERE lis.position_event = 'open' AND lis.position_side = 'long';
 
--- 6.3 Демо-логика SMA (бумажная торговля)
+-- 6.3 Демо-логика SMA (бумажная торговля) — параметры из logic_params
 SELECT
     l.name,
     l.is_enabled,
-    l.position_size_pct,
-    l.max_open_positions,
-    l.initial_balance,
-    l.current_balance,
+    MAX(CASE WHEN lp.param_key = 'position_size_pct' THEN lp.param_value END) AS position_size_pct,
+    MAX(CASE WHEN lp.param_key = 'max_open_positions' THEN lp.param_value END) AS max_open_positions,
+    MAX(CASE WHEN lp.param_key = 'initial_balance' THEN lp.param_value END) AS initial_balance,
+    MAX(CASE WHEN lp.param_key = 'current_balance' THEN lp.param_value END) AS current_balance,
     a.account_code,
     a.account_type
 FROM logics l
 JOIN accounts a ON a.id = l.account_id
-WHERE l.name = 'SMA Price Cross Demo';
+LEFT JOIN logic_params lp ON lp.logic_id = l.id
+WHERE l.name = 'SMA Price Cross Demo'
+GROUP BY l.name, l.is_enabled, a.account_code, a.account_type;
 
 -- 6.4 Сигналы и бумаги демо-логики
 SELECT l.name, lis.position_side, lis.signal_kind, lis.formula, i.code AS indicator

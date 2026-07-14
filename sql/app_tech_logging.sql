@@ -37,7 +37,7 @@ BEGIN
     INSERT INTO parameter_values (parameter_set_id, parameter_type_id, value)
     VALUES (v_set_id, v_type_id, CASE WHEN COALESCE(p_enabled, FALSE) THEN '1' ELSE '0' END)
     ON CONFLICT (parameter_set_id, parameter_type_id)
-    DO UPDATE SET value = EXCLUDED.value, record_date = CURRENT_TIMESTAMP;
+    DO UPDATE SET value = EXCLUDED.value;
 END;
 $$;
 

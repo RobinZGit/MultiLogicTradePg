@@ -277,7 +277,7 @@ export class LogicBacktestPapersComponent implements OnChanges, OnDestroy {
         markers: buildTradeMarkers(secTrades),
         stops: buildStopMarkers(secTrades),
         shaded: buildShadedDisabledRanges(secTrades),
-        equity: buildEquityPoints(secTrades),
+        equity: buildEquityPoints(secTrades, this.dateFrom),
       });
     }
   }
@@ -300,10 +300,11 @@ export class LogicBacktestPapersComponent implements OnChanges, OnDestroy {
       this.dateTo
     );
     const win = tradeDtWindow(secTrades);
-    // Грузим от конца окна сделок (или date_to), затем догружаем историю до первой сделки.
+    // Грузим от конца окна сделок (или date_to), затем догружаем до начала теста (PnL с нуля).
     const endKey = win?.to || (this.dateTo ? `${this.dateTo} 23:59:59` : null);
     const before = endKey ? endKey.replace(' ', 'T') : undefined;
     st.focusDt = win?.to ?? null;
+    const coverFrom = this.periodCoverFrom(win?.from ?? null);
 
     st.loading = true;
     st.error = null;
@@ -325,7 +326,7 @@ export class LogicBacktestPapersComponent implements OnChanges, OnDestroy {
             st.status = 'Повторная загрузка свечей без фильтра даты…';
             const retry = this.securitiesApi.getPrices(securityId, tfId, 200).subscribe({
               next: (retryRows) =>
-                this.finishCandleLoad(securityId, st, retryRows, win?.from ?? null),
+                this.finishCandleLoad(securityId, st, retryRows, coverFrom),
               error: (err) => {
                 st.loading = false;
                 st.error = humanizeChartLoadError(err);
@@ -336,7 +337,7 @@ export class LogicBacktestPapersComponent implements OnChanges, OnDestroy {
             this.subs.add(retry);
             return;
           }
-          this.finishCandleLoad(securityId, st, rows, win?.from ?? null);
+          this.finishCandleLoad(securityId, st, rows, coverFrom);
         },
         error: () => {
           st.loading = false;
@@ -346,7 +347,17 @@ export class LogicBacktestPapersComponent implements OnChanges, OnDestroy {
     this.subs.add(sub);
   }
 
-  /** Догрузить историю, пока не покроем первую сделку (иначе маркеры вне окна). */
+  /** Начало покрытия свечей: date_from теста (якорь PnL=0), иначе первая сделка. */
+  private periodCoverFrom(firstTradeDt: string | null): string | null {
+    if (this.dateFrom) {
+      const d = String(this.dateFrom).trim();
+      if (/^\d{4}-\d{2}-\d{2}$/.test(d)) return `${d} 00:00:00`;
+      return d;
+    }
+    return firstTradeDt;
+  }
+
+  /** Догрузить историю до начала теста / первой сделки (PnL и маркеры в окне). */
   private finishCandleLoad(
     securityId: number,
     st: PaperChartState,

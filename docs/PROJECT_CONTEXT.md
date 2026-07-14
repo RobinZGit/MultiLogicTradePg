@@ -5,7 +5,7 @@
 > Включать **запросы пользователя текстом** (секция «Запросы пользователя»).
 
 **Репозиторий:** https://github.com/RobinZGit/MultiLogicTradePg  
-**Последнее обновление:** 2026-07-14 (v38: сигналы open/close + trend/counter; демо все акции, SL1%/TP3%)
+**Последнее обновление:** 2026-07-14 (выкладка: v39 + диаграмма схемы + PnL/%; GitHub Pages)
 
 ---
 
@@ -25,7 +25,7 @@
 | Файл | Назначение |
 |------|------------|
 | `00_create_database.sql` | **DROP + CREATE** базы `multilogictrade` (полное пересоздание) |
-| `01_multilogictrade_tables_and_data.sql` | Таблицы, индексы, справочники (идемпотентно, **v38**) |
+| `01_multilogictrade_tables_and_data.sql` | Таблицы, индексы, справочники (идемпотентно, **v39**) |
 | `02_multilogictrade_functions_and_procedures.sql` | Функции и процедуры (идемпотентно) |
 | `03_multilogictrade_examples.sql` | Примеры SELECT (необязательно) |
 
@@ -84,12 +84,14 @@
 - `invoke_formula` / `default_invoke_formula`: если не `calc_*` — многочлен;
 - UI: **«+»** у «Индикаторы» → форма (код, название, описание, формула); **«И.»** — справка по синтаксису;
 - API: `GET/POST /api/indicators`, `PUT /api/indicators/:id` (formula для `is_custom`);
-- `logics` + `logics_detail` — движок формул **ещё не реализован**;
+- `logics` + `logic_indicator_signals` / `logic_params` — торговые правила и параметры (EAV); таблица **`logics_detail` удалена** (v39);
 - UI **Операции** (`/operations`): пять сворачиваемых блоков — **«Параметры логики»**, **«Сигналы индикаторов»**, **«Стоп-лосс и тейк-профит»**, **«Ценные бумаги»**, **«Сделки»** (по умолчанию свёрнуты);
 - API logics: **`GET/PUT /api/logic-params`** — чтение/запись `logic_params`; signals/stops/securities/trades;
 - **Trade runner (PostgreSQL):** `run_trade_cycle()` → `process_logic_trades()` — open/close по **`position_event`** (не выводится из trend/counter); **перед сигналами** `logic_refresh_market_data`; парсинг `@CODE(...) condition` на **`timeframe` из logic_params**; **сигналы только на последней закрытой свече TF**; fake/real; idempotency `(logic_id, security_id, position_event, signal_kind, bar_dt, is_test, is_shadow)`;
 - **Расписание:** **Node fallback** каждые **15 с** (`TRADE_RUNNER_INTERVAL_MS`, Windows); **pg_cron** раз в минуту (Linux); **только при открытом Angular** (heartbeat → `APP_TRADE_RUNNER_HB`, TTL 90 с); ручной `POST /api/logic-trades/run`;
-- **Демо-логика** в `01`: `SMA Price Cross Demo` — SMA(20) M15: open long trend / close long counter / open short trend / close short counter; **все акции** (`instrument_market=stock`); SL **1%**, TP **3%** (security); 1M, 10%, max 3;
+- **Демо-логика** в `01`: `SMA Price Cross Demo` — SMA(20) M15: open long trend / close long counter / open short trend / close short counter; **все акции** (`instrument_market=stock`); SL **1%** (`security_resume` — по бумаге с возобновлением), TP **3%** (security); 1M, 10%, max 3;
+- UI **Позиции / Тестирование**: в шапке рядом с фин. результатом — **% от нач.** и **год.** (простая аннуализация);
+- График бумаги в тесте: линия PnL (фиолетовый ноль) с **начала периода теста** (`date_from`), не с первой сделки;
 - UI сигналов: кнопки **«+ Открытие» / «+ Закрытие»**, в picker — сторона Long/Short и тип Тренд/К-тренд; таблица: Действие | Сторона | Тип | …;
 
 ### Правило схемы БД
@@ -142,6 +144,7 @@
 48. **v32 проверка токена T-Bank:** `tbank_verify_token()`; красный баннер у блока позиций; клик → диалог.
 49. **v33 позиции UI + runner:** блок «Сделки» → **«Позиции»**; подблоки **Открытые** / **Закрытые**; общий фин. результат сверху; runner не блокирует цикл из‑за одной бумаги без данных M1.
 50. **v38 сигналы open/close:** `logic_indicator_signals.position_event`, `logic_trades.position_event`; UI «+ Открытие/+ Закрытие»; runner по `position_event`; демо — 4 сигнала SMA, все акции, SL1%/TP3%; графики бумаг теста (PnL-полоса, ⟸сд./сд.⟹, fullscreen); БД 00→02.
+51. **v39 чистка схемы:** DROP `logics_detail`; с `logics` убраны дубли `position_size_pct`/`max_open_positions`/`initial_balance`/`current_balance` (истина — `logic_params`); убраны legacy `indicator_values.is_signal/signal_type`, `parameter_types.is_control/is_fake_only/min/max/description`, `parameter_sets` extras, `parameter_values.record_date`, `prices.trades`/`created_at`, audit `created_at` у brokers/accounts, `security_types.note`.
 
 ### Автотесты
 
@@ -181,7 +184,6 @@
 - [ ] `logic_stops` в runner, `is_fictitious` — логика заполнения.
 - [ ] Заполнить `tbank_figi` где возможно (частично через `resolve_tbank_instrument_id`).
 - [ ] Влить реструктуризацию параметров индикаторов (черновик `Indicators_parameters_todo`).
-- [ ] Реализовать движок `logics_detail.formula`.
 - [ ] Прогнать полный UI-тест загрузки для вечных (`USDRUBF` и др.).
 - [ ] Параметры индикаторов per-security (редактирование колонок `param_*` в UI).
 - [ ] Параметр периода ATR для `logic_stops.value_unit = atr` (сейчас только хранение единицы).
@@ -203,6 +205,10 @@
 
 | Дата | Суть |
 |------|------|
+| 2026-07-14 | Выкладка main → GitHub Pages: v39, диаграмма FK, PnL с date_from, %/год. |
+| 2026-07-14 | Gear/структура БД: вкладка «Диаграмма» (таблицы + FK поле→поле); БД 00→02 |
+| 2026-07-14 | v39: DROP logics_detail; дубли колонок logics; legacy is_signal/parameter_*/prices.trades |
+| 2026-07-14 | Позиции+Тест: % от нач. и год.; демо/дефолт SL = security_resume |
 | 2026-07-14 | v38: сигналы open/close + trend/counter; демо все акции + SL1%/TP3%; выкладка + БД 00→02 |
 | 2026-07-14 | PnL — отдельная полоса под ценой; кнопки ⟸сд./сд.⟹; подблоки теста свёрнуты |
 | 2026-07-14 | PnL: разрыв в зоне «выкл.» (PHOR); Тестирование — все подблоки свёрнуты; fullscreen/timeout ранее |
@@ -297,3 +303,7 @@
 46. «Проверка токена T-Bank при сделках: если не валиден — сообщение и диалог ввода; если диалог уже открыт — не дублировать; пересобрать БД с нуля».
 47. «На графике бумаг теста: убрать кнопку пересчёта индикаторов; добавить полный экран; PnL/точки/стопы пересчитывать в фоне при rewind; бледные зоны пока бумага выкл.; Timeout has occurred при rewind — убрать».
 48. «Сигналы: open/close и trend/counter на форме; кнопки выбора; поле в таблице; демо — сигнал открытия и закрытия; все акции; take profit 3% и stop loss 1%; в репо; БД с нуля; обновить контекст».
+49. «Те же % от депозита и годовые — в строке Позиций (фин. результат) и в Тестировании; стоп-лосс по умолчанию — не просто по бумаге, а по бумаге с обновлением (security_resume)».
+50. «Сводка лишнего в БД → удалить: logics_detail, дубли колонок logics, legacy write-only колонки» (v39).
+51. «Комментарии таблиц/колонок оставить; в окне структуры (шестерёнка) — вкладка диаграммы со связями полей; потом БД с нуля».
+52. «Выложить в репозиторий для публикации на GitHub Pages».

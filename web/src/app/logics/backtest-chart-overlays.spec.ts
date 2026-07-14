@@ -190,6 +190,28 @@ describe('backtest-chart-overlays', () => {
     expect(pts[pts.length - 1].value).toBe(30);
   });
 
+  it('buildEquityPoints anchors zero at period start (test history)', () => {
+    const pts = buildEquityPoints(
+      [
+        trade({
+          side_name: 'Open',
+          bar_dt: '2026-04-10 10:00:00',
+          financial_result: null,
+        }),
+        trade({
+          id: 2,
+          side_name: 'Close',
+          bar_dt: '2026-04-10 11:00:00',
+          financial_result: -50,
+        }),
+      ],
+      '2026-01-01'
+    );
+    expect(pts[0]).toEqual({ dt: '2026-01-01', value: 0 });
+    expect(pts[1].value).toBe(-50);
+    expect(pts[1].dt).toBe('2026-04-10 11:00:00');
+  });
+
   it('isDtInsideDisabledShade is strict between bounds', () => {
     const ranges = [
       { startDt: '2026-06-23 19:15:00', endDt: '2026-06-24 17:15:00', label: 'выкл.' },

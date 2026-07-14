@@ -2,6 +2,7 @@ import { Component, EventEmitter, Input, OnChanges, Output, SimpleChanges } from
 import { CommonModule } from '@angular/common';
 import { SchemaService } from '../services/schema.service';
 import { DatabaseSchema, SchemaRoutine } from '../models/schema.model';
+import { SchemaDiagramLayout, buildSchemaDiagram, edgePath } from './schema-fk';
 
 @Component({
   selector: 'app-db-schema-panel',
@@ -20,6 +21,11 @@ export class DbSchemaPanelComponent implements OnChanges {
   schemaMode: 'live' | 'offline' = 'live';
   expanded = new Set<string>();
   panelWide = false;
+  activeTab: 'tree' | 'diagram' = 'tree';
+  diagram: SchemaDiagramLayout | null = null;
+  hoverTable: string | null = null;
+
+  readonly edgePath = edgePath;
 
   private readonly rootSections = [
     'root:tables',
@@ -43,16 +49,36 @@ export class DbSchemaPanelComponent implements OnChanges {
       next: (data) => {
         this.schema = data;
         this.schemaMode = data.sourceMode ?? this.schemaService.lastSourceMode;
+        this.diagram = buildSchemaDiagram(data);
         this.loading = false;
         this.expanded.clear();
-        this.panelWide = false;
+        this.panelWide = this.activeTab === 'diagram';
       },
       error: () => {
         this.error =
           'Не удалось загрузить структуру БД ни из PostgreSQL, ни из SQL-скриптов репозитория.';
         this.loading = false;
+        this.diagram = null;
       },
     });
+  }
+
+  setTab(tab: 'tree' | 'diagram'): void {
+    this.activeTab = tab;
+    this.panelWide = tab === 'diagram' || this.shouldWidenTree();
+  }
+
+  openTableFromDiagram(tableName: string): void {
+    this.activeTab = 'tree';
+    this.expanded.clear();
+    this.expanded.add('root:tables');
+    this.expanded.add(`table:${tableName}`);
+    this.expanded.add(`table:${tableName}:cols`);
+    this.panelWide = true;
+    setTimeout(() => {
+      const el = document.querySelector(`[data-table="${tableName}"]`);
+      el?.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+    }, 0);
   }
 
   close(): void {
@@ -161,6 +187,15 @@ pre{margin:0;padding:16px;white-space:pre-wrap;word-break:break-word;font-size:1
     });
   }
 
+  private shouldWidenTree(): boolean {
+    return [...this.expanded].some(
+      (k) =>
+        k.startsWith('table:') ||
+        k === 'root:functions' ||
+        k === 'root:procedures'
+    );
+  }
+
   private collapseAllTables(): void {
     for (const t of this.schema?.tables ?? []) {
       this.collapseTableBranch(t.name);
@@ -177,12 +212,7 @@ pre{margin:0;padding:16px;white-space:pre-wrap;word-break:break-word;font-size:1
   }
 
   private syncPanelWide(): void {
-    this.panelWide = [...this.expanded].some(
-      (k) =>
-        k.startsWith('table:') ||
-        k === 'root:functions' ||
-        k === 'root:procedures'
-    );
+    this.panelWide = this.activeTab === 'diagram' || this.shouldWidenTree();
   }
 
   private escapeHtml(text: string): string {

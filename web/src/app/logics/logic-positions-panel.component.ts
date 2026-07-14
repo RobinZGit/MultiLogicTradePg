@@ -214,57 +214,44 @@ export class LogicPositionsPanelComponent {
 
 
 
-  /** Число календарных дней периода теста (включительно). */
-
-  testPeriodDays(): number | null {
-
-    const from = this.backtestRun?.date_from;
-
-    const to = this.backtestRun?.date_to;
-
-    if (!from || !to) return null;
-
-    const ms = Date.parse(to) - Date.parse(from);
-
-    if (!Number.isFinite(ms) || ms < 0) return null;
-
-    return Math.max(1, Math.round(ms / 86400000) + 1);
-
+  /** Число календарных дней для аннуализации (включительно). */
+  periodDaysForReturn(): number | null {
+    if (this.isTest) {
+      const from = this.backtestRun?.date_from;
+      const to = this.backtestRun?.date_to;
+      if (!from || !to) return null;
+      const ms = Date.parse(to) - Date.parse(from);
+      if (!Number.isFinite(ms) || ms < 0) return null;
+      return Math.max(1, Math.round(ms / 86400000) + 1);
+    }
+    // Live: от первой сделки до сегодня
+    const keys = this.trades
+      .map((t) => String(t.bar_dt || t.executed_at || '').slice(0, 10))
+      .filter((d) => /^\d{4}-\d{2}-\d{2}$/.test(d))
+      .sort();
+    if (keys.length === 0) return null;
+    const fromMs = Date.parse(keys[0]);
+    const today = new Date();
+    const toKey = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}-${String(today.getDate()).padStart(2, '0')}`;
+    const toMs = Date.parse(toKey);
+    if (!Number.isFinite(fromMs) || !Number.isFinite(toMs) || toMs < fromMs) return null;
+    return Math.max(1, Math.round((toMs - fromMs) / 86400000) + 1);
   }
 
-
-
-  /** Фин. результат в % от начального остатка. */
-
-  testReturnPct(): number | null {
-
-    if (!this.isTest) return null;
-
+  /** Фин. результат в % от начального остатка (Позиции и Тестирование). */
+  returnPct(): number | null {
     const initial = Number(this.logicRow.initial_balance);
-
     if (!Number.isFinite(initial) || initial <= 0) return null;
-
     return (this.displayFinancialResult() / initial) * 100;
-
   }
-
-
 
   /** Простая аннуализация: return% × (365 / дни периода). */
-
-  testAnnualPct(): number | null {
-
-    const ret = this.testReturnPct();
-
-    const days = this.testPeriodDays();
-
+  annualPct(): number | null {
+    const ret = this.returnPct();
+    const days = this.periodDaysForReturn();
     if (ret == null || days == null || days <= 0) return null;
-
     return ret * (365 / days);
-
   }
-
-
 
   formatPct(value: number | null | undefined): string {
 

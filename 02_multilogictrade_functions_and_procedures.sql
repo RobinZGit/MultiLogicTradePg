@@ -390,7 +390,7 @@ BEGIN
     INSERT INTO parameter_values (parameter_set_id, parameter_type_id, value)
     VALUES (v_set_id, v_type_id, COALESCE(btrim(p_token), ''))
     ON CONFLICT (parameter_set_id, parameter_type_id)
-    DO UPDATE SET value = EXCLUDED.value, record_date = CURRENT_TIMESTAMP;
+    DO UPDATE SET value = EXCLUDED.value;
 END;
 $$;
 
@@ -401,6 +401,9 @@ COMMENT ON PROCEDURE set_tbank_token IS
 -- Процедура: insert_candle
 -- Вставляет/обновляет одну свечу (UPSERT)
 -- ============================================
+DROP PROCEDURE IF EXISTS insert_candle(INTEGER, INTEGER, TIMESTAMP, NUMERIC, NUMERIC, NUMERIC, NUMERIC, NUMERIC, NUMERIC, INTEGER, VARCHAR);
+DROP PROCEDURE IF EXISTS insert_candle(INTEGER, INTEGER, TIMESTAMP, NUMERIC, NUMERIC, NUMERIC, NUMERIC, NUMERIC, NUMERIC, INTEGER);
+
 CREATE OR REPLACE PROCEDURE insert_candle(
     p_security_id INTEGER,
     p_timeframe_id INTEGER,
@@ -411,7 +414,6 @@ CREATE OR REPLACE PROCEDURE insert_candle(
     p_close NUMERIC(18,6),
     p_volume NUMERIC(20,2) DEFAULT NULL,
     p_value NUMERIC(20,2) DEFAULT NULL,
-    p_trades INTEGER DEFAULT NULL,
     p_contract_prefix VARCHAR DEFAULT NULL
 )
 LANGUAGE plpgsql AS $$
@@ -419,12 +421,12 @@ BEGIN
     INSERT INTO prices (
         security_id, timeframe_id, dt,
         open_price, high_price, low_price, close_price,
-        volume, value, trades, contract_prefix
+        volume, value, contract_prefix
     )
     VALUES (
         p_security_id, p_timeframe_id, p_dt,
         p_open, p_high, p_low, p_close,
-        p_volume, p_value, p_trades, p_contract_prefix
+        p_volume, p_value, p_contract_prefix
     )
     ON CONFLICT (security_id, timeframe_id, dt)
     DO UPDATE SET
@@ -434,7 +436,6 @@ BEGIN
         close_price = EXCLUDED.close_price,
         volume = EXCLUDED.volume,
         value = EXCLUDED.value,
-        trades = EXCLUDED.trades,
         contract_prefix = COALESCE(EXCLUDED.contract_prefix, prices.contract_prefix);
 END;
 $$;
@@ -478,7 +479,7 @@ BEGIN
     INSERT INTO parameter_values (parameter_set_id, parameter_type_id, value)
     VALUES (v_set_id, v_type_id, CASE WHEN COALESCE(p_enabled, FALSE) THEN '1' ELSE '0' END)
     ON CONFLICT (parameter_set_id, parameter_type_id)
-    DO UPDATE SET value = EXCLUDED.value, record_date = CURRENT_TIMESTAMP;
+    DO UPDATE SET value = EXCLUDED.value;
 END;
 $$;
 
@@ -545,7 +546,7 @@ BEGIN
     INSERT INTO parameter_values (parameter_set_id, parameter_type_id, value)
     VALUES (v_set_id, v_type_id, to_char(CURRENT_TIMESTAMP, 'YYYY-MM-DD"T"HH24:MI:SS'))
     ON CONFLICT (parameter_set_id, parameter_type_id)
-    DO UPDATE SET value = EXCLUDED.value, record_date = CURRENT_TIMESTAMP;
+    DO UPDATE SET value = EXCLUDED.value;
 END;
 $$;
 
@@ -566,7 +567,7 @@ BEGIN
     INSERT INTO parameter_values (parameter_set_id, parameter_type_id, value)
     VALUES (v_set_id, v_type_id, '')
     ON CONFLICT (parameter_set_id, parameter_type_id)
-    DO UPDATE SET value = '', record_date = CURRENT_TIMESTAMP;
+    DO UPDATE SET value = '';
 END;
 $$;
 
@@ -648,7 +649,7 @@ COMMENT ON FUNCTION logic_trade_log(INTEGER, TEXT, TEXT, JSONB, INTEGER, INTEGER
 'События trade runner по конкретной логике';
 
 
-COMMENT ON PROCEDURE insert_candle(INTEGER, INTEGER, TIMESTAMP, NUMERIC, NUMERIC, NUMERIC, NUMERIC, NUMERIC, NUMERIC, INTEGER, VARCHAR) IS 
+COMMENT ON PROCEDURE insert_candle(INTEGER, INTEGER, TIMESTAMP, NUMERIC, NUMERIC, NUMERIC, NUMERIC, NUMERIC, NUMERIC, VARCHAR) IS 
 'Вставляет/обновляет одну свечу. contract_prefix — тикер контракта (Si-6.26) для фьючерсов';
 
 -- ============================================
@@ -3400,9 +3401,7 @@ BEGIN
                 v_row.param_k_period, v_row.param_d_period, v_row.param_smooth
             )
         LOOP
-            PERFORM insert_indicator_value(
-                v_row.indicator_id, v_vt_id, v_row.security_id, p_timeframe_id,
-                v_pt.dt, v_pt.value, FALSE, NULL, NOT p_incremental
+            PERFORM insert_indicator_value(v_row.indicator_id, v_vt_id, v_row.security_id, p_timeframe_id, v_pt.dt, v_pt.value, NOT p_incremental
             );
         END LOOP;
     ELSE
@@ -3415,9 +3414,7 @@ BEGIN
                 v_row.param_k_period, v_row.param_d_period, v_row.param_smooth
             )
         LOOP
-            PERFORM insert_indicator_value(
-                v_row.indicator_id, v_vt_id, v_row.security_id, p_timeframe_id,
-                v_pt.dt, v_pt.value, FALSE, NULL, NOT p_incremental
+            PERFORM insert_indicator_value(v_row.indicator_id, v_vt_id, v_row.security_id, p_timeframe_id, v_pt.dt, v_pt.value, NOT p_incremental
             );
         END LOOP;
     END IF;
@@ -3931,8 +3928,8 @@ BEGIN
                     END IF;
 
                     -- Вставляем новое значение RSI
-                    INSERT INTO indicator_values (indicator_id, indicator_value_type_id, security_id, timeframe_id, dt, value, is_signal, signal_type)
-                    VALUES (p_indicator_id, v_value_type_id, p_security_id, p_timeframe_id, v_dt, v_rsi, FALSE, NULL);
+                    INSERT INTO indicator_values (indicator_id, indicator_value_type_id, security_id, timeframe_id, dt, value)
+                    VALUES (p_indicator_id, v_value_type_id, p_security_id, p_timeframe_id, v_dt, v_rsi);
                 END IF;
             END IF;
 
@@ -3943,13 +3940,13 @@ BEGIN
             IF v_rsi >= v_overbought THEN
                 SELECT id INTO v_value_type_id FROM indicator_value_types WHERE indicator_id = p_indicator_id AND code = 'OVERBOUGHT';
                 IF v_value_type_id IS NOT NULL THEN
-                    PERFORM insert_indicator_value(p_indicator_id, v_value_type_id, p_security_id, p_timeframe_id, v_dt, v_overbought, TRUE, 'overbought', p_overwrite);
+                    PERFORM insert_indicator_value(p_indicator_id, v_value_type_id, p_security_id, p_timeframe_id, v_dt, v_overbought, p_overwrite);
                 END IF;
             -- Если RSI <= oversold -- создаем сигнал перепроданности
             ELSIF v_rsi <= v_oversold THEN
                 SELECT id INTO v_value_type_id FROM indicator_value_types WHERE indicator_id = p_indicator_id AND code = 'OVERSOLD';
                 IF v_value_type_id IS NOT NULL THEN
-                    PERFORM insert_indicator_value(p_indicator_id, v_value_type_id, p_security_id, p_timeframe_id, v_dt, v_oversold, TRUE, 'oversold', p_overwrite);
+                    PERFORM insert_indicator_value(p_indicator_id, v_value_type_id, p_security_id, p_timeframe_id, v_dt, v_oversold, p_overwrite);
                 END IF;
             END IF;
         END LOOP;
@@ -3975,7 +3972,7 @@ BEGIN
             -- Записываем значение SMA
             SELECT id INTO v_value_type_id FROM indicator_value_types WHERE indicator_id = p_indicator_id AND code = 'VALUE';
             IF v_value_type_id IS NOT NULL THEN
-                PERFORM insert_indicator_value(p_indicator_id, v_value_type_id, p_security_id, p_timeframe_id, v_dt, v_sma, FALSE, NULL, p_overwrite);
+                PERFORM insert_indicator_value(p_indicator_id, v_value_type_id, p_security_id, p_timeframe_id, v_dt, v_sma, p_overwrite);
                 v_records_inserted := v_records_inserted + 1;
             END IF;
         END LOOP;
@@ -4010,7 +4007,7 @@ BEGIN
             -- Записываем значение EMA
             SELECT id INTO v_value_type_id FROM indicator_value_types WHERE indicator_id = p_indicator_id AND code = 'VALUE';
             IF v_value_type_id IS NOT NULL THEN
-                PERFORM insert_indicator_value(p_indicator_id, v_value_type_id, p_security_id, p_timeframe_id, v_dt, v_ema, FALSE, NULL, p_overwrite);
+                PERFORM insert_indicator_value(p_indicator_id, v_value_type_id, p_security_id, p_timeframe_id, v_dt, v_ema, p_overwrite);
                 v_records_inserted := v_records_inserted + 1;
             END IF;
         END LOOP;
@@ -4067,25 +4064,25 @@ BEGIN
             -- Записываем MACD line
             SELECT id INTO v_value_type_id FROM indicator_value_types WHERE indicator_id = p_indicator_id AND code = 'MACD';
             IF v_value_type_id IS NOT NULL THEN
-                PERFORM insert_indicator_value(p_indicator_id, v_value_type_id, p_security_id, p_timeframe_id, v_dt, v_macd, FALSE, NULL, p_overwrite);
+                PERFORM insert_indicator_value(p_indicator_id, v_value_type_id, p_security_id, p_timeframe_id, v_dt, v_macd, p_overwrite);
             END IF;
 
             -- Записываем Signal line
             SELECT id INTO v_value_type_id FROM indicator_value_types WHERE indicator_id = p_indicator_id AND code = 'SIGNAL';
             IF v_value_type_id IS NOT NULL THEN
-                PERFORM insert_indicator_value(p_indicator_id, v_value_type_id, p_security_id, p_timeframe_id, v_dt, v_macd_signal, FALSE, NULL, p_overwrite);
+                PERFORM insert_indicator_value(p_indicator_id, v_value_type_id, p_security_id, p_timeframe_id, v_dt, v_macd_signal, p_overwrite);
             END IF;
 
             -- Записываем Histogram
             SELECT id INTO v_value_type_id FROM indicator_value_types WHERE indicator_id = p_indicator_id AND code = 'HISTOGRAM';
             IF v_value_type_id IS NOT NULL THEN
-                PERFORM insert_indicator_value(p_indicator_id, v_value_type_id, p_security_id, p_timeframe_id, v_dt, v_macd_histogram, FALSE, NULL, p_overwrite);
+                PERFORM insert_indicator_value(p_indicator_id, v_value_type_id, p_security_id, p_timeframe_id, v_dt, v_macd_histogram, p_overwrite);
             END IF;
 
             -- Записываем нулевую линию (порог)
             SELECT id INTO v_value_type_id FROM indicator_value_types WHERE indicator_id = p_indicator_id AND code = 'ZERO';
             IF v_value_type_id IS NOT NULL THEN
-                PERFORM insert_indicator_value(p_indicator_id, v_value_type_id, p_security_id, p_timeframe_id, v_dt, 0, FALSE, NULL, p_overwrite);
+                PERFORM insert_indicator_value(p_indicator_id, v_value_type_id, p_security_id, p_timeframe_id, v_dt, 0, p_overwrite);
             END IF;
 
             v_records_inserted := v_records_inserted + 3;
@@ -4125,26 +4122,25 @@ BEGIN
             -- Записываем Upper band
             SELECT id INTO v_value_type_id FROM indicator_value_types WHERE indicator_id = p_indicator_id AND code = 'UPPER';
             IF v_value_type_id IS NOT NULL THEN
-                PERFORM insert_indicator_value(p_indicator_id, v_value_type_id, p_security_id, p_timeframe_id, v_dt, v_bb_upper, FALSE, NULL, p_overwrite);
+                PERFORM insert_indicator_value(p_indicator_id, v_value_type_id, p_security_id, p_timeframe_id, v_dt, v_bb_upper, p_overwrite);
             END IF;
 
             -- Записываем Middle band
             SELECT id INTO v_value_type_id FROM indicator_value_types WHERE indicator_id = p_indicator_id AND code = 'MIDDLE';
             IF v_value_type_id IS NOT NULL THEN
-                PERFORM insert_indicator_value(p_indicator_id, v_value_type_id, p_security_id, p_timeframe_id, v_dt, v_bb_middle, FALSE, NULL, p_overwrite);
+                PERFORM insert_indicator_value(p_indicator_id, v_value_type_id, p_security_id, p_timeframe_id, v_dt, v_bb_middle, p_overwrite);
             END IF;
 
             -- Записываем Lower band
             SELECT id INTO v_value_type_id FROM indicator_value_types WHERE indicator_id = p_indicator_id AND code = 'LOWER';
             IF v_value_type_id IS NOT NULL THEN
-                PERFORM insert_indicator_value(p_indicator_id, v_value_type_id, p_security_id, p_timeframe_id, v_dt, v_bb_lower, FALSE, NULL, p_overwrite);
+                PERFORM insert_indicator_value(p_indicator_id, v_value_type_id, p_security_id, p_timeframe_id, v_dt, v_bb_lower, p_overwrite);
             END IF;
 
             -- Записываем Bandwidth
             SELECT id INTO v_value_type_id FROM indicator_value_types WHERE indicator_id = p_indicator_id AND code = 'BANDWIDTH';
             IF v_value_type_id IS NOT NULL THEN
-                PERFORM insert_indicator_value(p_indicator_id, v_value_type_id, p_security_id, p_timeframe_id, v_dt, 
-                    (v_bb_upper - v_bb_lower) / v_bb_middle, FALSE, NULL, p_overwrite);
+                PERFORM insert_indicator_value(p_indicator_id, v_value_type_id, p_security_id, p_timeframe_id, v_dt, (v_bb_upper - v_bb_lower) / v_bb_middle, p_overwrite);
             END IF;
 
             v_records_inserted := v_records_inserted + 4;
@@ -4186,14 +4182,13 @@ BEGIN
                AND v_dts[i] < (p_date_to + INTERVAL '1 day')::TIMESTAMP THEN
                 SELECT id INTO v_value_type_id FROM indicator_value_types WHERE indicator_id = p_indicator_id AND code = 'ATR';
                 IF v_value_type_id IS NOT NULL THEN
-                    PERFORM insert_indicator_value(p_indicator_id, v_value_type_id, p_security_id, p_timeframe_id, v_dt, v_atr, FALSE, NULL, p_overwrite);
+                    PERFORM insert_indicator_value(p_indicator_id, v_value_type_id, p_security_id, p_timeframe_id, v_dt, v_atr, p_overwrite);
                 END IF;
 
                 -- Записываем ATR в процентах от цены
                 SELECT id INTO v_value_type_id FROM indicator_value_types WHERE indicator_id = p_indicator_id AND code = 'ATR_PCT';
                 IF v_value_type_id IS NOT NULL THEN
-                    PERFORM insert_indicator_value(p_indicator_id, v_value_type_id, p_security_id, p_timeframe_id, v_dt, 
-                        (v_atr / v_closes[i]) * 100, FALSE, NULL, p_overwrite);
+                    PERFORM insert_indicator_value(p_indicator_id, v_value_type_id, p_security_id, p_timeframe_id, v_dt, (v_atr / v_closes[i]) * 100, p_overwrite);
                 END IF;
 
                 v_records_inserted := v_records_inserted + 2;
@@ -4231,7 +4226,7 @@ BEGIN
             -- Записываем %K линию
             SELECT id INTO v_value_type_id FROM indicator_value_types WHERE indicator_id = p_indicator_id AND code = 'K';
             IF v_value_type_id IS NOT NULL THEN
-                PERFORM insert_indicator_value(p_indicator_id, v_value_type_id, p_security_id, p_timeframe_id, v_dt, v_stoch_k, FALSE, NULL, p_overwrite);
+                PERFORM insert_indicator_value(p_indicator_id, v_value_type_id, p_security_id, p_timeframe_id, v_dt, v_stoch_k, p_overwrite);
             END IF;
 
             -- Расчет %D (SMA от %K, период 3)
@@ -4259,7 +4254,7 @@ BEGIN
                 -- Записываем %D линию
                 SELECT id INTO v_value_type_id FROM indicator_value_types WHERE indicator_id = p_indicator_id AND code = 'D';
                 IF v_value_type_id IS NOT NULL THEN
-                    PERFORM insert_indicator_value(p_indicator_id, v_value_type_id, p_security_id, p_timeframe_id, v_dt, v_stoch_d, FALSE, NULL, p_overwrite);
+                    PERFORM insert_indicator_value(p_indicator_id, v_value_type_id, p_security_id, p_timeframe_id, v_dt, v_stoch_d, p_overwrite);
                 END IF;
 
                 -- ============================================================
@@ -4269,13 +4264,13 @@ BEGIN
                     -- Перекупленность: %K >= 80
                     SELECT id INTO v_value_type_id FROM indicator_value_types WHERE indicator_id = p_indicator_id AND code = 'OVERBOUGHT';
                     IF v_value_type_id IS NOT NULL THEN
-                        PERFORM insert_indicator_value(p_indicator_id, v_value_type_id, p_security_id, p_timeframe_id, v_dt, 80, TRUE, 'overbought', p_overwrite);
+                        PERFORM insert_indicator_value(p_indicator_id, v_value_type_id, p_security_id, p_timeframe_id, v_dt, 80, p_overwrite);
                     END IF;
                 ELSIF v_stoch_k <= 20 THEN
                     -- Перепроданность: %K <= 20
                     SELECT id INTO v_value_type_id FROM indicator_value_types WHERE indicator_id = p_indicator_id AND code = 'OVERSOLD';
                     IF v_value_type_id IS NOT NULL THEN
-                        PERFORM insert_indicator_value(p_indicator_id, v_value_type_id, p_security_id, p_timeframe_id, v_dt, 20, TRUE, 'oversold', p_overwrite);
+                        PERFORM insert_indicator_value(p_indicator_id, v_value_type_id, p_security_id, p_timeframe_id, v_dt, 20, p_overwrite);
                     END IF;
                 END IF;
 
@@ -4348,10 +4343,10 @@ COMMENT ON PROCEDURE calculate_indicator(INTEGER, INTEGER, INTEGER, DATE, DATE, 
 --   p_timeframe_id      - ID таймфрейма (timeframes.id)
 --   p_dt                - Дата/время свечи
 --   p_value             - Значение индикатора
---   p_is_signal         - Это сигнальное значение? (TRUE/FALSE)
---   p_signal_type       - Тип сигнала: buy, sell, overbought, oversold
 --   p_overwrite         - Перезаписать существующую запись?
 -- ============================================
+DROP FUNCTION IF EXISTS insert_indicator_value(INTEGER, INTEGER, INTEGER, INTEGER, TIMESTAMP, NUMERIC, BOOLEAN, VARCHAR, BOOLEAN);
+
 CREATE OR REPLACE FUNCTION insert_indicator_value(
     p_indicator_id INTEGER,
     p_value_type_id INTEGER,
@@ -4359,8 +4354,6 @@ CREATE OR REPLACE FUNCTION insert_indicator_value(
     p_timeframe_id INTEGER,
     p_dt TIMESTAMP,
     p_value NUMERIC(18,6),
-    p_is_signal BOOLEAN,
-    p_signal_type VARCHAR(20),
     p_overwrite BOOLEAN
 )
 RETURNS VOID AS $$
@@ -4368,23 +4361,21 @@ BEGIN
     IF p_overwrite THEN
         INSERT INTO indicator_values (
             indicator_id, indicator_value_type_id, security_id, timeframe_id,
-            dt, value, is_signal, signal_type
+            dt, value
         ) VALUES (
             p_indicator_id, p_value_type_id, p_security_id, p_timeframe_id,
-            p_dt, p_value, p_is_signal, p_signal_type
+            p_dt, p_value
         )
         ON CONFLICT (indicator_id, indicator_value_type_id, security_id, timeframe_id, dt)
         DO UPDATE SET
-            value = EXCLUDED.value,
-            is_signal = EXCLUDED.is_signal,
-            signal_type = EXCLUDED.signal_type;
+            value = EXCLUDED.value;
     ELSE
         INSERT INTO indicator_values (
             indicator_id, indicator_value_type_id, security_id, timeframe_id,
-            dt, value, is_signal, signal_type
+            dt, value
         ) VALUES (
             p_indicator_id, p_value_type_id, p_security_id, p_timeframe_id,
-            p_dt, p_value, p_is_signal, p_signal_type
+            p_dt, p_value
         )
         ON CONFLICT (indicator_id, indicator_value_type_id, security_id, timeframe_id, dt)
         DO NOTHING;
@@ -4451,8 +4442,6 @@ BEGIN
                 p_timeframe_id,
                 v_dt,
                 v_value,
-                v_value_type.is_threshold,
-                CASE WHEN v_value_type.is_threshold THEN lower(v_value_type.code) ELSE NULL END,
                 p_overwrite
             );
             v_records_inserted := v_records_inserted + 1;
@@ -4470,17 +4459,8 @@ COMMENT ON PROCEDURE calculate_indicator_via_script IS
 -- ============================================
 -- КОММЕНТАРИЙ К ФУНКЦИИ insert_indicator_value
 -- ============================================
-COMMENT ON FUNCTION insert_indicator_value(INTEGER, INTEGER, INTEGER, INTEGER, TIMESTAMP, NUMERIC, BOOLEAN, VARCHAR, BOOLEAN) IS 
-'Вспомогательная функция для вставки/обновления одного значения индикатора.
-
-Проверяет существование записи по уникальному индексу:
-(indicator_id, indicator_value_type_id, security_id, timeframe_id, dt)
-
-Если запись существует и p_overwrite=FALSE -- пропускает.
-Если запись существует и p_overwrite=TRUE -- удаляет старую и вставляет новую.
-Если записи нет -- просто вставляет новую.
-
-Используется внутри calculate_indicator для записи каждого значения.';
+COMMENT ON FUNCTION insert_indicator_value(INTEGER, INTEGER, INTEGER, INTEGER, TIMESTAMP, NUMERIC, BOOLEAN) IS
+'Вставка/обновление одного значения индикатора (UPSERT по уникальному индексу).';
 
 -- ============================================
 -- Процедура: calculate_all_indicators
@@ -9148,7 +9128,6 @@ BEGIN
                         v_candle_close,
                         v_candle_volume,
                         NULL,
-                        NULL,
                         v_store_contract
                     );
 
@@ -9388,7 +9367,7 @@ BEGIN
         CALL insert_candle(
             p_security_id, p_timeframe_id, v_dt,
             v_open, v_high, v_low, v_close,
-            v_volume, v_value, NULL, v_store_contract
+            v_volume, v_value, v_store_contract
         );
 
         v_records_loaded := v_records_loaded + 1;

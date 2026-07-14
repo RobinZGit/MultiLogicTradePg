@@ -137,7 +137,7 @@ export class LogicsComponent implements OnInit, OnDestroy {
 
   stopForm: StopFormState = null;
   stopFormDraft: StopFormDraft = {
-    scope_type: 'security',
+    scope_type: 'security_resume',
     value: '',
     value_unit: 'percent',
   };
@@ -1072,7 +1072,8 @@ export class LogicsComponent implements OnInit, OnDestroy {
     event.stopPropagation();
     this.stopForm = { logicId, ruleKind };
     this.stopFormDraft = {
-      scope_type: 'security',
+      // Стоп-лосс по умолчанию — по бумаге с возобновлением; тейк — по бумаге
+      scope_type: ruleKind === 'stop_loss' ? 'security_resume' : 'security',
       value: '',
       value_unit: 'percent',
     };

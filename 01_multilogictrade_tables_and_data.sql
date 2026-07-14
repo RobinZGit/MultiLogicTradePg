@@ -1,6 +1,8 @@
 -- ============================================
 -- MultiLogicTrade — шаг 1: таблицы и справочники
--- Версия: v38 (идемпотентный запуск)
+-- Версия: v39 (идемпотентный запуск)
+-- v39: DROP logics_detail; убраны дубликаты колонок logics → logic_params;
+--      legacy-поля indicator_values/parameter_*; prices.trades
 -- v38: logic_indicator_signals.position_event (open|close); logic_trades.position_event
 -- ============================================
 -- Подключение: база multilogictrade
@@ -107,26 +109,27 @@ END $$;
 -- ============================================
 CREATE TABLE IF NOT EXISTS security_types (
     id SERIAL PRIMARY KEY,
-    name VARCHAR(50) NOT NULL UNIQUE,
-    note VARCHAR(100)
+    name VARCHAR(50) NOT NULL UNIQUE
 );
 
-INSERT INTO security_types (name, note) VALUES
-    ('Stock', 'Акции'),
-    ('Bond', 'Облигации'),
-    ('Futures', 'Фьючерсы'),
-    ('Options', 'Опционы'),
-    ('ETF', 'Биржевые фонды'),
-    ('CFD', 'Контракты на разницу'),
-    ('Warrant', 'Варранты'),
-    ('Swap', 'Свопы'),
-    ('Commodity', 'Товары/сырьё'),
-    ('Index', 'Индексы'),
-    ('Forex', 'Валютные пары'),
-    ('MutualFund', 'Паевые фонды'),
-    ('PreferredStock', 'Привилегированные акции'),
-    ('ConvertibleBond', 'Конвертируемые облигации')
+INSERT INTO security_types (name) VALUES
+    ('Stock'),
+    ('Bond'),
+    ('Futures'),
+    ('Options'),
+    ('ETF'),
+    ('CFD'),
+    ('Warrant'),
+    ('Swap'),
+    ('Commodity'),
+    ('Index'),
+    ('Forex'),
+    ('MutualFund'),
+    ('PreferredStock'),
+    ('ConvertibleBond')
 ON CONFLICT (name) DO NOTHING;
+
+ALTER TABLE security_types DROP COLUMN IF EXISTS note;
 
 COMMENT ON TABLE security_types IS 'Таблица типов ценных бумаг';
 
@@ -369,9 +372,10 @@ CREATE TABLE IF NOT EXISTS brokers (
     code VARCHAR(50) NOT NULL UNIQUE,
     name VARCHAR(100) NOT NULL,
     api_url VARCHAR(255),
-    is_active BOOLEAN NOT NULL DEFAULT TRUE,
-    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+    is_active BOOLEAN NOT NULL DEFAULT TRUE
 );
+
+ALTER TABLE brokers DROP COLUMN IF EXISTS created_at;
 
 INSERT INTO brokers (code, name, api_url) VALUES
     ('T-BANK', 'T-Bank (Т-Банк)', 'https://invest-public-api.tinkoff.ru/rest')
@@ -390,9 +394,10 @@ CREATE TABLE IF NOT EXISTS accounts (
     token_encrypted TEXT,
     token_hash VARCHAR(64),
     is_active BOOLEAN NOT NULL DEFAULT TRUE,
-    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
+
+ALTER TABLE accounts DROP COLUMN IF EXISTS created_at;
 
 CREATE UNIQUE INDEX IF NOT EXISTS idx_accounts_broker_account_code ON accounts(broker_id, account_code);
 
@@ -415,13 +420,13 @@ CREATE TABLE IF NOT EXISTS prices (
     close_price NUMERIC(18, 6) NOT NULL,
     volume NUMERIC(20, 2),
     value NUMERIC(20, 2),
-    trades INTEGER,
-    contract_prefix VARCHAR(50),
-    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+    contract_prefix VARCHAR(50)
 );
 
 -- Существующие БД: CREATE TABLE IF NOT EXISTS не добавляет новые колонки
 ALTER TABLE prices ADD COLUMN IF NOT EXISTS contract_prefix VARCHAR(50);
+ALTER TABLE prices DROP COLUMN IF EXISTS trades;
+ALTER TABLE prices DROP COLUMN IF EXISTS created_at;
 
 CREATE INDEX IF NOT EXISTS idx_prices_security_id ON prices(security_id);
 CREATE INDEX IF NOT EXISTS idx_prices_timeframe_id ON prices(timeframe_id);
@@ -443,27 +448,28 @@ CREATE TABLE IF NOT EXISTS parameter_types (
     name VARCHAR(100) NOT NULL UNIQUE,
     short_name VARCHAR(20) NOT NULL UNIQUE,
     value_type VARCHAR(20) NOT NULL,
-    is_control BOOLEAN NOT NULL DEFAULT FALSE,
-    is_fake_only BOOLEAN NOT NULL DEFAULT FALSE,
-    description TEXT,
-    default_value TEXT,
-    min_value NUMERIC(18, 6),
-    max_value NUMERIC(18, 6),
-    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+    default_value TEXT
 );
+
+ALTER TABLE parameter_types DROP COLUMN IF EXISTS is_control;
+ALTER TABLE parameter_types DROP COLUMN IF EXISTS is_fake_only;
+ALTER TABLE parameter_types DROP COLUMN IF EXISTS description;
+ALTER TABLE parameter_types DROP COLUMN IF EXISTS min_value;
+ALTER TABLE parameter_types DROP COLUMN IF EXISTS max_value;
+ALTER TABLE parameter_types DROP COLUMN IF EXISTS created_at;
 
 CREATE UNIQUE INDEX IF NOT EXISTS idx_parameter_types_short_name ON parameter_types(short_name);
 
-INSERT INTO parameter_types (name, short_name, value_type, description, default_value, min_value, max_value) VALUES
-    ('RSI период', 'RSI_PERIOD', 'integer', 'Период расчёта RSI', '14', 2, 100),
-    ('SMA период', 'SMA_PERIOD', 'integer', 'Период расчёта SMA', '20', 2, 500),
-    ('EMA период', 'EMA_PERIOD', 'integer', 'Период расчёта EMA', '20', 2, 500),
-    ('BB период', 'BB_PERIOD', 'integer', 'Период полос Боллинджера', '20', 2, 500),
-    ('ATR период', 'ATR_PERIOD', 'integer', 'Период ATR', '14', 2, 100),
-    ('STOCH период K', 'STOCH_PERIOD', 'integer', 'Период %K стохастика', '14', 2, 100),
-    ('T-Bank API токен', 'TBANK_API_TOKEN', 'secret', 'Глобальный токен Invest API T-Bank для загрузки цен (не привязан к счёту)', '', NULL, NULL),
-    ('Техническое логирование', 'APP_TECH_LOGGING', 'boolean', 'Глобальный журнал app_tech_log: trade runner, сигналы, параметры логики', '0', NULL, NULL),
-    ('Heartbeat UI trade runner', 'APP_TRADE_RUNNER_HB', 'text', 'Последний heartbeat Angular; без него run_trade_cycle пропускается', '', NULL, NULL)
+INSERT INTO parameter_types (name, short_name, value_type, default_value) VALUES
+    ('RSI период', 'RSI_PERIOD', 'integer', '14'),
+    ('SMA период', 'SMA_PERIOD', 'integer', '20'),
+    ('EMA период', 'EMA_PERIOD', 'integer', '20'),
+    ('BB период', 'BB_PERIOD', 'integer', '20'),
+    ('ATR период', 'ATR_PERIOD', 'integer', '14'),
+    ('STOCH период K', 'STOCH_PERIOD', 'integer', '14'),
+    ('T-Bank API токен', 'TBANK_API_TOKEN', 'secret', ''),
+    ('Техническое логирование', 'APP_TECH_LOGGING', 'boolean', '0'),
+    ('Heartbeat UI trade runner', 'APP_TRADE_RUNNER_HB', 'text', '')
 ON CONFLICT (short_name) DO NOTHING;
 
 -- ============================================
@@ -471,16 +477,17 @@ ON CONFLICT (short_name) DO NOTHING;
 -- ============================================
 CREATE TABLE IF NOT EXISTS parameter_sets (
     id SERIAL PRIMARY KEY,
-    name VARCHAR(100) NOT NULL,
-    description TEXT,
-    is_active BOOLEAN NOT NULL DEFAULT TRUE,
-    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+    name VARCHAR(100) NOT NULL
 );
+
+ALTER TABLE parameter_sets DROP COLUMN IF EXISTS description;
+ALTER TABLE parameter_sets DROP COLUMN IF EXISTS is_active;
+ALTER TABLE parameter_sets DROP COLUMN IF EXISTS created_at;
 
 CREATE UNIQUE INDEX IF NOT EXISTS idx_parameter_sets_name ON parameter_sets(name);
 
-INSERT INTO parameter_sets (name, description) VALUES
-    ('Default', 'Базовый набор параметров по умолчанию')
+INSERT INTO parameter_sets (name) VALUES
+    ('Default')
 ON CONFLICT (name) DO NOTHING;
 
 -- ============================================
@@ -490,10 +497,11 @@ CREATE TABLE IF NOT EXISTS parameter_values (
     id SERIAL PRIMARY KEY,
     parameter_set_id INTEGER NOT NULL REFERENCES parameter_sets(id) ON DELETE CASCADE,
     parameter_type_id INTEGER NOT NULL REFERENCES parameter_types(id) ON DELETE CASCADE,
-    value TEXT NOT NULL,
-    record_date TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+    value TEXT NOT NULL
 );
+
+ALTER TABLE parameter_values DROP COLUMN IF EXISTS record_date;
+ALTER TABLE parameter_values DROP COLUMN IF EXISTS created_at;
 
 CREATE UNIQUE INDEX IF NOT EXISTS idx_parameter_values_unique ON parameter_values(parameter_set_id, parameter_type_id);
 
@@ -847,11 +855,12 @@ CREATE TABLE IF NOT EXISTS indicator_values (
     security_id INTEGER NOT NULL REFERENCES securities(id) ON DELETE CASCADE,
     timeframe_id INTEGER NOT NULL REFERENCES timeframes(id) ON DELETE CASCADE,
     dt TIMESTAMP NOT NULL,
-    value NUMERIC(18, 6),
-    is_signal BOOLEAN NOT NULL DEFAULT FALSE,
-    signal_type VARCHAR(20),
-    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+    value NUMERIC(18, 6)
 );
+
+ALTER TABLE indicator_values DROP COLUMN IF EXISTS is_signal;
+ALTER TABLE indicator_values DROP COLUMN IF EXISTS signal_type;
+ALTER TABLE indicator_values DROP COLUMN IF EXISTS created_at;
 
 CREATE INDEX IF NOT EXISTS idx_indicator_values_indicator_id ON indicator_values(indicator_id);
 CREATE INDEX IF NOT EXISTS idx_indicator_values_security_id ON indicator_values(security_id);
@@ -868,68 +877,26 @@ CREATE TABLE IF NOT EXISTS logics (
     id SERIAL PRIMARY KEY,
     name VARCHAR(100) NOT NULL UNIQUE,
     account_id INTEGER NOT NULL REFERENCES accounts(id) ON DELETE RESTRICT,
-    is_enabled BOOLEAN NOT NULL DEFAULT TRUE,
-    position_size_pct NUMERIC(8, 4) NOT NULL DEFAULT 10,
-    max_open_positions INTEGER NOT NULL DEFAULT 5,
-    initial_balance NUMERIC(18, 2),
-    current_balance NUMERIC(18, 2)
+    is_enabled BOOLEAN NOT NULL DEFAULT TRUE
 );
-
--- Блок миграции: обновление существующей схемы v17 → v18 (для БД без новых колонок)
-ALTER TABLE logics ADD COLUMN IF NOT EXISTS position_size_pct NUMERIC(8, 4) NOT NULL DEFAULT 10;
-ALTER TABLE logics ADD COLUMN IF NOT EXISTS max_open_positions INTEGER NOT NULL DEFAULT 5;
-ALTER TABLE logics ADD COLUMN IF NOT EXISTS initial_balance NUMERIC(18, 2);
-ALTER TABLE logics ADD COLUMN IF NOT EXISTS current_balance NUMERIC(18, 2);
-
-DO $$
-BEGIN
-    ALTER TABLE logics ADD CONSTRAINT chk_logics_position_size_pct
-        CHECK (position_size_pct > 0 AND position_size_pct <= 100);
-EXCEPTION
-    WHEN duplicate_object THEN NULL;
-END $$;
-
-DO $$
-BEGIN
-    ALTER TABLE logics ADD CONSTRAINT chk_logics_max_open_positions
-        CHECK (max_open_positions > 0);
-EXCEPTION
-    WHEN duplicate_object THEN NULL;
-END $$;
-
-COMMENT ON COLUMN logics.position_size_pct IS '% депозита на одну сделку (от current_balance логики)';
-COMMENT ON COLUMN logics.max_open_positions IS 'Макс. число одновременно открытых long-позиций по бумагам';
-COMMENT ON COLUMN logics.initial_balance IS 'Начальный остаток (фейковый счёт / эталон депозита для расчёта лота)';
-COMMENT ON COLUMN logics.current_balance IS 'Текущий остаток после сделок (обновляет trade runner)';
 
 CREATE INDEX IF NOT EXISTS idx_logics_account_id ON logics(account_id);
 
-COMMENT ON TABLE logics IS 'Торговые логики: одна строка — одна торговля (трейд); главная таблица, от которой смотрятся связанные данные';
+COMMENT ON TABLE logics IS 'Торговые логики: одна строка — одна торговля (трейд); параметры — в logic_params';
 COMMENT ON COLUMN logics.name IS 'Уникальное имя логики';
 COMMENT ON COLUMN logics.account_id IS 'Счёт (accounts), на котором выполняется эта торговля';
 COMMENT ON COLUMN logics.is_enabled IS 'Логика включена (активна) или выключена';
 
--- Пример: цена выше SMA — long, ниже SMA — short (фейковый счёт T-Bank)
-INSERT INTO logics (
-    name, account_id, is_enabled,
-    position_size_pct, max_open_positions, initial_balance, current_balance
-)
+-- Пример: SMA Price Cross Demo (фейковый счёт T-Bank); параметры — в logic_params ниже
+INSERT INTO logics (name, account_id, is_enabled)
 SELECT
     'SMA Price Cross Demo',
     a.id,
-    FALSE,
-    10,
-    3,
-    1000000,
-    1000000
+    FALSE
 FROM accounts a
 JOIN brokers b ON b.id = a.broker_id
 WHERE b.code = 'T-BANK' AND a.account_code = 'FAKE-EFF-001'
-ON CONFLICT (name) DO UPDATE SET
-    position_size_pct = EXCLUDED.position_size_pct,
-    max_open_positions = EXCLUDED.max_open_positions,
-    initial_balance = EXCLUDED.initial_balance,
-    current_balance = COALESCE(logics.current_balance, EXCLUDED.current_balance);
+ON CONFLICT (name) DO NOTHING;
 
 -- ============================================
 -- Параметры торговой логики (EAV: logic_param_defs + logic_params)
@@ -990,38 +957,51 @@ COMMENT ON COLUMN logic_params.param_key IS 'Имя параметра (ссыл
 COMMENT ON COLUMN logic_params.param_value IS 'Значение в текстовом виде';
 COMMENT ON COLUMN logic_params.value_type IS 'Тип значения: number | integer | money | boolean | text';
 
--- Миграция v18/v19 → v20: перенос из колонок logics в logic_params
-INSERT INTO logic_params (logic_id, param_key, param_value, value_type)
-SELECT l.id, 'position_size_pct', l.position_size_pct::text, 'number'
-FROM logics l
-WHERE l.position_size_pct IS NOT NULL
-ON CONFLICT (logic_id, param_key) DO UPDATE SET
-    param_value = EXCLUDED.param_value,
-    updated_at = CURRENT_TIMESTAMP;
+-- v39: перенос из legacy-колонок logics (если ещё есть) → logic_params, затем DROP
+DO $$
+BEGIN
+    IF EXISTS (
+        SELECT 1 FROM information_schema.columns
+        WHERE table_schema = 'public' AND table_name = 'logics' AND column_name = 'position_size_pct'
+    ) THEN
+        INSERT INTO logic_params (logic_id, param_key, param_value, value_type)
+        SELECT l.id, 'position_size_pct', l.position_size_pct::text, 'number'
+        FROM logics l
+        ON CONFLICT (logic_id, param_key) DO UPDATE SET
+            param_value = EXCLUDED.param_value,
+            updated_at = CURRENT_TIMESTAMP;
 
-INSERT INTO logic_params (logic_id, param_key, param_value, value_type)
-SELECT l.id, 'max_open_positions', l.max_open_positions::text, 'integer'
-FROM logics l
-WHERE l.max_open_positions IS NOT NULL
-ON CONFLICT (logic_id, param_key) DO UPDATE SET
-    param_value = EXCLUDED.param_value,
-    updated_at = CURRENT_TIMESTAMP;
+        INSERT INTO logic_params (logic_id, param_key, param_value, value_type)
+        SELECT l.id, 'max_open_positions', l.max_open_positions::text, 'integer'
+        FROM logics l
+        ON CONFLICT (logic_id, param_key) DO UPDATE SET
+            param_value = EXCLUDED.param_value,
+            updated_at = CURRENT_TIMESTAMP;
 
-INSERT INTO logic_params (logic_id, param_key, param_value, value_type)
-SELECT l.id, 'initial_balance', l.initial_balance::text, 'money'
-FROM logics l
-WHERE l.initial_balance IS NOT NULL
-ON CONFLICT (logic_id, param_key) DO UPDATE SET
-    param_value = EXCLUDED.param_value,
-    updated_at = CURRENT_TIMESTAMP;
+        INSERT INTO logic_params (logic_id, param_key, param_value, value_type)
+        SELECT l.id, 'initial_balance', l.initial_balance::text, 'money'
+        FROM logics l
+        WHERE l.initial_balance IS NOT NULL
+        ON CONFLICT (logic_id, param_key) DO UPDATE SET
+            param_value = EXCLUDED.param_value,
+            updated_at = CURRENT_TIMESTAMP;
 
-INSERT INTO logic_params (logic_id, param_key, param_value, value_type)
-SELECT l.id, 'current_balance', l.current_balance::text, 'money'
-FROM logics l
-WHERE l.current_balance IS NOT NULL
-ON CONFLICT (logic_id, param_key) DO UPDATE SET
-    param_value = EXCLUDED.param_value,
-    updated_at = CURRENT_TIMESTAMP;
+        INSERT INTO logic_params (logic_id, param_key, param_value, value_type)
+        SELECT l.id, 'current_balance', l.current_balance::text, 'money'
+        FROM logics l
+        WHERE l.current_balance IS NOT NULL
+        ON CONFLICT (logic_id, param_key) DO UPDATE SET
+            param_value = EXCLUDED.param_value,
+            updated_at = CURRENT_TIMESTAMP;
+    END IF;
+END $$;
+
+ALTER TABLE logics DROP CONSTRAINT IF EXISTS chk_logics_position_size_pct;
+ALTER TABLE logics DROP CONSTRAINT IF EXISTS chk_logics_max_open_positions;
+ALTER TABLE logics DROP COLUMN IF EXISTS position_size_pct;
+ALTER TABLE logics DROP COLUMN IF EXISTS max_open_positions;
+ALTER TABLE logics DROP COLUMN IF EXISTS initial_balance;
+ALTER TABLE logics DROP COLUMN IF EXISTS current_balance;
 
 -- Дефолты для всех логик без строк в logic_params
 INSERT INTO logic_params (logic_id, param_key, param_value, value_type)
@@ -1063,13 +1043,8 @@ CREATE TABLE IF NOT EXISTS actions (
 
 INSERT INTO actions (name) VALUES ('Long'), ('Short') ON CONFLICT (name) DO NOTHING;
 
-CREATE TABLE IF NOT EXISTS logics_detail (
-    id SERIAL PRIMARY KEY,
-    logic_name VARCHAR(100) NOT NULL REFERENCES logics(name),
-    formula TEXT NOT NULL,
-    side_id INTEGER NOT NULL REFERENCES sides(id),
-    action_id INTEGER NOT NULL REFERENCES actions(id)
-);
+-- v39: устаревшая logics_detail удалена (заменена logic_indicator_signals)
+DROP TABLE IF EXISTS logics_detail;
 
 -- Сигналы индикаторов, привязанные к торговой логике
 CREATE TABLE IF NOT EXISTS logic_indicator_signals (
@@ -1253,7 +1228,7 @@ CROSS JOIN LATERAL (
 WHERE l.name = 'SMA Price Cross Demo'
 ON CONFLICT (logic_id, security_id) DO UPDATE SET is_active = TRUE;
 
--- Стоп-лосс 1% и тейк-профит 3% по бумаге
+-- Стоп-лосс 1% по бумаге с возобновлением (security_resume) и тейк-профит 3% по бумаге
 DELETE FROM logic_stops ls
 USING logics l
 WHERE ls.logic_id = l.id
@@ -1263,7 +1238,7 @@ INSERT INTO logic_stops (logic_id, rule_kind, scope_type, value, value_unit, dis
 SELECT l.id, v.rule_kind, v.scope_type, v.value, v.value_unit, v.display_order, TRUE
 FROM logics l
 CROSS JOIN (VALUES
-    ('stop_loss',    'security', 1.0, 'percent', 0),
+    ('stop_loss',    'security_resume', 1.0, 'percent', 0),
     ('take_profit',  'security', 3.0, 'percent', 1)
 ) AS v(rule_kind, scope_type, value, value_unit, display_order)
 WHERE l.name = 'SMA Price Cross Demo';
@@ -1522,8 +1497,6 @@ CREATE INDEX IF NOT EXISTS idx_indicators_code ON indicators(code);
 -- security_types
 COMMENT ON COLUMN security_types.id IS 'Surrogate PK';
 COMMENT ON COLUMN security_types.name IS 'Код типа: Stock, Futures, Bond …';
-COMMENT ON COLUMN security_types.note IS 'Краткое описание на русском';
-
 -- exchanges
 COMMENT ON COLUMN exchanges.id IS 'Surrogate PK';
 COMMENT ON COLUMN exchanges.name IS 'Код площадки: MOEX, SPB';
@@ -1553,7 +1526,6 @@ COMMENT ON COLUMN brokers.code IS 'Уникальный код брокера (T
 COMMENT ON COLUMN brokers.name IS 'Отображаемое имя';
 COMMENT ON COLUMN brokers.api_url IS 'Базовый URL REST API';
 COMMENT ON COLUMN brokers.is_active IS 'Брокер доступен для подключения счетов';
-COMMENT ON COLUMN brokers.created_at IS 'Дата создания записи';
 
 -- accounts
 COMMENT ON TABLE accounts IS 'Торговые счета брокера (real / fake); логики привязаны к account_id';
@@ -1566,7 +1538,6 @@ COMMENT ON COLUMN accounts.is_efficient IS 'Эффективный (маржин
 COMMENT ON COLUMN accounts.token_encrypted IS 'Зашифрованный токен счёта (если отличается от глобального)';
 COMMENT ON COLUMN accounts.token_hash IS 'Хеш токена для проверки без расшифровки';
 COMMENT ON COLUMN accounts.is_active IS 'Счёт активен';
-COMMENT ON COLUMN accounts.created_at IS 'Дата создания';
 COMMENT ON COLUMN accounts.updated_at IS 'Дата последнего изменения';
 
 -- prices
@@ -1579,9 +1550,7 @@ COMMENT ON COLUMN prices.high_price IS 'Максимум';
 COMMENT ON COLUMN prices.low_price IS 'Минимум';
 COMMENT ON COLUMN prices.close_price IS 'Цена закрытия';
 COMMENT ON COLUMN prices.volume IS 'Объём в лотах/штуках';
-COMMENT ON COLUMN prices.value IS 'Оборот в деньгах';
-COMMENT ON COLUMN prices.trades IS 'Число сделок в свече';
-COMMENT ON COLUMN prices.created_at IS 'Когда строка загружена в БД';
+COMMENT ON COLUMN prices.value IS 'Оборот в деньгах (MOEX resample)';
 
 -- parameter_types (глобальные настройки приложения, не per-logic)
 COMMENT ON TABLE parameter_types IS 'Справочник типов глобальных параметров (RSI_PERIOD, TBANK_API_TOKEN …)';
@@ -1589,21 +1558,12 @@ COMMENT ON COLUMN parameter_types.id IS 'Surrogate PK';
 COMMENT ON COLUMN parameter_types.name IS 'Полное имя параметра';
 COMMENT ON COLUMN parameter_types.short_name IS 'Ключ в коде (RSI_PERIOD, TBANK_API_TOKEN)';
 COMMENT ON COLUMN parameter_types.value_type IS 'integer | number | boolean | text | secret';
-COMMENT ON COLUMN parameter_types.is_control IS 'TRUE — управляющий параметр (токен, флаги)';
-COMMENT ON COLUMN parameter_types.is_fake_only IS 'Только для фейковых счетов';
-COMMENT ON COLUMN parameter_types.description IS 'Описание для UI';
 COMMENT ON COLUMN parameter_types.default_value IS 'Значение по умолчанию (текст)';
-COMMENT ON COLUMN parameter_types.min_value IS 'Минимум (для числовых)';
-COMMENT ON COLUMN parameter_types.max_value IS 'Максимум (для числовых)';
-COMMENT ON COLUMN parameter_types.created_at IS 'Дата создания';
 
 -- parameter_sets
 COMMENT ON TABLE parameter_sets IS 'Наборы глобальных параметров (обычно Default)';
 COMMENT ON COLUMN parameter_sets.id IS 'Surrogate PK';
 COMMENT ON COLUMN parameter_sets.name IS 'Имя набора (уникально)';
-COMMENT ON COLUMN parameter_sets.description IS 'Описание набора';
-COMMENT ON COLUMN parameter_sets.is_active IS 'Набор используется';
-COMMENT ON COLUMN parameter_sets.created_at IS 'Дата создания';
 
 -- parameter_values
 COMMENT ON TABLE parameter_values IS 'Значения глобальных parameter_types внутри parameter_sets';
@@ -1611,8 +1571,6 @@ COMMENT ON COLUMN parameter_values.id IS 'Surrogate PK';
 COMMENT ON COLUMN parameter_values.parameter_set_id IS 'FK → parameter_sets';
 COMMENT ON COLUMN parameter_values.parameter_type_id IS 'FK → parameter_types';
 COMMENT ON COLUMN parameter_values.value IS 'Текущее значение (текст)';
-COMMENT ON COLUMN parameter_values.record_date IS 'Момент актуализации значения';
-COMMENT ON COLUMN parameter_values.created_at IS 'Дата создания строки';
 
 -- indicators
 COMMENT ON TABLE indicators IS 'Справочник индикаторов: код (SMA, RSI), formula/script, описание';
@@ -1666,9 +1624,6 @@ COMMENT ON COLUMN indicator_values.security_id IS 'FK → securities';
 COMMENT ON COLUMN indicator_values.timeframe_id IS 'FK → timeframes';
 COMMENT ON COLUMN indicator_values.dt IS 'Open time свечи значения';
 COMMENT ON COLUMN indicator_values.value IS 'Числовое значение индикатора';
-COMMENT ON COLUMN indicator_values.is_signal IS 'Помечено как сигнал (legacy/аналитика)';
-COMMENT ON COLUMN indicator_values.signal_type IS 'Тип сигнала если is_signal';
-COMMENT ON COLUMN indicator_values.created_at IS 'Когда записано в БД';
 
 -- logics (дополнение)
 COMMENT ON COLUMN logics.id IS 'Surrogate PK; все дочерние таблицы ссылаются logic_id → logics.id';
@@ -1694,14 +1649,6 @@ COMMENT ON COLUMN sides.name IS 'Open | Close';
 COMMENT ON TABLE actions IS 'Направление позиции: Long | Short';
 COMMENT ON COLUMN actions.id IS 'Surrogate PK';
 COMMENT ON COLUMN actions.name IS 'Long | Short';
-
--- logics_detail (legacy, до logic_indicator_signals)
-COMMENT ON TABLE logics_detail IS 'Устаревшие формулы по имени логики; заменено logic_indicator_signals';
-COMMENT ON COLUMN logics_detail.id IS 'Surrogate PK';
-COMMENT ON COLUMN logics_detail.logic_name IS 'FK по name → logics.name';
-COMMENT ON COLUMN logics_detail.formula IS 'Текст формулы (legacy)';
-COMMENT ON COLUMN logics_detail.side_id IS 'FK → sides';
-COMMENT ON COLUMN logics_detail.action_id IS 'FK → actions';
 
 -- logic_indicator_signals (дополнение)
 COMMENT ON COLUMN logic_indicator_signals.id IS 'Surrogate PK';

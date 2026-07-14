@@ -911,25 +911,35 @@ export class PriceChartComponent implements AfterViewInit, OnChanges, OnDestroy 
     let last: number | null = null;
     let j = 0;
     const firstVis = PriceChartComponent.dtKey(visible[0].dt);
+    const equityStart = PriceChartComponent.dtKey(sorted[0].dt);
+    // До якоря нуля (начало теста) линию не рисуем; с якоря — step-функция от 0
     while (j < sorted.length && PriceChartComponent.dtKey(sorted[j].dt) <= firstVis) {
       const v = Number(sorted[j].value);
       if (Number.isFinite(v)) last = v;
       j += 1;
     }
+    // Если окно начинается после якоря, но точка якоря ещё не попала в last — 0
+    if (last == null && firstVis >= equityStart) {
+      last = 0;
+    }
 
     let gapPending = false;
     for (let i = 0; i < visible.length; i++) {
       const key = PriceChartComponent.dtKey(visible[i].dt);
+      if (key < equityStart) {
+        continue;
+      }
       while (j < sorted.length && PriceChartComponent.dtKey(sorted[j].dt) <= key) {
         const v = Number(sorted[j].value);
         if (Number.isFinite(v)) last = v;
         j += 1;
       }
+      if (last == null) last = 0;
       if (this.isEquityDtInDisabledInterior(key)) {
         gapPending = true;
         continue;
       }
-      if (last != null && Number.isFinite(last)) {
+      if (Number.isFinite(last)) {
         samples.push({ i, v: last, gapBefore: gapPending });
         gapPending = false;
         minE = Math.min(minE, last);

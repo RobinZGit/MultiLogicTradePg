@@ -188,8 +188,14 @@ export function buildShadedDisabledRanges(trades: LogicTradeRow[]): ChartShadedR
   return ranges;
 }
 
-/** Кумулятивный PnL по закрытиям (!shadow), старт 0 с первой сделки бумаги. */
-export function buildEquityPoints(trades: LogicTradeRow[]): ChartEquityPoint[] {
+/**
+ * Кумулятивный PnL по закрытиям (!shadow).
+ * Ноль — с начала истории теста (`periodStartDt`), не с первой сделки.
+ */
+export function buildEquityPoints(
+  trades: LogicTradeRow[],
+  periodStartDt?: string | null
+): ChartEquityPoint[] {
   const sorted = [...trades].sort((a, b) =>
     dtKey(a.bar_dt || a.executed_at).localeCompare(dtKey(b.bar_dt || b.executed_at))
   );
@@ -202,13 +208,20 @@ export function buildEquityPoints(trades: LogicTradeRow[]): ChartEquityPoint[] {
   );
   if (closes.length === 0) return [];
 
-  const firstDt = sorted[0]?.bar_dt || sorted[0]?.executed_at || closes[0].bar_dt;
+  const periodKey = periodStartDt ? dtKey(periodStartDt) : '';
+  const firstTradeDt = sorted[0]?.bar_dt || sorted[0]?.executed_at || closes[0].bar_dt;
+  // Якорь нуля: date_from теста, иначе первая сделка (fallback)
+  const zeroDt =
+    periodKey && (!firstTradeDt || periodKey <= dtKey(firstTradeDt))
+      ? periodStartDt!
+      : firstTradeDt;
+
   let cum = 0;
-  const points: ChartEquityPoint[] = [{ dt: firstDt, value: 0 }];
+  const points: ChartEquityPoint[] = [{ dt: zeroDt, value: 0 }];
   for (const t of closes) {
     cum += Number(t.financial_result);
     const dt = t.bar_dt || t.executed_at;
-    // Не дублировать точку 0 на том же dt, если первое закрытие = первая сделка
+    // Не дублировать точку 0 на том же dt, если первое закрытие = якорь
     if (points.length === 1 && dtKey(points[0].dt) === dtKey(dt) && points[0].value === 0) {
       points[0] = { dt, value: cum };
     } else {
