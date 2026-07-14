@@ -90,6 +90,11 @@
             <th>Счёт активен</th>
 
             <th
+              class="col-combat-pnl"
+              title="Сумма фин. результата боевых (реальных) сделок (онлайн, не хранится отдельно)"
+            >Финрез</th>
+
+            <th
               class="col-test-pnl"
               title="Сумма фин. результата тестовых сделок (онлайн, не хранится отдельно)"
             >Финрез теста</th>
@@ -161,10 +166,13 @@
                   <span>{{ row.name }}</span>
                   @if (isBacktestRunning(row.id)) {
                     <span
-                      class="logic-test-spin"
-                      title="Идёт тестирование"
-                      aria-label="Идёт тестирование"
-                    >↻</span>
+                      class="logic-test-progress"
+                      [title]="backtestProgressTitle(row.id)"
+                      [attr.aria-label]="'Тестирование ' + backtestProgressPct(row.id) + '%'"
+                    >
+                      <span class="logic-test-progress-ring" aria-hidden="true">↻</span>
+                      <span class="logic-test-progress-pct">{{ backtestProgressPct(row.id) }}</span>
+                    </span>
                   }
                 </span>
               </td>
@@ -186,6 +194,21 @@
               <td>{{ row.broker_code }}</td>
 
               <td>{{ row.account_is_active ? 'да' : 'нет' }}</td>
+
+              <td class="col-combat-pnl">
+                @if (hasCombatFinancialResult(row.id)) {
+                  <span
+                    class="trade-pnl logic-combat-pnl"
+                    [class.trade-pnl-pos]="(combatFinancialResult(row.id) ?? 0) > 0"
+                    [class.trade-pnl-neg]="(combatFinancialResult(row.id) ?? 0) < 0"
+                    [title]="combatFinancialResultTitle(row.id)"
+                  >
+                    {{ formatPnl(combatFinancialResult(row.id)) }}
+                  </span>
+                } @else {
+                  <span class="logic-test-pnl-empty" title="Боевых сделок ещё не было">—</span>
+                }
+              </td>
 
               <td class="col-test-pnl">
                 @if (hasTestFinancialResult(row.id)) {

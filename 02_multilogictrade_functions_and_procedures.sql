@@ -3854,6 +3854,9 @@ COMMENT ON PROCEDURE logic_apply_indicator_params_from_signals(INTEGER, INTEGER)
 -- @end calc_ind_extra
 
 
+
+
+
 -- Диспетчер массивного расчёта по коду индикатора
 CREATE OR REPLACE FUNCTION calc_indicator_series_array(
     p_indicator_code VARCHAR,
@@ -5605,6 +5608,90 @@ BEGIN
     RETURN NEXT;
 END;
 $$;
+
+-- @include sql/logic_stop_runner.sql (см. sql/logic_stop_runner.sql — дублируется ниже)
+-- ============================================
+-- Stop-loss runner: security / security_resume / portfolio
+-- ============================================
+
+CREATE OR REPLACE FUNCTION logic_resolve_stop_timeframe_id(p_logic_id INTEGER)
+RETURNS INTEGER
+LANGUAGE plpgsql STABLE AS $$
+DECLARE
+    v_tf TEXT;
+    v_id INTEGER;
+BEGIN
+    v_tf := upper(btrim(COALESCE(get_logic_param_text(p_logic_id, 'stop_loss_timeframe'), 'M5')));
+    SELECT t.id INTO v_id
+    FROM timeframes t
+    WHERE upper(t.tf) = v_tf AND COALESCE(t.is_active, TRUE)
+    ORDER BY t.sec
+    LIMIT 1;
+    IF v_id IS NULL THEN
+        SELECT t.id INTO v_id FROM timeframes t WHERE upper(t.tf) = 'M5' LIMIT 1;
+    END IF;
+    RETURN v_id;
+END;
+$$;
+
+COMMENT ON FUNCTION logic_resolve_stop_timeframe_id(INTEGER) IS
+'timeframe_id из logic_params.stop_loss_timeframe (по умолчанию M5)';
+
+-- @include sql/logic_stop_runner.sql (см. sql/logic_stop_runner.sql — дублируется ниже)
+-- ============================================
+-- Stop-loss runner: security / security_resume / portfolio
+-- ============================================
+
+CREATE OR REPLACE FUNCTION logic_resolve_stop_timeframe_id(p_logic_id INTEGER)
+RETURNS INTEGER
+LANGUAGE plpgsql STABLE AS $$
+DECLARE
+    v_tf TEXT;
+    v_id INTEGER;
+BEGIN
+    v_tf := upper(btrim(COALESCE(get_logic_param_text(p_logic_id, 'stop_loss_timeframe'), 'M5')));
+    SELECT t.id INTO v_id
+    FROM timeframes t
+    WHERE upper(t.tf) = v_tf AND COALESCE(t.is_active, TRUE)
+    ORDER BY t.sec
+    LIMIT 1;
+    IF v_id IS NULL THEN
+        SELECT t.id INTO v_id FROM timeframes t WHERE upper(t.tf) = 'M5' LIMIT 1;
+    END IF;
+    RETURN v_id;
+END;
+$$;
+
+COMMENT ON FUNCTION logic_resolve_stop_timeframe_id(INTEGER) IS
+'timeframe_id из logic_params.stop_loss_timeframe (по умолчанию M5)';
+
+-- @include sql/logic_stop_runner.sql (см. sql/logic_stop_runner.sql — дублируется ниже)
+-- ============================================
+-- Stop-loss runner: security / security_resume / portfolio
+-- ============================================
+
+CREATE OR REPLACE FUNCTION logic_resolve_stop_timeframe_id(p_logic_id INTEGER)
+RETURNS INTEGER
+LANGUAGE plpgsql STABLE AS $$
+DECLARE
+    v_tf TEXT;
+    v_id INTEGER;
+BEGIN
+    v_tf := upper(btrim(COALESCE(get_logic_param_text(p_logic_id, 'stop_loss_timeframe'), 'M5')));
+    SELECT t.id INTO v_id
+    FROM timeframes t
+    WHERE upper(t.tf) = v_tf AND COALESCE(t.is_active, TRUE)
+    ORDER BY t.sec
+    LIMIT 1;
+    IF v_id IS NULL THEN
+        SELECT t.id INTO v_id FROM timeframes t WHERE upper(t.tf) = 'M5' LIMIT 1;
+    END IF;
+    RETURN v_id;
+END;
+$$;
+
+COMMENT ON FUNCTION logic_resolve_stop_timeframe_id(INTEGER) IS
+'timeframe_id из logic_params.stop_loss_timeframe (по умолчанию M5)';
 
 -- @include sql/logic_stop_runner.sql (см. sql/logic_stop_runner.sql — дублируется ниже)
 -- ============================================
@@ -8489,6 +8576,143 @@ $$;
 COMMENT ON FUNCTION logic_signal_rating_reset_live(INTEGER) IS
 'Сброс боевого рейтинга и истории перед предрасчётом при включении логики';
 
+CREATE OR REPLACE PROCEDURE logic_refresh_market_data(
+    p_logic_id INTEGER,
+    p_timeframe_id INTEGER,
+    p_closed_bar_dt TIMESTAMP
+)
+LANGUAGE plpgsql AS $$
+DECLARE
+    v_sec RECORD;
+    v_sig RECORD;
+    v_date_from DATE;
+    v_date_to DATE;
+    v_point_count INTEGER;
+    v_tf_sec INTEGER;
+    v_err TEXT;
+    v_skip_http BOOLEAN := FALSE;
+BEGIN
+    SELECT t.sec INTO v_tf_sec FROM timeframes t WHERE t.id = p_timeframe_id;
+
+    v_point_count := logic_trade_sync_point_count(v_tf_sec);
+    v_date_to := GREATEST(p_closed_bar_dt::date, CURRENT_DATE);
+    v_date_from := logic_trade_load_date_from(v_tf_sec, v_point_count, p_closed_bar_dt);
+
+    -- Пока идёт любой бэктест — не дергаем HTTP load_prices (меньше блокировок цен/пула)
+    SELECT EXISTS (
+        SELECT 1
+        FROM logic_backtest_runs r
+        WHERE r.status IN ('pending', 'loading_prices', 'loading_indicators', 'running')
+    ) INTO v_skip_http;
+
+    IF v_skip_http THEN
+        PERFORM logic_trade_log(
+            p_logic_id,
+            'trade.prices.skip_http',
+            'Пропуск load_prices: активен бэктест (используем уже загруженные цены)',
+            jsonb_build_object('closed_bar', p_closed_bar_dt),
+            NULL,
+            p_timeframe_id
+        );
+    END IF;
+
+    FOR v_sec IN
+        SELECT ls.security_id
+        FROM logic_securities ls
+        WHERE ls.logic_id = p_logic_id AND ls.is_active = TRUE
+    LOOP
+        IF NOT v_skip_http THEN
+            BEGIN
+                CALL load_prices(v_sec.security_id, p_timeframe_id, v_date_from, v_date_to);
+                PERFORM logic_trade_log(
+                    p_logic_id,
+                    'trade.prices.loaded',
+                    format('Цены подгружены sec=%s (%s .. %s)', v_sec.security_id, v_date_from, v_date_to),
+                    jsonb_build_object(
+                        'security_id', v_sec.security_id,
+                        'date_from', v_date_from,
+                        'date_to', v_date_to,
+                        'timeframe_id', p_timeframe_id
+                    ),
+                    v_sec.security_id,
+                    p_timeframe_id
+                );
+            EXCEPTION
+                WHEN undefined_function THEN
+                    PERFORM logic_trade_log(
+                        p_logic_id,
+                        'trade.prices.error',
+                        'load_prices недоступен (нет HTTP-расширения)',
+                        jsonb_build_object('security_id', v_sec.security_id),
+                        v_sec.security_id,
+                        p_timeframe_id
+                    );
+                WHEN OTHERS THEN
+                    v_err := SQLERRM;
+                    PERFORM logic_trade_log(
+                        p_logic_id,
+                        'trade.prices.error',
+                        format('Ошибка загрузки цен sec=%s: %s', v_sec.security_id, v_err),
+                        jsonb_build_object('security_id', v_sec.security_id, 'error', v_err),
+                        v_sec.security_id,
+                        p_timeframe_id
+                    );
+            END;
+        END IF;
+
+        FOR v_sig IN
+            SELECT DISTINCT lis.indicator_id
+            FROM logic_indicator_signals lis
+            WHERE lis.logic_id = p_logic_id AND lis.is_active = TRUE
+        LOOP
+            BEGIN
+                CALL ensure_security_indicator_series(v_sec.security_id, v_sig.indicator_id);
+                CALL logic_apply_indicator_params_from_signals(p_logic_id, v_sec.security_id);
+                CALL sync_security_indicator_series_for_indicator(
+                    v_sec.security_id,
+                    v_sig.indicator_id,
+                    p_timeframe_id,
+                    p_closed_bar_dt,
+                    v_point_count,
+                    TRUE
+                );
+                PERFORM logic_trade_log(
+                    p_logic_id,
+                    'trade.indicator.synced',
+                    format('Индикатор id=%s пересчитан sec=%s', v_sig.indicator_id, v_sec.security_id),
+                    jsonb_build_object(
+                        'security_id', v_sec.security_id,
+                        'indicator_id', v_sig.indicator_id,
+                        'closed_bar', p_closed_bar_dt,
+                        'point_count', v_point_count
+                    ),
+                    v_sec.security_id,
+                    p_timeframe_id
+                );
+            EXCEPTION
+                WHEN OTHERS THEN
+                    v_err := SQLERRM;
+                    PERFORM logic_trade_log(
+                        p_logic_id,
+                        'trade.indicator.error',
+                        format('Ошибка расчёта индикатора id=%s sec=%s: %s', v_sig.indicator_id, v_sec.security_id, v_err),
+                        jsonb_build_object(
+                            'security_id', v_sec.security_id,
+                            'indicator_id', v_sig.indicator_id,
+                            'error', v_err
+                        ),
+                        v_sec.security_id,
+                        p_timeframe_id
+                    );
+            END;
+        END LOOP;
+    END LOOP;
+END;
+$$;
+
+COMMENT ON PROCEDURE logic_refresh_market_data(INTEGER, INTEGER, TIMESTAMP) IS
+'Перед проверкой сигналов: load_prices (кроме активного бэктеста) + ensure/sync индикаторов логики на TF';
+
 CREATE OR REPLACE FUNCTION process_logic_trades(p_logic_id INTEGER)
 RETURNS INTEGER
 LANGUAGE plpgsql AS $$
@@ -8947,6 +9171,7 @@ DECLARE
     v_total_created INTEGER := 0;
     v_total_stops INTEGER := 0;
     v_processed INTEGER := 0;
+    v_skipped_bt INTEGER := 0;
     v_got_lock BOOLEAN;
 BEGIN
     v_got_lock := pg_try_advisory_lock(hashtext('multilogictrade_run_trade_cycle'));
@@ -8975,6 +9200,17 @@ BEGIN
         WHERE l.is_enabled = TRUE AND a.is_active = TRUE
         ORDER BY l.id
     LOOP
+        -- Не мешать бэктесту той же логики (цены/индикаторы/сделки)
+        IF EXISTS (
+            SELECT 1
+            FROM logic_backtest_runs r
+            WHERE r.logic_id = v_logic.id
+              AND r.status IN ('pending', 'loading_prices', 'loading_indicators', 'running')
+        ) THEN
+            v_skipped_bt := v_skipped_bt + 1;
+            CONTINUE;
+        END IF;
+
         v_processed := v_processed + 1;
         v_total_stops := v_total_stops + process_logic_stops(v_logic.id);
         v_total_created := v_total_created + process_logic_trades(v_logic.id);
@@ -8985,19 +9221,28 @@ BEGIN
     PERFORM app_tech_log_event(
         'trade-runner',
         'cycle.end',
-        format('processed=%s stops=%s created=%s', v_processed, v_total_stops, v_total_created),
+        format(
+            'processed=%s stops=%s created=%s skip_bt=%s',
+            v_processed, v_total_stops, v_total_created, v_skipped_bt
+        ),
         'postgresql',
         'event',
         NULL,
         NULL,
         NULL,
-        jsonb_build_object('processed', v_processed, 'stops', v_total_stops, 'created', v_total_created)
+        jsonb_build_object(
+            'processed', v_processed,
+            'stops', v_total_stops,
+            'created', v_total_created,
+            'skipped_backtest', v_skipped_bt
+        )
     );
 
     RETURN jsonb_build_object(
         'processed', v_processed,
         'stops', v_total_stops,
         'created', v_total_created,
+        'skipped_backtest', v_skipped_bt,
         'at', CURRENT_TIMESTAMP
     );
 EXCEPTION
@@ -9008,7 +9253,8 @@ END;
 $$;
 
 COMMENT ON FUNCTION run_trade_cycle() IS
-'Цикл торговли по включённым logics. Только при активном UI (heartbeat Angular); pg_cron или Node fallback.';
+'Цикл торговли по включённым logics (пропуск логик с активным бэктестом). '
+'Node fallback предпочтителен: по логике отдельно (короткие tx). pg_cron — эта функция.';
 
 -- @include sql/logic_backtest_runner.sql (см. sql/logic_backtest_runner.sql — дублируется ниже)
 -- ============================================
@@ -9458,13 +9704,13 @@ BEGIN
         logic_id, account_id, security_id, timeframe_id,
         side_id, action_id, position_event, signal_kind, signal_formula,
         quantity, price, bar_dt, is_simulated, is_fictitious,
-        is_shadow, is_test, trade_reason, status
+        is_shadow, is_test, run_id, trade_reason, status
     )
     VALUES (
         p_logic_id, p_account_id, p_security_id, p_timeframe_id,
         p_side_id, p_action_id, v_position_event, p_signal_kind, p_formula,
         p_quantity, p_price, p_bar_dt, TRUE, FALSE,
-        p_is_shadow, TRUE, p_trade_reason, 'filled'
+        p_is_shadow, TRUE, p_run_id, p_trade_reason, 'filled'
     )
     ON CONFLICT (logic_id, security_id, position_event, action_id, bar_dt, is_test, is_shadow) DO NOTHING
     RETURNING id INTO v_trade_id;

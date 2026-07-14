@@ -103,6 +103,51 @@ async function updateRun(pool, runId, patch) {
   );
 }
 
+/**
+ * Троттлинг записи progress_pct, чтобы UI не «стоял», но и не долбил БД каждый мс.
+ * force — всегда писать (конец фазы / 100%).
+ */
+function createProgressReporter(pool, runId, minIntervalMs = 200) {
+  let lastAt = 0;
+  let lastPct = -1;
+  let pending = null;
+  let timer = null;
+
+  const flush = async (patch) => {
+    lastAt = Date.now();
+    if (patch.progress_pct != null) lastPct = Number(patch.progress_pct);
+    await updateRun(pool, runId, patch);
+  };
+
+  return async function report(patch, opts = {}) {
+    const force = Boolean(opts.force);
+    const now = Date.now();
+    const pct = patch.progress_pct != null ? Number(patch.progress_pct) : null;
+    const elapsed = now - lastAt;
+    const pctJump = pct != null && lastPct >= 0 ? Math.abs(pct - lastPct) : 99;
+
+    if (force || elapsed >= minIntervalMs || pctJump >= 0.4 || lastPct < 0) {
+      if (timer) {
+        clearTimeout(timer);
+        timer = null;
+        pending = null;
+      }
+      await flush(patch);
+      return;
+    }
+
+    pending = patch;
+    if (!timer) {
+      timer = setTimeout(() => {
+        timer = null;
+        const p = pending;
+        pending = null;
+        if (p) flush(p).catch(() => {});
+      }, Math.max(50, minIntervalMs - elapsed));
+    }
+  };
+}
+
 async function isCancelRequested(pool, runId) {
   const { rows } = await pool.query(
     'SELECT cancel_requested, status FROM logic_backtest_runs WHERE id = $1',
@@ -225,6 +270,7 @@ async function ensureTbankForBacktest(pool, runId, logicId) {
 /**
  * Подготовка одной бумаги: кэш цен → load_prices только при необходимости;
  * индикаторы по текущим активным сигналам логики.
+ * onPhase(kind, detail) — для плавного progress_pct (начало HTTP, после цен, по индикаторам).
  */
 async function ensureSecurityData(
   pool,
@@ -238,13 +284,21 @@ async function ensureSecurityData(
   dateTo,
   endDt,
   pointCount,
-  stats
+  stats,
+  onPhase = null
 ) {
+  const phase = async (kind, detail, frac) => {
+    if (typeof onPhase === 'function') {
+      await onPhase({ kind, detail, frac, secId, secName });
+    }
+  };
+
   const cached = await pricesCached(pool, secId, tfId, loadDateFrom, dateFrom, dateTo);
   let pricesReloaded = false;
 
   if (cached) {
     stats.pricesCached += 1;
+    await phase('prices_cache', `Кэш цен: ${secName || secId}`, 0.35);
     await backtestLog(
       pool,
       runId,
@@ -256,6 +310,7 @@ async function ensureSecurityData(
       tfId
     );
   } else {
+    await phase('prices_http_start', `HTTP цены: ${secName || secId}`, 0.12);
     await backtestLog(
       pool,
       runId,
@@ -270,6 +325,7 @@ async function ensureSecurityData(
       await pool.query('CALL load_prices($1, $2, $3, $4)', [secId, tfId, loadDateFrom, dateTo]);
       stats.pricesLoaded += 1;
       pricesReloaded = true;
+      await phase('prices_http_done', `Цены загружены: ${secName || secId}`, 0.55);
     } catch (e) {
       stats.pricesErr += 1;
       await backtestLog(
@@ -305,12 +361,22 @@ async function ensureSecurityData(
   }
 
   const indicatorIds = await fetchActiveIndicatorIds(pool, logicId);
+  const indTotal = Math.max(1, indicatorIds.length);
+  let indDone = 0;
+  await phase('indicators_start', `Индикаторы: ${secName || secId}`, 0.6);
+
   for (const indicatorId of indicatorIds) {
     if (
       !pricesReloaded &&
       (await indicatorsCached(pool, secId, tfId, indicatorId, dateFrom, dateTo))
     ) {
       stats.indCached += 1;
+      indDone += 1;
+      await phase(
+        'indicator',
+        `Индикаторы ${secName || secId}: ${indDone}/${indicatorIds.length}`,
+        0.6 + 0.35 * (indDone / indTotal)
+      );
       continue;
     }
     try {
@@ -333,7 +399,15 @@ async function ensureSecurityData(
         tfId
       );
     }
+    indDone += 1;
+    await phase(
+      'indicator',
+      `Индикаторы ${secName || secId}: ${indDone}/${indicatorIds.length}`,
+      0.6 + 0.35 * (indDone / indTotal)
+    );
   }
+
+  await phase('paper_done', `Готово: ${secName || secId}`, 1);
 }
 
 /**
@@ -352,7 +426,8 @@ async function syncActiveSecurities(
   pointCount,
   knownIds,
   stats,
-  phaseLabel
+  phaseLabel,
+  reportProgress = null
 ) {
   const secRows = await fetchActiveSecurityIds(pool, logicId);
   const currentIds = secRows.map((r) => r.security_id);
@@ -391,12 +466,36 @@ async function syncActiveSecurities(
   let completed = 0;
   let cancelled = false;
   const inFlight = new Map();
+  /** Доля внутри текущей бумаги 0..1 (пока грузится). */
+  const paperFrac = new Map();
+  const PREP_SPAN = 38; // 0..38% на подготовку цен/индикаторов
 
   const progressDetail = () => {
-    const total = secRows.length;
+    const total = Math.max(1, secRows.length);
     const active = [...inFlight.values()].filter(Boolean).slice(0, 4);
-    const activePart = active.length ? ` · грузятся: ${active.join(', ')}` : '';
+    const activePart = active.length ? ` · сейчас: ${active.join(', ')}` : '';
     return `Подготовка ${completed} / ${total}${activePart}`;
+  };
+
+  const bumpPrepProgress = async (force = false) => {
+    if (!isInitialLoad || !reportProgress || secRows.length === 0) return;
+    let sum = completed;
+    for (const f of paperFrac.values()) {
+      sum += Math.min(0.99, Number(f) || 0);
+    }
+    const pct = Math.min(
+      PREP_SPAN,
+      Math.round((sum / secRows.length) * PREP_SPAN * 100) / 100
+    );
+    await reportProgress(
+      {
+        status: 'loading_prices',
+        progress_pct: pct,
+        phase_message: 'Загрузка цен и индикаторов',
+        phase_detail: progressDetail(),
+      },
+      { force }
+    );
   };
 
   await mapPool(rowsToPrepare, BACKTEST_PRICE_CONCURRENCY, async (row) => {
@@ -409,15 +508,8 @@ async function syncActiveSecurities(
     const { security_id: secId, name: secName } = row;
     const label = secName || String(secId);
     inFlight.set(secId, label);
-    if (isInitialLoad && secRows.length > 0) {
-      await updateRun(pool, runId, {
-        progress_pct: Math.min(
-          35,
-          Math.round((completed / secRows.length) * 35 * 100) / 100
-        ),
-        phase_detail: progressDetail(),
-      });
-    }
+    paperFrac.set(secId, 0.05);
+    await bumpPrepProgress();
 
     try {
       await ensureSecurityData(
@@ -432,7 +524,14 @@ async function syncActiveSecurities(
         dateTo,
         endDt,
         pointCount,
-        stats
+        stats,
+        async ({ detail, frac }) => {
+          paperFrac.set(secId, Math.max(0.05, Math.min(0.99, Number(frac) || 0.05)));
+          if (detail) {
+            inFlight.set(secId, `${label}`);
+          }
+          await bumpPrepProgress();
+        }
       );
     } catch (e) {
       stats.pricesErr += 1;
@@ -448,18 +547,11 @@ async function syncActiveSecurities(
       );
     } finally {
       inFlight.delete(secId);
+      paperFrac.delete(secId);
       completed += 1;
     }
 
-    if (isInitialLoad && secRows.length > 0) {
-      await updateRun(pool, runId, {
-        progress_pct: Math.min(
-          35,
-          Math.round((completed / secRows.length) * 35 * 100) / 100
-        ),
-        phase_detail: progressDetail(),
-      });
-    }
+    await bumpPrepProgress(true);
   });
 
   knownIds.clear();
@@ -477,6 +569,7 @@ async function runBacktestAsync(pool, logicId, dateFrom, dateTo, runId) {
     indCached: 0,
     indErr: 0,
   };
+  const reportProgress = createProgressReporter(pool, runId, 180);
 
   try {
     if (!(await ensureTbankForBacktest(pool, runId, logicId))) {
@@ -567,7 +660,8 @@ async function runBacktestAsync(pool, logicId, dateFrom, dateTo, runId) {
       pointCount,
       knownSecIds,
       stats,
-      'Стартовый состав бумаг'
+      'Стартовый состав бумаг',
+      reportProgress
     );
 
     if (await isCancelRequested(pool, runId)) {
@@ -684,6 +778,16 @@ async function runBacktestAsync(pool, logicId, dateFrom, dateTo, runId) {
       return;
     }
 
+    await reportProgress(
+      {
+        status: 'loading_indicators',
+        progress_pct: 39,
+        phase_message: 'Подготовка прогона',
+        phase_detail: `Бумаг ${secTotal}, сигналов ${indicatorIds.length}`,
+      },
+      { force: true }
+    );
+
     const { rows: barRows } = await pool.query(
       `
       SELECT DISTINCT p.dt AS bar_dt
@@ -738,7 +842,8 @@ async function runBacktestAsync(pool, logicId, dateFrom, dateTo, runId) {
           pointCount,
           knownSecIds,
           stats,
-          `Обновление на баре ${bi + 1}/${totalBars}`
+          `Обновление на баре ${bi + 1}/${totalBars}`,
+          null
         );
         if (await isCancelRequested(pool, runId)) {
           await finishCancelled(pool, runId, logicId, balance, bi, totalBars);
@@ -778,36 +883,38 @@ async function runBacktestAsync(pool, logicId, dateFrom, dateTo, runId) {
         return;
       }
 
-      if (bi % 3 === 0 || bi === bars.length - 1) {
-        if (await isCancelRequested(pool, runId)) {
-          await finishCancelled(pool, runId, logicId, balance, bi + 1, totalBars);
-          return;
-        }
-        const pnl = await sumTestPnl(pool, logicId);
+      const isLast = bi === bars.length - 1;
+      // Каждый бар двигает %, PnL пишем чаще чем раньше (каждый бар / throttle reporter)
+      const pct =
+        Math.round((40 + ((bi + 1) / totalBars) * 59.5) * 100) / 100;
+      const patch = {
+        progress_pct: Math.min(99.5, pct),
+        phase_message: 'Прогон по свечам',
+        phase_detail: `${bi + 1} / ${totalBars} баров, бумаг ${knownSecIds.size}`,
+        current_bar_dt: barDt,
+        processed_bars: bi + 1,
+        test_balance: balance,
+      };
+      if (isLast || bi % 2 === 0) {
+        patch.financial_result = await sumTestPnl(pool, logicId);
+      }
+      await reportProgress(patch, { force: isLast });
+
+      if (bi > 0 && bi % 200 === 0) {
         const { rows: tcRows } = await pool.query(
           `SELECT trades_created FROM logic_backtest_runs WHERE id = $1`,
           [runId]
         );
-        await updateRun(pool, runId, {
-          progress_pct: 40 + Math.round(((bi + 1) / totalBars) * 60 * 100) / 100,
-          phase_detail: `${bi + 1} / ${totalBars} баров, бумаг ${knownSecIds.size}`,
-          current_bar_dt: barDt,
-          processed_bars: bi + 1,
-          test_balance: balance,
-          financial_result: pnl,
-        });
-        if (bi > 0 && bi % 200 === 0) {
-          await backtestLog(
-            pool,
-            runId,
-            logicId,
-            'backtest.progress',
-            `Бар ${bi + 1}/${totalBars}, сделок=${tcRows[0]?.trades_created ?? 0}`,
-            { processed_bars: bi + 1, total_bars: totalBars, securities: knownSecIds.size },
-            null,
-            tfId
-          );
-        }
+        await backtestLog(
+          pool,
+          runId,
+          logicId,
+          'backtest.progress',
+          `Бар ${bi + 1}/${totalBars}, сделок=${tcRows[0]?.trades_created ?? 0}`,
+          { processed_bars: bi + 1, total_bars: totalBars, securities: knownSecIds.size },
+          null,
+          tfId
+        );
       }
     }
 

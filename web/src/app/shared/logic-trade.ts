@@ -23,6 +23,8 @@ export interface LogicTradeRow {
   is_fictitious?: boolean;
   is_shadow: boolean;
   is_test: boolean;
+  /** Прогон бэктеста (только is_test); NULL у боевых / legacy. */
+  run_id?: number | null;
   trade_reason: string | null;
   broker_order_id: string | null;
   status: LogicTradeStatus;

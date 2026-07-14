@@ -127,6 +127,11 @@ export class LogicsComponent implements OnInit, OnDestroy {
     number,
     { financial_result: number; commission: number; trade_count: number }
   >();
+  /** Онлайн-сводка боевого финреза (is_test=0). */
+  combatPnlByLogic = new Map<
+    number,
+    { financial_result: number; commission: number; trade_count: number }
+  >();
   logicTradeLots = new Map<number, LogicTradeLotRow[]>();
   signalsLoading = new Set<number>();
   stopsLoading = new Set<number>();
@@ -250,7 +255,7 @@ export class LogicsComponent implements OnInit, OnDestroy {
           this.error = null;
           // Сделки — read-only, обновляем; редактируемые блоки (параметры, формулы) — нет
           this.refreshAllTradesSummaries();
-          this.refreshTestPnlSummary();
+          this.refreshPnlSummaries();
           this.maybeCheckTbankTokenForTrades();
         },
         error: (err) => {
@@ -820,6 +825,24 @@ export class LogicsComponent implements OnInit, OnDestroy {
     return `Тест: финрез ${pnl}, комиссия ${com}, сделок ${row.trade_count}`;
   }
 
+  hasCombatFinancialResult(logicId: number): boolean {
+    return this.combatPnlByLogic.has(logicId);
+  }
+
+  combatFinancialResult(logicId: number): number | null {
+    const row = this.combatPnlByLogic.get(logicId);
+    if (!row) return null;
+    return Number(row.financial_result);
+  }
+
+  combatFinancialResultTitle(logicId: number): string {
+    const row = this.combatPnlByLogic.get(logicId);
+    if (!row) return '';
+    const pnl = this.formatPnl(row.financial_result);
+    const com = this.formatMoney(row.commission);
+    return `Бой: финрез ${pnl}, комиссия ${com}, сделок ${row.trade_count}`;
+  }
+
   hasOpenPositions(logicId: number): boolean {
     return this.openPositionTrades(logicId).length > 0;
   }
@@ -951,7 +974,15 @@ export class LogicsComponent implements OnInit, OnDestroy {
   }
 
   tradesFor(logicId: number, isTest = false): LogicTradeRow[] {
-    return isTest ? this.logicTradesTest.get(logicId) ?? [] : this.logicTrades.get(logicId) ?? [];
+    const rows = isTest
+      ? this.logicTradesTest.get(Number(logicId)) ?? []
+      : this.logicTrades.get(Number(logicId)) ?? [];
+    if (!isTest) return rows;
+    const runId = this.backtestRuns.get(Number(logicId))?.id;
+    if (runId == null) return rows;
+    const hasTagged = rows.some((t) => t.run_id != null);
+    if (!hasTagged) return rows;
+    return rows.filter((t) => Number(t.run_id) === Number(runId));
   }
 
   backtestFor(logicId: number): BacktestRunStatus | null {
@@ -982,6 +1013,21 @@ export class LogicsComponent implements OnInit, OnDestroy {
   isBacktestRunning(logicId: number): boolean {
     const s = this.backtestRuns.get(logicId)?.status;
     return s === 'pending' || s === 'loading_prices' || s === 'loading_indicators' || s === 'running';
+  }
+
+  backtestProgressPct(logicId: number): number {
+    const pct = Number(this.backtestRuns.get(logicId)?.progress_pct);
+    if (!Number.isFinite(pct)) return 0;
+    return Math.max(0, Math.min(100, Math.round(pct)));
+  }
+
+  backtestProgressTitle(logicId: number): string {
+    const run = this.backtestRuns.get(logicId);
+    if (!run) return 'Идёт тестирование';
+    const pct = this.backtestProgressPct(logicId);
+    const phase = run.phase_message || run.status || '';
+    const detail = run.phase_detail ? ` — ${run.phase_detail}` : '';
+    return `Тест ${pct}%: ${phase}${detail}`;
   }
 
   isTradesLoading(logicId: number): boolean {
@@ -1823,7 +1869,7 @@ export class LogicsComponent implements OnInit, OnDestroy {
     }
     this.logicsService.getLogicTrades(logicId, 200, false).subscribe({
       next: (rows) => {
-        this.logicTrades.set(logicId, rows);
+        this.logicTrades.set(Number(logicId), rows);
         this.tradesLoading.delete(logicId);
       },
       error: () => {
@@ -1836,7 +1882,7 @@ export class LogicsComponent implements OnInit, OnDestroy {
   private loadTestTradesForLogic(logicId: number, _silent = false): void {
     this.logicsService.getLogicTrades(logicId, 200, true).subscribe({
       next: (rows) => {
-        this.logicTradesTest.set(logicId, rows);
+        this.logicTradesTest.set(Number(logicId), rows);
       },
     });
   }
@@ -1850,6 +1896,11 @@ export class LogicsComponent implements OnInit, OnDestroy {
     }
   }
 
+  private refreshPnlSummaries(): void {
+    this.refreshTestPnlSummary();
+    this.refreshCombatPnlSummary();
+  }
+
   private refreshTestPnlSummary(): void {
     this.logicsService.getLogicTradesPnlSummary(true).subscribe({
       next: (resp) => {
@@ -1858,8 +1909,10 @@ export class LogicsComponent implements OnInit, OnDestroy {
           { financial_result: number; commission: number; trade_count: number }
         >();
         for (const r of resp.rows ?? []) {
+          const logicId = Number(r.logic_id);
+          if (!Number.isFinite(logicId) || logicId <= 0) continue;
           const pnl = Number(r.financial_result);
-          next.set(r.logic_id, {
+          next.set(logicId, {
             financial_result: Number.isFinite(pnl) ? pnl : 0,
             commission: Number(r.commission) || 0,
             trade_count: Number(r.trade_count) || 0,
@@ -1868,43 +1921,65 @@ export class LogicsComponent implements OnInit, OnDestroy {
         this.testPnlByLogic = next;
       },
       error: () => {
-        // Старый API без /pnl-summary — берём financial_result из последнего backtest run
+        // Старый API без /pnl-summary — только если нет нового endpoint
         this.refreshTestPnlFromBacktestRuns();
       },
     });
   }
 
-  /** Fallback, пока API не перезапущен с /logic-trades/pnl-summary. */
-  private refreshTestPnlFromBacktestRuns(): void {
-    if (!this.logics.length) return;
-    forkJoin(
-      this.logics.map((row) =>
-        this.logicsService.getBacktestStatus(row.id).pipe(
-          catchError(() => of(null)),
-          map((run) => ({ logicId: row.id, run }))
-        )
-      )
-    ).subscribe((results) => {
-      const next = new Map<
-        number,
-        { financial_result: number; commission: number; trade_count: number }
-      >();
-      for (const { logicId, run } of results) {
-        if (!run) continue;
-        const pnl = Number(run.financial_result);
-        if (!Number.isFinite(pnl) || run.financial_result == null) continue;
-        const extra = run as BacktestRunStatus & {
-          trades_created?: number;
-          finished_at?: string | null;
-        };
-        next.set(logicId, {
-          financial_result: pnl,
-          commission: 0,
-          trade_count: Number(extra.trades_created) || 0,
-        });
-      }
-      this.testPnlByLogic = next;
+  private refreshCombatPnlSummary(): void {
+    this.logicsService.getLogicTradesPnlSummary(false).subscribe({
+      next: (resp) => {
+        const next = new Map<
+          number,
+          { financial_result: number; commission: number; trade_count: number }
+        >();
+        for (const r of resp.rows ?? []) {
+          const logicId = Number(r.logic_id);
+          if (!Number.isFinite(logicId) || logicId <= 0) continue;
+          const pnl = Number(r.financial_result);
+          next.set(logicId, {
+            financial_result: Number.isFinite(pnl) ? pnl : 0,
+            commission: Number(r.commission) || 0,
+            trade_count: Number(r.trade_count) || 0,
+          });
+        }
+        this.combatPnlByLogic = next;
+      },
+      error: () => {
+        /* опционально */
+      },
     });
+  }
+
+  /** Fallback без /pnl-summary: сумма уже загруженных test-сделок (не runs.financial_result). */
+  private refreshTestPnlFromBacktestRuns(): void {
+    const next = new Map<
+      number,
+      { financial_result: number; commission: number; trade_count: number }
+    >();
+    for (const row of this.logics) {
+      const trades = this.logicTradesTest.get(Number(row.id)) ?? [];
+      const live = trades.filter((t) => !t.is_shadow);
+      if (live.length === 0) continue;
+      const financial_result = live.reduce(
+        (sum, t) =>
+          t.financial_result != null && Number.isFinite(Number(t.financial_result))
+            ? sum + Number(t.financial_result)
+            : sum,
+        0
+      );
+      const commission = live.reduce(
+        (sum, t) => sum + (Number(t.commission) || 0),
+        0
+      );
+      next.set(Number(row.id), {
+        financial_result,
+        commission,
+        trade_count: live.length,
+      });
+    }
+    this.testPnlByLogic = next;
   }
 
   private loadMoexExchangeId(): void {

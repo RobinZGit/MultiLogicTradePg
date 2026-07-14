@@ -445,13 +445,13 @@ BEGIN
         logic_id, account_id, security_id, timeframe_id,
         side_id, action_id, position_event, signal_kind, signal_formula,
         quantity, price, bar_dt, is_simulated, is_fictitious,
-        is_shadow, is_test, trade_reason, status
+        is_shadow, is_test, run_id, trade_reason, status
     )
     VALUES (
         p_logic_id, p_account_id, p_security_id, p_timeframe_id,
         p_side_id, p_action_id, v_position_event, p_signal_kind, p_formula,
         p_quantity, p_price, p_bar_dt, TRUE, FALSE,
-        p_is_shadow, TRUE, p_trade_reason, 'filled'
+        p_is_shadow, TRUE, p_run_id, p_trade_reason, 'filled'
     )
     ON CONFLICT (logic_id, security_id, position_event, action_id, bar_dt, is_test, is_shadow) DO NOTHING
     RETURNING id INTO v_trade_id;

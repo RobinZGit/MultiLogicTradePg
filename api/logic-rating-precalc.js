@@ -1,7 +1,7 @@
 'use strict';
 
-const { getTradingParams } = require('./lib/logic-params');
 const { writeTechLogEvent } = require('./lib/tech-log');
+const { waitWhileBacktestActive, sleep } = require('./lib/work-isolation');
 
 /** In-memory jobs: logicId → status (фон, не блокирует бой). */
 const jobs = new Map();
@@ -30,6 +30,21 @@ function patchJob(logicId, patch) {
   const next = { ...cur, ...patch, logic_id: logicId };
   jobs.set(logicId, next);
   return next;
+}
+
+async function readLookbackDays(pool, logicId) {
+  const { rows } = await pool.query(
+    `
+    SELECT param_value
+    FROM logic_params
+    WHERE logic_id = $1 AND param_key = 'rating_lookback_days'
+    LIMIT 1
+    `,
+    [logicId]
+  );
+  let lookback = Number(rows[0]?.param_value);
+  if (!Number.isFinite(lookback)) lookback = 7;
+  return Math.max(1, Math.min(90, Math.round(lookback)));
 }
 
 async function startRatingPrecalc(pool, logicId) {
@@ -66,17 +81,55 @@ async function startRatingPrecalc(pool, logicId) {
   return job;
 }
 
+async function queryWithRetry(pool, sql, params, opts = {}) {
+  const attempts = Number(opts.attempts) || 5;
+  let lastErr;
+  for (let i = 0; i < attempts; i += 1) {
+    try {
+      return await pool.query(sql, params);
+    } catch (err) {
+      lastErr = err;
+      // 40001 serialization_failure, 40P01 deadlock_detected, 55P03 lock_not_available
+      if (!['40001', '40P01', '55P03'].includes(err.code) && i === attempts - 1) {
+        throw err;
+      }
+      if (!['40001', '40P01', '55P03'].includes(err.code)) {
+        throw err;
+      }
+      await sleep(200 + i * 300);
+    }
+  }
+  throw lastErr;
+}
+
 async function runRatingPrecalc(pool, logicId) {
   patchJob(logicId, {
     status: 'running',
     progress_pct: 1,
-    phase_message: 'Сброс боевого рейтинга',
+    phase_message: 'Ожидание свободного окна (без бэктеста этой логики)',
   });
 
-  const trading = await getTradingParams(pool, logicId);
-  let lookback = Number(trading.rating_lookback_days);
-  if (!Number.isFinite(lookback)) lookback = 7;
-  lookback = Math.max(1, Math.min(90, Math.round(lookback)));
+  const cleared = await waitWhileBacktestActive(pool, logicId, {
+    timeoutMs: 45 * 60 * 1000,
+    pollMs: 2000,
+  });
+  if (!cleared) {
+    patchJob(logicId, {
+      status: 'failed',
+      progress_pct: 100,
+      phase_message: 'Таймаут ожидания бэктеста',
+      error: 'backtest still active',
+      finished_at: new Date().toISOString(),
+    });
+    return;
+  }
+
+  patchJob(logicId, {
+    phase_message: 'Сброс боевого рейтинга',
+    progress_pct: 2,
+  });
+
+  const lookback = await readLookbackDays(pool, logicId);
 
   const { rows: tfRows } = await pool.query(
     `SELECT logic_resolve_timeframe_id($1) AS tf_id`,
@@ -101,7 +154,7 @@ async function runRatingPrecalc(pool, logicId) {
     progress_pct: 3,
   });
 
-  await pool.query(`SELECT logic_signal_rating_reset_live($1)`, [logicId]);
+  await queryWithRetry(pool, `SELECT logic_signal_rating_reset_live($1)`, [logicId]);
 
   const { rows: barRows } = await pool.query(
     `
@@ -152,11 +205,30 @@ async function runRatingPrecalc(pool, logicId) {
   }
 
   for (let i = 0; i < bars.length; i += 1) {
-    await pool.query(`SELECT logic_signal_rate_bar($1, $2, $3, FALSE, NULL)`, [
-      logicId,
-      tfId,
-      bars[i],
-    ]);
+    // Пауза, если на эту логику снова запустили тест
+    if (i > 0 && i % 25 === 0) {
+      const ok = await waitWhileBacktestActive(pool, logicId, {
+        timeoutMs: 45 * 60 * 1000,
+        pollMs: 2000,
+      });
+      if (!ok) {
+        patchJob(logicId, {
+          status: 'failed',
+          progress_pct: Math.min(99, 5 + Math.round(((i + 1) / total) * 94)),
+          phase_message: 'Прервано: длинный бэктест',
+          bars_done: i,
+          error: 'backtest resumed during precalc',
+          finished_at: new Date().toISOString(),
+        });
+        return;
+      }
+    }
+
+    await queryWithRetry(
+      pool,
+      `SELECT logic_signal_rate_bar($1, $2, $3, FALSE, NULL)`,
+      [logicId, tfId, bars[i]]
+    );
 
     if (i === bars.length - 1 || i % 15 === 0) {
       const done = i + 1;
@@ -169,8 +241,8 @@ async function runRatingPrecalc(pool, logicId) {
     }
   }
 
-  // Досчитать pending, у которых уже есть следующая свеча
-  await pool.query(
+  await queryWithRetry(
+    pool,
     `SELECT logic_signal_rating_resolve_pending($1, $2, NULL, FALSE, NULL)`,
     [logicId, tfId]
   );

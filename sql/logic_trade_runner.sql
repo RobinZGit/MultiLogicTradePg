@@ -481,6 +481,7 @@ DECLARE
     v_point_count INTEGER;
     v_tf_sec INTEGER;
     v_err TEXT;
+    v_skip_http BOOLEAN := FALSE;
 BEGIN
     SELECT t.sec INTO v_tf_sec FROM timeframes t WHERE t.id = p_timeframe_id;
 
@@ -488,47 +489,67 @@ BEGIN
     v_date_to := GREATEST(p_closed_bar_dt::date, CURRENT_DATE);
     v_date_from := logic_trade_load_date_from(v_tf_sec, v_point_count, p_closed_bar_dt);
 
+    -- Пока идёт любой бэктест — не дергаем HTTP load_prices (меньше блокировок цен/пула)
+    SELECT EXISTS (
+        SELECT 1
+        FROM logic_backtest_runs r
+        WHERE r.status IN ('pending', 'loading_prices', 'loading_indicators', 'running')
+    ) INTO v_skip_http;
+
+    IF v_skip_http THEN
+        PERFORM logic_trade_log(
+            p_logic_id,
+            'trade.prices.skip_http',
+            'Пропуск load_prices: активен бэктест (используем уже загруженные цены)',
+            jsonb_build_object('closed_bar', p_closed_bar_dt),
+            NULL,
+            p_timeframe_id
+        );
+    END IF;
+
     FOR v_sec IN
         SELECT ls.security_id
         FROM logic_securities ls
         WHERE ls.logic_id = p_logic_id AND ls.is_active = TRUE
     LOOP
-        BEGIN
-            CALL load_prices(v_sec.security_id, p_timeframe_id, v_date_from, v_date_to);
-            PERFORM logic_trade_log(
-                p_logic_id,
-                'trade.prices.loaded',
-                format('Цены подгружены sec=%s (%s .. %s)', v_sec.security_id, v_date_from, v_date_to),
-                jsonb_build_object(
-                    'security_id', v_sec.security_id,
-                    'date_from', v_date_from,
-                    'date_to', v_date_to,
-                    'timeframe_id', p_timeframe_id
-                ),
-                v_sec.security_id,
-                p_timeframe_id
-            );
-        EXCEPTION
-            WHEN undefined_function THEN
+        IF NOT v_skip_http THEN
+            BEGIN
+                CALL load_prices(v_sec.security_id, p_timeframe_id, v_date_from, v_date_to);
                 PERFORM logic_trade_log(
                     p_logic_id,
-                    'trade.prices.error',
-                    'load_prices недоступен (нет HTTP-расширения)',
-                    jsonb_build_object('security_id', v_sec.security_id),
+                    'trade.prices.loaded',
+                    format('Цены подгружены sec=%s (%s .. %s)', v_sec.security_id, v_date_from, v_date_to),
+                    jsonb_build_object(
+                        'security_id', v_sec.security_id,
+                        'date_from', v_date_from,
+                        'date_to', v_date_to,
+                        'timeframe_id', p_timeframe_id
+                    ),
                     v_sec.security_id,
                     p_timeframe_id
                 );
-            WHEN OTHERS THEN
-                v_err := SQLERRM;
-                PERFORM logic_trade_log(
-                    p_logic_id,
-                    'trade.prices.error',
-                    format('Ошибка загрузки цен sec=%s: %s', v_sec.security_id, v_err),
-                    jsonb_build_object('security_id', v_sec.security_id, 'error', v_err),
-                    v_sec.security_id,
-                    p_timeframe_id
-                );
-        END;
+            EXCEPTION
+                WHEN undefined_function THEN
+                    PERFORM logic_trade_log(
+                        p_logic_id,
+                        'trade.prices.error',
+                        'load_prices недоступен (нет HTTP-расширения)',
+                        jsonb_build_object('security_id', v_sec.security_id),
+                        v_sec.security_id,
+                        p_timeframe_id
+                    );
+                WHEN OTHERS THEN
+                    v_err := SQLERRM;
+                    PERFORM logic_trade_log(
+                        p_logic_id,
+                        'trade.prices.error',
+                        format('Ошибка загрузки цен sec=%s: %s', v_sec.security_id, v_err),
+                        jsonb_build_object('security_id', v_sec.security_id, 'error', v_err),
+                        v_sec.security_id,
+                        p_timeframe_id
+                    );
+            END;
+        END IF;
 
         FOR v_sig IN
             SELECT DISTINCT lis.indicator_id
@@ -581,7 +602,7 @@ END;
 $$;
 
 COMMENT ON PROCEDURE logic_refresh_market_data(INTEGER, INTEGER, TIMESTAMP) IS
-'Перед проверкой сигналов: load_prices + ensure/sync индикаторов логики на TF (live trading)';
+'Перед проверкой сигналов: load_prices (кроме активного бэктеста) + ensure/sync индикаторов логики на TF';
 
 CREATE OR REPLACE FUNCTION process_logic_trades(p_logic_id INTEGER)
 RETURNS INTEGER
@@ -1041,6 +1062,7 @@ DECLARE
     v_total_created INTEGER := 0;
     v_total_stops INTEGER := 0;
     v_processed INTEGER := 0;
+    v_skipped_bt INTEGER := 0;
     v_got_lock BOOLEAN;
 BEGIN
     v_got_lock := pg_try_advisory_lock(hashtext('multilogictrade_run_trade_cycle'));
@@ -1069,6 +1091,17 @@ BEGIN
         WHERE l.is_enabled = TRUE AND a.is_active = TRUE
         ORDER BY l.id
     LOOP
+        -- Не мешать бэктесту той же логики (цены/индикаторы/сделки)
+        IF EXISTS (
+            SELECT 1
+            FROM logic_backtest_runs r
+            WHERE r.logic_id = v_logic.id
+              AND r.status IN ('pending', 'loading_prices', 'loading_indicators', 'running')
+        ) THEN
+            v_skipped_bt := v_skipped_bt + 1;
+            CONTINUE;
+        END IF;
+
         v_processed := v_processed + 1;
         v_total_stops := v_total_stops + process_logic_stops(v_logic.id);
         v_total_created := v_total_created + process_logic_trades(v_logic.id);
@@ -1079,19 +1112,28 @@ BEGIN
     PERFORM app_tech_log_event(
         'trade-runner',
         'cycle.end',
-        format('processed=%s stops=%s created=%s', v_processed, v_total_stops, v_total_created),
+        format(
+            'processed=%s stops=%s created=%s skip_bt=%s',
+            v_processed, v_total_stops, v_total_created, v_skipped_bt
+        ),
         'postgresql',
         'event',
         NULL,
         NULL,
         NULL,
-        jsonb_build_object('processed', v_processed, 'stops', v_total_stops, 'created', v_total_created)
+        jsonb_build_object(
+            'processed', v_processed,
+            'stops', v_total_stops,
+            'created', v_total_created,
+            'skipped_backtest', v_skipped_bt
+        )
     );
 
     RETURN jsonb_build_object(
         'processed', v_processed,
         'stops', v_total_stops,
         'created', v_total_created,
+        'skipped_backtest', v_skipped_bt,
         'at', CURRENT_TIMESTAMP
     );
 EXCEPTION
@@ -1102,4 +1144,5 @@ END;
 $$;
 
 COMMENT ON FUNCTION run_trade_cycle() IS
-'Цикл торговли по включённым logics. Только при активном UI (heartbeat Angular); pg_cron или Node fallback.';
+'Цикл торговли по включённым logics (пропуск логик с активным бэктестом). '
+'Node fallback предпочтителен: по логике отдельно (короткие tx). pg_cron — эта функция.';

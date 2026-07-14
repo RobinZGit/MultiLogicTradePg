@@ -43,6 +43,10 @@ const pool = new Pool({
   database: process.env.PGDATABASE || 'multilogictrade',
   user: process.env.PGUSER || 'postgres',
   password: process.env.PGPASSWORD,
+  // Бой (по логикам) + бэктест (×2) + UI poll + прекалк рейтингов
+  max: Math.max(10, Math.min(40, Number(process.env.PGPOOL_MAX) || 24)),
+  idleTimeoutMillis: 30_000,
+  connectionTimeoutMillis: 15_000,
 });
 
 app.use(cors({ origin: corsOrigin }));
@@ -2070,6 +2074,7 @@ const LOGIC_TRADE_SELECT = `
     lt.is_fictitious,
     lt.is_shadow,
     lt.is_test,
+    lt.run_id,
     lt.trade_reason,
     lt.broker_order_id,
     lt.status,
@@ -2142,41 +2147,44 @@ app.get('/api/logic-trades/pnl-summary', async (req, res) => {
       : true; // по умолчанию тест — для колонки на главной
   try {
     if (isTest) {
-      // Тест: сумма сделок + fallback на последний прогон logic_backtest_runs
+      // Только живые is_test-сделки этой логики (не fallback на runs —
+      // иначе после DELETE при новом тесте в таблице «висит» старый financial_result прогона).
+      // При наличии run_id берём сделки последнего прогона логики.
       const { rows } = await pool.query(
         `
-        WITH trade_agg AS (
-          SELECT
-            lt.logic_id,
-            COALESCE(SUM(lt.financial_result), 0)::float8 AS financial_result,
-            COALESCE(SUM(COALESCE(lt.commission, 0)), 0)::float8 AS commission,
-            COUNT(*)::int AS trade_count
-          FROM logic_trades lt
-          WHERE lt.is_test = TRUE
-            AND COALESCE(lt.is_shadow, FALSE) = FALSE
-            AND lt.status IN ('filled', 'submitted')
-          GROUP BY lt.logic_id
-        ),
-        run_latest AS (
+        WITH latest_run AS (
           SELECT DISTINCT ON (r.logic_id)
             r.logic_id,
-            r.financial_result::float8 AS financial_result,
-            COALESCE(r.trades_created, 0)::int AS trade_count
+            r.id AS run_id
           FROM logic_backtest_runs r
-          WHERE r.financial_result IS NOT NULL
-            AND r.status IN ('done', 'completed', 'cancelled', 'failed')
           ORDER BY r.logic_id, COALESCE(r.finished_at, r.started_at, r.created_at) DESC, r.id DESC
         )
         SELECT
-          COALESCE(t.logic_id, r.logic_id) AS logic_id,
-          COALESCE(t.financial_result, r.financial_result, 0)::float8 AS financial_result,
-          COALESCE(t.commission, 0)::float8 AS commission,
-          COALESCE(NULLIF(t.trade_count, 0), r.trade_count, 0)::int AS trade_count
-        FROM trade_agg t
-        FULL OUTER JOIN run_latest r ON r.logic_id = t.logic_id
-        WHERE COALESCE(t.trade_count, 0) > 0
-           OR r.financial_result IS NOT NULL
-        ORDER BY 1
+          lt.logic_id,
+          COALESCE(SUM(lt.financial_result), 0)::float8 AS financial_result,
+          COALESCE(SUM(COALESCE(lt.commission, 0)), 0)::float8 AS commission,
+          COUNT(*)::int AS trade_count
+        FROM logic_trades lt
+        LEFT JOIN latest_run lr ON lr.logic_id = lt.logic_id
+        WHERE lt.is_test = TRUE
+          AND COALESCE(lt.is_shadow, FALSE) = FALSE
+          AND lt.status IN ('filled', 'submitted')
+          AND (
+            (lt.run_id IS NOT NULL AND lr.run_id IS NOT NULL AND lt.run_id = lr.run_id)
+            OR (
+              lt.run_id IS NULL
+              AND NOT EXISTS (
+                SELECT 1
+                FROM logic_trades x
+                WHERE x.logic_id = lt.logic_id
+                  AND x.is_test = TRUE
+                  AND x.run_id IS NOT NULL
+              )
+            )
+          )
+        GROUP BY lt.logic_id
+        HAVING COUNT(*) > 0
+        ORDER BY lt.logic_id
         `
       );
       res.json({

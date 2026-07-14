@@ -113,6 +113,9 @@ async function fetchParamRows(pool, logicId) {
   return rows;
 }
 
+/** Уже засеянные дефолты в этом процессе Node — без лишних INSERT под lock. */
+const ensuredDefaultParams = new Set();
+
 async function getTradingParams(pool, logicId) {
   await ensureDefaultParams(pool, logicId);
   const rows = await fetchParamRows(pool, logicId);
@@ -120,15 +123,41 @@ async function getTradingParams(pool, logicId) {
 }
 
 async function ensureDefaultParams(pool, logicId) {
-  await pool.query(
-    `
-    INSERT INTO logic_params (logic_id, param_key, param_value, value_type)
-    SELECT $1, d.param_key, d.default_value, d.value_type
-    FROM logic_param_defs d
-    ON CONFLICT (logic_id, param_key) DO NOTHING
-    `,
-    [logicId]
-  );
+  if (ensuredDefaultParams.has(logicId)) {
+    return;
+  }
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    // Не ждать минутами, пока бой держит строку current_balance
+    await client.query(`SET LOCAL lock_timeout = '1500ms'`);
+    await client.query(
+      `
+      INSERT INTO logic_params (logic_id, param_key, param_value, value_type)
+      SELECT $1, d.param_key, d.default_value, d.value_type
+      FROM logic_param_defs d
+      ON CONFLICT (logic_id, param_key) DO NOTHING
+      `,
+      [logicId]
+    );
+    await client.query('COMMIT');
+    ensuredDefaultParams.add(logicId);
+  } catch (err) {
+    try {
+      await client.query('ROLLBACK');
+    } catch (_e) {
+      /* ignore */
+    }
+    // 55P03 lock_not_available — параметры скорее всего уже есть; poll UI не должен вставать
+    const msg = String(err.message || '');
+    if (err.code === '55P03' || /lock timeout|canceling statement due to lock/i.test(msg)) {
+      ensuredDefaultParams.add(logicId);
+      return;
+    }
+    throw err;
+  } finally {
+    client.release();
+  }
 }
 
 async function upsertParam(pool, logicId, paramKey, value, valueType) {

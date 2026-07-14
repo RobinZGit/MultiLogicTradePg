@@ -1,6 +1,7 @@
 -- ============================================
 -- MultiLogicTrade — шаг 1: таблицы и справочники
--- Версия: v43 (идемпотентный запуск)
+-- Версия: v43c (идемпотентный запуск)
+-- v43c: logic_trades.run_id — привязка тестовых сделок к прогону (изоляция финреза)
 -- v43: комиссия default 0.03; L1–L4 из MultiLogicTradeA; LINREG/ADX/CCI calc
 -- v42: rating_lookback_days — окно предрасчёта боевого рейтинга сигналов при enable
 -- v41: пакет из 10 классических логик (OsEngine-style) + демо; все на FAKE, все акции
@@ -1851,6 +1852,7 @@ CREATE TABLE IF NOT EXISTS logic_trades (
     is_fictitious BOOLEAN NOT NULL DEFAULT FALSE,
     is_shadow BOOLEAN NOT NULL DEFAULT FALSE,
     is_test BOOLEAN NOT NULL DEFAULT FALSE,
+    run_id BIGINT,
     broker_order_id VARCHAR(100),
     status VARCHAR(20) NOT NULL DEFAULT 'filled'
         CHECK (status IN ('pending', 'submitted', 'filled', 'rejected', 'cancelled')),
@@ -1871,6 +1873,8 @@ ALTER TABLE logic_trades ADD COLUMN IF NOT EXISTS is_shadow BOOLEAN NOT NULL DEF
 ALTER TABLE logic_trades ADD COLUMN IF NOT EXISTS is_test BOOLEAN NOT NULL DEFAULT FALSE;
 ALTER TABLE logic_trades ADD COLUMN IF NOT EXISTS trade_reason TEXT;
 ALTER TABLE logic_trades ADD COLUMN IF NOT EXISTS position_event VARCHAR(10) NOT NULL DEFAULT 'open';
+-- Прогон теста, породивший сделку (NULL = бой / старые записи до v43c)
+ALTER TABLE logic_trades ADD COLUMN IF NOT EXISTS run_id BIGINT;
 
 DO $$
 BEGIN
@@ -1913,6 +1917,8 @@ COMMENT ON COLUMN logic_trades.trade_reason IS
 COMMENT ON COLUMN logic_trades.bar_dt IS 'Свеча, на которой сработал сигнал';
 COMMENT ON COLUMN logic_trades.commission IS 'Комиссия по сделке (фейк: % от депозита; реал: с биржи)';
 COMMENT ON COLUMN logic_trades.financial_result IS 'Итог PnL закрывающей сделки (сумма пакетов); NULL для открытия';
+COMMENT ON COLUMN logic_trades.run_id IS
+'FK → logic_backtest_runs: прогон теста, породивший сделку; NULL для боевых и legacy';
 
 CREATE TABLE IF NOT EXISTS logic_backtest_runs (
     id BIGSERIAL PRIMARY KEY,
@@ -1941,6 +1947,20 @@ CREATE TABLE IF NOT EXISTS logic_backtest_runs (
 );
 
 CREATE INDEX IF NOT EXISTS idx_logic_backtest_runs_logic ON logic_backtest_runs(logic_id, created_at DESC);
+
+-- FK logic_trades.run_id после CREATE logic_backtest_runs (порядок таблиц)
+DO $$
+BEGIN
+    ALTER TABLE logic_trades
+        ADD CONSTRAINT logic_trades_run_id_fkey
+        FOREIGN KEY (run_id) REFERENCES logic_backtest_runs(id) ON DELETE SET NULL;
+EXCEPTION
+    WHEN duplicate_object THEN NULL;
+END $$;
+
+CREATE INDEX IF NOT EXISTS idx_logic_trades_run_id
+    ON logic_trades(run_id)
+    WHERE run_id IS NOT NULL;
 
 COMMENT ON TABLE logic_backtest_runs IS
 'Историческое тестирование: прогресс, период, итог (сделки is_test=TRUE)';

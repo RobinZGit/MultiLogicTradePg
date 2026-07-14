@@ -230,17 +230,9 @@ export class LogicPositionsPanelComponent implements OnChanges {
 
 
   displayFinancialResult(): number {
-
-    if (this.isTest && this.backtestRun?.financial_result != null) {
-
-      const n = Number(this.backtestRun.financial_result);
-
-      if (Number.isFinite(n)) return n;
-
-    }
-
+    // Всегда сумма сделок панели — не financial_result прогона
+    // (иначе «в таблице есть», в развороте «пусто» / другой итог).
     return this.totalFinancialResult();
-
   }
 
 

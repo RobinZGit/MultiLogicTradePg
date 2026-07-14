@@ -5,7 +5,7 @@
 > Включать **запросы пользователя текстом** (секция «Запросы пользователя»).
 
 **Репозиторий:** https://github.com/RobinZGit/MultiLogicTradePg  
-**Последнее обновление:** 2026-07-14 — v43: комиссия 0.03; L1–L4; CCI/ADX/LINREG/ATR GROWTH5 как SMA/STOCH (script + calc_ind_* + _array + dispatcher); БД 00→02; push
+**Последнее обновление:** 2026-07-14 — v43c: изоляция финреза теста (`logic_trades.run_id`, pnl только из сделок)
 
 ---
 
@@ -25,7 +25,7 @@
 | Файл | Назначение |
 |------|------------|
 | `00_create_database.sql` | **DROP + CREATE** базы `multilogictrade` (полное пересоздание) |
-| `01_multilogictrade_tables_and_data.sql` | Таблицы, индексы, справочники (идемпотентно, **v43**) |
+| `01_multilogictrade_tables_and_data.sql` | Таблицы, индексы, справочники (идемпотентно, **v43c**) |
 | `02_multilogictrade_functions_and_procedures.sql` | Функции и процедуры (идемпотентно) |
 | `03_multilogictrade_examples.sql` | Примеры SELECT (необязательно) |
 
@@ -78,7 +78,7 @@
 - **Бэктест Стоп:** `cancel` сразу ставит `status=cancelled`, результат теста **не удаляется**; UI не висит на «Останавливаю…»;
 - **`logic_stops`** — стоп-лосс и тейк-профит по логике (`rule_kind` stop_loss|take_profit, `scope_type` security|portfolio|security_resume, `value`, `value_unit` percent|atr);
 - **`logic_securities`** — портфель бумаг логики (`logic_id`, `security_id`, `display_order`, `is_active`);
-- **`logic_trades`** — сделки: `position_event`, `signal_kind`, `is_simulated`, **`is_fictitious`**, `commission`, **`financial_result`** (только Close), `bar_dt`, `status`; side Open/Close через `sides`; уникальность бара: `(logic_id, security_id, position_event, action_id, bar_dt, is_test, is_shadow)`;
+- **`logic_trades`** — сделки: `position_event`, `signal_kind`, `is_simulated`, **`is_fictitious`**, `commission`, **`financial_result`** (только Close), **`run_id`** (прогон теста → `logic_backtest_runs`; NULL у боя), `bar_dt`, `status`; side Open/Close через `sides`; уникальность бара: `(logic_id, security_id, position_event, action_id, bar_dt, is_test, is_shadow)`;
 - **`logic_trade_lots`** — пакеты закрытия (FIFO / средняя): связь close↔open, суммы, комиссии, PnL по пакету;
 - **`logic_param_defs`** + **`logic_params`** — параметры торговли (EAV): **`timeframe`**, `position_size_pct`, `max_open_positions`, `initial_balance`, `current_balance`, **`commission_pct`**, **`cost_method`** (FIFO|AVERAGE), **`base_annual_rate_pct`** (порог рейтинга сигнала), `last_trade_check_at`;
 - **`indicators.formula`** — многочлен для `calc_poly_formula_array`; **`is_custom`** — подсветка в списке;
@@ -109,7 +109,7 @@
 
 ---
 
-## Что сделано (актуально на 2026-07-13)
+## Что сделано (актуально на 2026-07-14)
 
 ### Бумаги ↔ индикаторы
 
@@ -158,8 +158,11 @@
 54. **Бэктест Стоп:** сразу `status=cancelled`, результат сохранён; не зависать на длинном `rate_signals`; демо follow/breakout (SMA+BB+STOCH).
 55. **v41 seed логик:** 10 классических стратегий (OsEngine-style) + неизменённое демо; все на фейк-счёте, все акции.
 56. **v42 боевой рейтинг на вкладке Сигналы:** колонка только `rating` (сумма по бумагам); раскрытие сигнала → бумаги → график (`is_test=0`); параметр `rating_lookback_days` (default 7); при enable — фоновый предрасчёт `api/logic-rating-precalc.js` + иконка ↻; `logic_signal_rate_bar` / `logic_signal_rating_reset_live`.
-57. **Финрез + комиссия в UI:** шапка Позиции/Тестирование и плитки бумаг — комиссия; главная таблица логик — колонка «Финрез теста» (онлайн `GET /api/logic-trades/pnl-summary`, не хранится отдельным полем).
+57. **Финрез + комиссия в UI:** шапка Позиции/Тестирование и плитки бумаг — комиссия; главная таблица логик — колонки «Финрез» (бой) и «Финрез теста» (онлайн).
 58. **v43 L1–L4 + комиссия 0.03:** перенос FINRESP L1–L4; индикаторы **как SMA/STOCH** — каталог + `indicator_value_types` + `script` → `calc_ind_*` + `calc_ind_*_array` + CASE в `calc_indicator_series_array` (без отдельного poly); ATR серия GROWTH5; `logic_apply_indicator_params_from_signals` для period из `@IND(...)`.
+59. **v43b изоляция бой/тест/прекалк:** Node trade-runner — отдельная tx на логику; пропуск логики с активным бэктестом; при любом бэктесте бой не делает HTTP `load_prices`; `ensureDefaultParams` с `lock_timeout` + кэш; rating precalc ждёт бэктест + retry deadlock/serialization; пул PG `max≈24`.
+60. **Прогресс теста UI:** % в крутилке у имени; плавный progress при HTTP-ценах/индикаторах и по барам.
+61. **v43c финрез теста не смешивается:** `logic_trades.run_id`; INSERT бэктеста пишет `run_id`; `GET /pnl-summary?is_test=1` только сумма сделок последнего прогона (без fallback на устаревший `logic_backtest_runs.financial_result`); панель «Тестирование» считает финрез только по сделкам; фильтр `tradesFor` по `run_id`.
 
 ### Автотесты
 
@@ -200,6 +203,8 @@
 - [x] Боевой рейтинг: колонка только бой; сигнал→бумаги→график; предрасчёт при enable (`rating_lookback_days`) (v42, локально).
 - [x] Финрез: комиссия в шапках/плитках; колонка «Финрез теста» на главной (онлайн).
 - [x] v43: L1–L4 (MultiLogicTradeA) + индикаторы + комиссия 0.03; БД 00→02; push.
+- [x] v43b: изоляция бой / тест / прекалк рейтингов (без взаимных lock-stall).
+- [x] v43c: финрез теста привязан к сделкам/`run_id` (не stale PnL из `logic_backtest_runs`).
 - [ ] Расширить оценку формул сигналов (CROSS; AND внутри одной формулы).
 - [ ] `is_fictitious` — логика заполнения.
 - [ ] Заполнить `tbank_figi` где возможно (частично через `resolve_tbank_instrument_id`).
@@ -225,6 +230,8 @@
 
 | Дата | Суть |
 |------|------|
+| 2026-07-14 | v43c: финрез теста — run_id + pnl только из сделок (без смешения с чужим/старым прогоном) |
+| 2026-07-14 | v43b: изоляция бой/тест/прекалк (короткие tx, skip HTTP при бэктесте, lock_timeout) |
 | 2026-07-14 | v43: комиссия 0.03; L1–L4 FINRESP; LINREG/ADX/CCI; push + БД 00→02 |
 | 2026-07-14 | Финрез: комиссия в шапках/плитках; колонка «Финрез теста» на главной (онлайн) |
 | 2026-07-14 | v42 (локально): боевой рейтинг UI (сигнал→бумаги→график); предрасчёт при enable; rating_lookback_days |
@@ -349,3 +356,6 @@
 62. «Где финрез на плитках (тест и бой) — добавить комиссии; на главной форме у логики — колонка финрез теста (онлайн, зелёный/красный; без хранения; если теста не было — пусто)».
 63. «Комиссия default 0.03; добавить L1–L4 из MultiLogicTradeA (адаптировать под Pg); недостающие индикаторы; в репо; БД с нуля».
 64. «Новые индикаторы считать как SMA/STOCH: SQL-функции, каталог indicators, тот же парсинг — без отдельной схемы».
+65. «Исправить блокировки: тест всех логик + бой одновременно не должны блокировать друг друга».
+66. «Колонка Финрез (бой) рядом с Финрез теста; крутилка теста с %; плавнее progress загрузки цен и прогона».
+67. «Финрез теста не должен смешиваться: в большой таблице одно, в развороте теста другое/пусто; надёжная привязка тестовых сделок к логике/этому прогону».

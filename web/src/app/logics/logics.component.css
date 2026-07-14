@@ -76,6 +76,7 @@
   text-align: right;
 }
 
+.col-combat-pnl,
 .col-test-pnl {
   text-align: right;
   white-space: nowrap;
@@ -83,6 +84,7 @@
   font-variant-numeric: tabular-nums;
 }
 
+.logic-combat-pnl,
 .logic-test-pnl {
   font-weight: 700;
   font-size: 0.9rem;
@@ -236,13 +238,40 @@ tbody tr.logic-main-row:hover {
   gap: 0.45rem;
 }
 
-.logic-test-spin {
-  display: inline-block;
-  font-size: 1rem;
+.logic-test-progress {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 2.05rem;
+  height: 2.05rem;
+  flex-shrink: 0;
+  vertical-align: middle;
+}
+
+.logic-test-progress-ring {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 1.55rem;
   line-height: 1;
   color: #b45309;
   animation: logic-spin 0.85s linear infinite;
-  flex-shrink: 0;
+  opacity: 0.9;
+  pointer-events: none;
+}
+
+.logic-test-progress-pct {
+  position: relative;
+  z-index: 1;
+  font-size: 0.62rem;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  color: #92400e;
+  line-height: 1;
+  text-shadow: 0 0 2px #fff, 0 0 3px #fff;
 }
 
 @keyframes logic-spin {

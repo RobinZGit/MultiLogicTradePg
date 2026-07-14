@@ -46,10 +46,13 @@ sql02 = replaceBetween(
 );
 
 const tradeTail = read('sql/logic_trade_runner.sql');
-const tradeStart = tradeTail.indexOf('CREATE OR REPLACE FUNCTION process_logic_trades');
+// Включаем logic_refresh_market_data (skip HTTP при бэктесте) + process + run_trade_cycle
+const refreshStart = tradeTail.indexOf('CREATE OR REPLACE PROCEDURE logic_refresh_market_data(');
+const processStart = tradeTail.indexOf('CREATE OR REPLACE FUNCTION process_logic_trades');
+const tradeStart = refreshStart !== -1 ? refreshStart : processStart;
 const tradeEnd = tradeTail.indexOf('COMMENT ON FUNCTION run_trade_cycle()');
 if (tradeStart === -1 || tradeEnd === -1) {
-  throw new Error('sync-02: process_logic_trades / run_trade_cycle not found in logic_trade_runner.sql');
+  throw new Error('sync-02: logic_refresh/process_logic_trades / run_trade_cycle not found in logic_trade_runner.sql');
 }
 const ratingBlock = read('sql/logic_signal_and_rating.sql').trimEnd() + '\n\n';
 const tradeBlock =
@@ -59,15 +62,33 @@ const tradeBlock =
   tradeTail.slice(tradeEnd).trimEnd() +
   '\n';
 
-// Рейтинг-хелперы идут перед process_logic_trades; при повторном sync не дублировать
+// Рейтинг + refresh + process; при повторном sync не дублировать
 const ratingMarker = '-- AND-группы сигналов + рейтинг сигнала на логике';
+const refreshMarker = 'CREATE OR REPLACE PROCEDURE logic_refresh_market_data(';
 const tradeMarker = 'CREATE OR REPLACE FUNCTION process_logic_trades(p_logic_id INTEGER)';
 const ratingIdx = sql02.indexOf(ratingMarker);
+const refreshIdx = sql02.indexOf(refreshMarker);
 const tradeIdx = sql02.indexOf(tradeMarker);
-const tradeSyncStart =
-  ratingIdx !== -1 && (tradeIdx === -1 || ratingIdx < tradeIdx)
-    ? ratingMarker
-    : tradeMarker;
+// Брать самый ранний маркер среди rating / refresh / process, но только если он ПОСЛЕ close_all
+const closeAllMarker =
+  '-- @include sql/logic_close_all_positions.sql (см. sql/logic_close_all_positions.sql — дублируется ниже)';
+const closeAllIdx = sql02.indexOf(closeAllMarker);
+function afterCloseAll(idx) {
+  return idx !== -1 && (closeAllIdx === -1 || idx > closeAllIdx);
+}
+let tradeSyncStart = tradeMarker;
+const candidates = [
+  { idx: ratingIdx, mark: ratingMarker },
+  { idx: refreshIdx, mark: refreshMarker },
+  { idx: tradeIdx, mark: tradeMarker },
+].filter((c) => afterCloseAll(c.idx));
+if (candidates.length) {
+  candidates.sort((a, b) => a.idx - b.idx);
+  tradeSyncStart = candidates[0].mark;
+} else if (ratingIdx !== -1 && (tradeIdx === -1 || ratingIdx < tradeIdx)) {
+  tradeSyncStart = ratingMarker;
+}
+
 
 sql02 = replaceBetween(
   sql02,
