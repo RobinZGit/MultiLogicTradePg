@@ -89,6 +89,11 @@
 
             <th>Счёт активен</th>
 
+            <th
+              class="col-test-pnl"
+              title="Сумма фин. результата тестовых сделок (онлайн, не хранится отдельно)"
+            >Финрез теста</th>
+
             <th class="col-actions"></th>
 
           </tr>
@@ -108,6 +113,8 @@
               [class.row-disabled]="!row.is_enabled"
 
               [class.row-expanded]="isLogicExpanded(row.id)"
+
+              [class.row-testing]="isBacktestRunning(row.id)"
 
               (click)="toggleLogicExpand(row, $event)"
 
@@ -137,11 +144,30 @@
 
                 />
 
+                @if (isRatingPrecalcActive(row.id)) {
+                  <span
+                    class="rating-precalc-spin"
+                    [title]="ratingPrecalcTitle(row.id)"
+                    aria-label="Предрасчёт рейтингов"
+                  >↻</span>
+                }
+
               </td>
 
               <td>{{ row.id }}</td>
 
-              <td>{{ row.name }}</td>
+              <td>
+                <span class="logic-name-cell">
+                  <span>{{ row.name }}</span>
+                  @if (isBacktestRunning(row.id)) {
+                    <span
+                      class="logic-test-spin"
+                      title="Идёт тестирование"
+                      aria-label="Идёт тестирование"
+                    >↻</span>
+                  }
+                </span>
+              </td>
 
               <td>{{ row.account_id }}</td>
 
@@ -160,6 +186,21 @@
               <td>{{ row.broker_code }}</td>
 
               <td>{{ row.account_is_active ? 'да' : 'нет' }}</td>
+
+              <td class="col-test-pnl">
+                @if (hasTestFinancialResult(row.id)) {
+                  <span
+                    class="trade-pnl logic-test-pnl"
+                    [class.trade-pnl-pos]="(testFinancialResult(row.id) ?? 0) > 0"
+                    [class.trade-pnl-neg]="(testFinancialResult(row.id) ?? 0) < 0"
+                    [title]="testFinancialResultTitle(row.id)"
+                  >
+                    {{ formatPnl(testFinancialResult(row.id)) }}
+                  </span>
+                } @else {
+                  <span class="logic-test-pnl-empty" title="Тестирования ещё не было">—</span>
+                }
+              </td>
 
               <td class="col-actions">
 
@@ -362,6 +403,29 @@
 
                               <td class="params-hint">
                                 Порог успеха рейтинга сигнала на логике: доля ставки на одну свечу TF
+                              </td>
+
+                            </tr>
+
+                            <tr>
+
+                              <td>Дней предрасчёта рейтинга</td>
+
+                              <td>
+
+                                <input
+                                  type="text"
+                                  inputmode="numeric"
+                                  class="params-input"
+                                  [ngModel]="getParamsDraft(row.id).rating_lookback_days"
+                                  (ngModelChange)="onParamsRatingLookbackChange(row.id, $event)"
+                                  (click)="$event.stopPropagation()"
+                                />
+
+                              </td>
+
+                              <td class="params-hint">
+                                При включении боя: предрасчёт боевых рейтингов по свечам за N дней (фон, 1–90)
                               </td>
 
                             </tr>
@@ -578,7 +642,9 @@
                         Тип сигнала: <strong>по течению</strong> (follow / пробой / импульс) или
                         <strong>против</strong> (fade / возврат от края). Не смешивайте в одном AND
                         пробой и mean-reversion — сделок почти не будет.
-                        «Рейтинг» — оценка строки сигнала на этой логике, не индикатора из справочника.
+                        «Рейтинг» — сумма боевых оценок сигнала по всем бумагам логики
+                        (не зависит от сделок; не тестовый рейтинг). Разверните строку сигнала —
+                        список бумаг и график.
                       </p>
 
                       @if (isPickerOpen(row.id) && signalPicker) {
@@ -714,6 +780,8 @@
 
                           <tr>
 
+                            <th class="col-sig-expand"></th>
+
                             <th>Действие</th>
 
                             <th>Сторона</th>
@@ -723,8 +791,8 @@
                             <th>Индикатор</th>
 
                             <th
-                              title="Боевой / тестовый рейтинг сигнала на логике"
-                            >Рейтинг бой/тест</th>
+                              title="Сумма боевых рейтингов сигнала по всем бумагам логики"
+                            >Рейтинг</th>
 
                             <th>Формула сигнала</th>
 
@@ -738,7 +806,28 @@
 
                           @for (sig of signalsFor(row.id); track sig.id) {
 
-                            <tr [class.sig-inactive]="!sig.is_active">
+                            <tr
+                              class="sig-main-row"
+                              [class.sig-inactive]="!sig.is_active"
+                              [class.sig-combat-open]="isCombatSignalExpanded(row.id, sig.id)"
+                            >
+
+                              <td class="col-sig-expand">
+
+                                <button
+                                  type="button"
+                                  class="sig-expand-btn"
+                                  title="Бумаги и график рейтинга"
+                                  (click)="toggleCombatSignal(row.id, sig.id, $event)"
+                                >
+                                  <span
+                                    class="signals-chevron"
+                                    [class.open]="isCombatSignalExpanded(row.id, sig.id)"
+                                    aria-hidden="true"
+                                  >▸</span>
+                                </button>
+
+                              </td>
 
                               <td>
 
@@ -788,10 +877,9 @@
 
                               <td
                                 class="col-sig-rating"
-                                title="Боевой / тестовый рейтинг сигнала на этой логике"
+                                title="Сумма боевых рейтингов по бумагам"
                               >
                                 {{ sig.rating ?? 0 }}
-                                <span class="sig-rating-test" title="Тестовый">/ {{ sig.rating_test ?? 0 }}</span>
                               </td>
 
                               <td class="col-formula">
@@ -848,11 +936,24 @@
 
                             </tr>
 
+                            @if (isCombatSignalExpanded(row.id, sig.id)) {
+                              <tr class="sig-combat-detail-row">
+                                <td colspan="8">
+                                  <app-logic-combat-signal-detail
+                                    [logicId]="row.id"
+                                    [signalId]="sig.id"
+                                    [securities]="securitiesFor(row.id)"
+                                    [reloadToken]="combatReloadToken(row.id)"
+                                  />
+                                </td>
+                              </tr>
+                            }
+
                           } @empty {
 
                             <tr>
 
-                              <td colspan="4" class="empty">
+                              <td colspan="8" class="empty">
 
                                 Нет сигналов — добавьте трендовый или контртрендовый
 

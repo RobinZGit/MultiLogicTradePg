@@ -13,6 +13,7 @@ export interface LogicRow {
   cost_method?: 'FIFO' | 'AVERAGE';
   stop_loss_timeframe?: string;
   base_annual_rate_pct?: number;
+  rating_lookback_days?: number;
   account_code: string;
   account_name: string;
   account_type: 'real' | 'fake';
@@ -31,6 +32,7 @@ export interface LogicTradingParamsPayload {
   cost_method?: 'FIFO' | 'AVERAGE';
   stop_loss_timeframe?: string;
   base_annual_rate_pct?: number;
+  rating_lookback_days?: number;
 }
 
 export interface LogicTradingParamsResponse {
@@ -43,6 +45,7 @@ export interface LogicTradingParamsResponse {
   cost_method: 'FIFO' | 'AVERAGE';
   stop_loss_timeframe: string;
   base_annual_rate_pct: number;
+  rating_lookback_days: number;
 }
 
 export interface LogicParamRow {

@@ -183,6 +183,89 @@ BEGIN
 END;
 $$;
 
+CREATE OR REPLACE FUNCTION parse_signal_param_num(p_params TEXT, p_key TEXT)
+RETURNS NUMERIC
+LANGUAGE plpgsql IMMUTABLE AS $$
+DECLARE
+    v_part TEXT;
+    v_key TEXT;
+    v_val TEXT;
+BEGIN
+    IF p_params IS NULL OR btrim(p_params) = '' OR p_key IS NULL THEN
+        RETURN NULL;
+    END IF;
+    FOREACH v_part IN ARRAY string_to_array(p_params, ',')
+    LOOP
+        v_part := btrim(v_part);
+        IF position('=' IN v_part) > 0 THEN
+            v_key := lower(btrim(split_part(v_part, '=', 1)));
+            v_val := btrim(split_part(v_part, '=', 2));
+            IF v_key = lower(btrim(p_key)) AND v_val <> '' THEN
+                BEGIN
+                    RETURN replace(v_val, ',', '.')::NUMERIC;
+                EXCEPTION WHEN OTHERS THEN
+                    RETURN NULL;
+                END;
+            END IF;
+        END IF;
+    END LOOP;
+    RETURN NULL;
+END;
+$$;
+
+-- Проставить period/std_dev/… из формул сигналов логики на серии бумаги (до sync).
+CREATE OR REPLACE PROCEDURE logic_apply_indicator_params_from_signals(
+    p_logic_id INTEGER,
+    p_security_id INTEGER
+)
+LANGUAGE plpgsql AS $$
+DECLARE
+    v_sig RECORD;
+    v_parsed RECORD;
+    v_period NUMERIC;
+    v_std NUMERIC;
+    v_fast NUMERIC;
+    v_slow NUMERIC;
+    v_signal NUMERIC;
+    v_k NUMERIC;
+    v_d NUMERIC;
+    v_smooth NUMERIC;
+BEGIN
+    FOR v_sig IN
+        SELECT lis.indicator_id, lis.formula
+        FROM logic_indicator_signals lis
+        WHERE lis.logic_id = p_logic_id AND lis.is_active = TRUE
+    LOOP
+        SELECT * INTO v_parsed FROM parse_signal_formula(v_sig.formula);
+        IF NOT COALESCE(v_parsed.valid, FALSE) THEN
+            CONTINUE;
+        END IF;
+        v_period := parse_signal_param_num(v_parsed.params, 'period');
+        v_std := parse_signal_param_num(v_parsed.params, 'std_dev');
+        v_fast := parse_signal_param_num(v_parsed.params, 'fast_period');
+        v_slow := parse_signal_param_num(v_parsed.params, 'slow_period');
+        v_signal := parse_signal_param_num(v_parsed.params, 'signal_period');
+        v_k := parse_signal_param_num(v_parsed.params, 'k_period');
+        v_d := parse_signal_param_num(v_parsed.params, 'd_period');
+        v_smooth := parse_signal_param_num(v_parsed.params, 'smooth');
+
+        UPDATE security_indicator_series sis
+        SET
+            param_period = COALESCE(v_period::INTEGER, sis.param_period),
+            param_std_dev = COALESCE(v_std, sis.param_std_dev),
+            param_fast_period = COALESCE(v_fast::INTEGER, sis.param_fast_period),
+            param_slow_period = COALESCE(v_slow::INTEGER, sis.param_slow_period),
+            param_signal_period = COALESCE(v_signal::INTEGER, sis.param_signal_period),
+            param_k_period = COALESCE(v_k::INTEGER, sis.param_k_period),
+            param_d_period = COALESCE(v_d::INTEGER, sis.param_d_period),
+            param_smooth = COALESCE(v_smooth::INTEGER, sis.param_smooth)
+        WHERE sis.security_id = p_security_id
+          AND sis.indicator_id = v_sig.indicator_id
+          AND sis.is_active = TRUE;
+    END LOOP;
+END;
+$$;
+
 CREATE OR REPLACE FUNCTION evaluate_signal_condition(
     p_condition TEXT,
     p_pp NUMERIC,
@@ -454,6 +537,7 @@ BEGIN
         LOOP
             BEGIN
                 CALL ensure_security_indicator_series(v_sec.security_id, v_sig.indicator_id);
+                CALL logic_apply_indicator_params_from_signals(p_logic_id, v_sec.security_id);
                 CALL sync_security_indicator_series_for_indicator(
                     v_sec.security_id,
                     v_sig.indicator_id,

@@ -14,6 +14,8 @@ DROP FUNCTION IF EXISTS logic_signal_rating_resolve_pending(INTEGER, INTEGER, TI
 DROP FUNCTION IF EXISTS logic_signal_rating_resolve_pending(INTEGER, INTEGER, TIMESTAMP, BOOLEAN, BIGINT);
 DROP FUNCTION IF EXISTS logic_backtest_rate_signals(BIGINT, INTEGER, INTEGER, TIMESTAMP);
 DROP FUNCTION IF EXISTS logic_backtest_reset_signal_ratings(INTEGER);
+DROP FUNCTION IF EXISTS logic_signal_rating_reset_live(INTEGER);
+DROP FUNCTION IF EXISTS logic_signal_rate_bar(INTEGER, INTEGER, TIMESTAMP, BOOLEAN, BIGINT);
 DROP FUNCTION IF EXISTS logic_signal_move_success(TEXT, TEXT, NUMERIC, NUMERIC, NUMERIC);
 DROP FUNCTION IF EXISTS logic_signal_move_success(TEXT, TEXT, NUMERIC, NUMERIC, INTEGER, NUMERIC);
 DROP FUNCTION IF EXISTS logic_signal_annualized_move_pct(NUMERIC, NUMERIC, INTEGER);
@@ -289,11 +291,13 @@ $$;
 COMMENT ON FUNCTION logic_signal_rating_resolve_pending(INTEGER, INTEGER, TIMESTAMP, BOOLEAN, BIGINT) IS
 'На следующей свече: годовая ставка хода vs base_annual_rate_pct → ±1; history по бумаге';
 
-CREATE OR REPLACE FUNCTION logic_backtest_rate_signals(
-    p_run_id BIGINT,
+-- Общий проход по бару: resolve pending + запись срабатываний (бой или тест)
+CREATE OR REPLACE FUNCTION logic_signal_rate_bar(
     p_logic_id INTEGER,
     p_tf_id INTEGER,
-    p_bar_dt TIMESTAMP
+    p_bar_dt TIMESTAMP,
+    p_is_test BOOLEAN DEFAULT FALSE,
+    p_run_id BIGINT DEFAULT NULL
 )
 RETURNS INTEGER
 LANGUAGE plpgsql AS $$
@@ -303,16 +307,15 @@ DECLARE
     v_eval RECORD;
     v_fires INTEGER := 0;
 BEGIN
-    -- Стоп до тяжёлого resolve/обхода бумаг
-    IF logic_backtest_cancel_requested(p_run_id) THEN
+    IF p_run_id IS NOT NULL AND logic_backtest_cancel_requested(p_run_id) THEN
         RETURN 0;
     END IF;
 
     PERFORM logic_signal_rating_resolve_pending(
-        p_logic_id, p_tf_id, p_bar_dt, TRUE, p_run_id
+        p_logic_id, p_tf_id, p_bar_dt, COALESCE(p_is_test, FALSE), p_run_id
     );
 
-    IF logic_backtest_cancel_requested(p_run_id) THEN
+    IF p_run_id IS NOT NULL AND logic_backtest_cancel_requested(p_run_id) THEN
         RETURN v_fires;
     END IF;
 
@@ -321,7 +324,7 @@ BEGIN
         FROM logic_securities ls
         WHERE ls.logic_id = p_logic_id AND ls.is_active = TRUE
     LOOP
-        IF logic_backtest_cancel_requested(p_run_id) THEN
+        IF p_run_id IS NOT NULL AND logic_backtest_cancel_requested(p_run_id) THEN
             RETURN v_fires;
         END IF;
 
@@ -340,7 +343,7 @@ BEGIN
                     v_sig.id, p_logic_id, v_sec.security_id, p_tf_id,
                     v_eval.bar_dt, v_eval.close_price,
                     v_sig.position_side, v_sig.signal_kind,
-                    TRUE, p_run_id
+                    COALESCE(p_is_test, FALSE), p_run_id
                 );
                 v_fires := v_fires + 1;
             END IF;
@@ -351,8 +354,24 @@ BEGIN
 END;
 $$;
 
+COMMENT ON FUNCTION logic_signal_rate_bar(INTEGER, INTEGER, TIMESTAMP, BOOLEAN, BIGINT) IS
+'По одной свече TF: resolve pending ±1 + record_fire для всех сигналов×бумаг (бой/тест)';
+
+CREATE OR REPLACE FUNCTION logic_backtest_rate_signals(
+    p_run_id BIGINT,
+    p_logic_id INTEGER,
+    p_tf_id INTEGER,
+    p_bar_dt TIMESTAMP
+)
+RETURNS INTEGER
+LANGUAGE plpgsql AS $$
+BEGIN
+    RETURN logic_signal_rate_bar(p_logic_id, p_tf_id, p_bar_dt, TRUE, p_run_id);
+END;
+$$;
+
 COMMENT ON FUNCTION logic_backtest_rate_signals(BIGINT, INTEGER, INTEGER, TIMESTAMP) IS
-'Бэктест: resolve pending (+1/−1 по следующей свече) + запись новых срабатываний в pending';
+'Бэктест: обёртка logic_signal_rate_bar(..., is_test=true)';
 
 CREATE OR REPLACE FUNCTION logic_backtest_reset_signal_ratings(p_logic_id INTEGER)
 RETURNS VOID
@@ -372,3 +391,22 @@ $$;
 
 COMMENT ON FUNCTION logic_backtest_reset_signal_ratings(INTEGER) IS
 'Сброс тестового рейтинга и истории перед новым прогоном бэктеста';
+
+CREATE OR REPLACE FUNCTION logic_signal_rating_reset_live(p_logic_id INTEGER)
+RETURNS VOID
+LANGUAGE plpgsql AS $$
+BEGIN
+    UPDATE logic_indicator_signals
+    SET rating = 0
+    WHERE logic_id = p_logic_id;
+
+    DELETE FROM logic_signal_rating_pending
+    WHERE logic_id = p_logic_id AND is_test = FALSE;
+
+    DELETE FROM logic_signal_rating_history
+    WHERE logic_id = p_logic_id AND is_test = FALSE;
+END;
+$$;
+
+COMMENT ON FUNCTION logic_signal_rating_reset_live(INTEGER) IS
+'Сброс боевого рейтинга и истории перед предрасчётом при включении логики';

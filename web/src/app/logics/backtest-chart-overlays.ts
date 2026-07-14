@@ -3,6 +3,7 @@ import {
   ChartShadedRange,
   ChartStopMarker,
   ChartTradeMarker,
+  PriceCandle,
 } from '../models/market.model';
 import { LogicTradeRow } from '../shared/logic-trade';
 
@@ -53,6 +54,7 @@ export function papersWithTrades(
   security_name: string;
   security_prefix: string | null;
   pnl: number;
+  commission: number;
   trade_count: number;
 }[] {
   const map = new Map<
@@ -62,6 +64,7 @@ export function papersWithTrades(
       security_name: string;
       security_prefix: string | null;
       pnl: number;
+      commission: number;
       trade_count: number;
     }
   >();
@@ -75,6 +78,7 @@ export function papersWithTrades(
       security_name: t.security_name,
       security_prefix: t.security_prefix,
       pnl: 0,
+      commission: 0,
       trade_count: 0,
     };
     row.trade_count += 1;
@@ -84,6 +88,13 @@ export function papersWithTrades(
       Number.isFinite(Number(t.financial_result))
     ) {
       row.pnl += Number(t.financial_result);
+    }
+    if (
+      !t.is_shadow &&
+      t.commission != null &&
+      Number.isFinite(Number(t.commission))
+    ) {
+      row.commission += Number(t.commission);
     }
     map.set(t.security_id, row);
   }
@@ -231,6 +242,59 @@ export function buildEquityPoints(
   return points;
 }
 
+/** Обрезать свечи под окно теста/сделок, при лимите — приоритет окну сделок. */
+export function clipCandlesForBacktest(
+  candles: PriceCandle[],
+  opts: {
+    coverFrom?: string | null;
+    coverTo?: string | null;
+    tradeFrom?: string | null;
+    tradeTo?: string | null;
+    maxCandles: number;
+  }
+): PriceCandle[] {
+  if (candles.length === 0) return candles;
+  const fromKey = opts.coverFrom ? dtKey(opts.coverFrom) : null;
+  const toKey = opts.coverTo ? dtKey(opts.coverTo) : null;
+  let clipped = candles;
+  if (fromKey || toKey) {
+    clipped = candles.filter((c) => {
+      const k = dtKey(c.dt);
+      if (fromKey && k < fromKey) return false;
+      if (toKey && k > toKey) return false;
+      return true;
+    });
+    if (clipped.length === 0) clipped = candles;
+  }
+  if (clipped.length <= opts.maxCandles) return clipped;
+
+  const tradeFrom = opts.tradeFrom ? dtKey(opts.tradeFrom) : fromKey;
+  const tradeTo = opts.tradeTo ? dtKey(opts.tradeTo) : toKey;
+  if (tradeFrom && tradeTo) {
+    // Окно вокруг сделок ± запас слева
+    let i0 = clipped.findIndex((c) => dtKey(c.dt) >= tradeFrom);
+    let i1 = clipped.length - 1;
+    for (let i = clipped.length - 1; i >= 0; i--) {
+      if (dtKey(clipped[i].dt) <= tradeTo) {
+        i1 = i;
+        break;
+      }
+    }
+    if (i0 < 0) i0 = 0;
+    const pad = Math.min(40, Math.floor(opts.maxCandles / 10));
+    i0 = Math.max(0, i0 - pad);
+    i1 = Math.min(clipped.length - 1, i1 + Math.floor(pad / 2));
+    let span = i1 - i0 + 1;
+    if (span <= opts.maxCandles) {
+      return clipped.slice(i0, i1 + 1);
+    }
+    // Слишком длинный период сделок — берём с первой сделки вперёд
+    return clipped.slice(i0, i0 + opts.maxCandles);
+  }
+  // Без сделок — начало периода
+  return clipped.slice(0, opts.maxCandles);
+}
+
 /** Свеча строго внутри зоны «выкл.» (границы оставляем для шага PnL). */
 export function isDtInsideDisabledShade(
   dt: string,
@@ -244,3 +308,4 @@ export function isDtInsideDisabledShade(
   }
   return false;
 }
+

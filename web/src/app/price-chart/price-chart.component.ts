@@ -46,10 +46,15 @@ export class PriceChartComponent implements AfterViewInit, OnChanges, OnDestroy 
   /** Кумулятивный PnL по бумаге (отдельная панель под ценой). */
   @Input() equityPoints: ChartEquityPoint[] = [];
   /**
-   * Прокрутить окно так, чтобы эта дата была видна (справа/в центре).
+   * Прокрутить окно так, чтобы эта дата была видна.
    * Нужно для бэктеста: сделки часто не в последних 200 свечах.
    */
   @Input() focusDt: string | null = null;
+  /**
+   * Положение focusDt в видимом окне:
+   * start ≈ 20% слева (начало сделок/теста), end ≈ 65% (как раньше).
+   */
+  @Input() focusAlign: 'start' | 'end' = 'end';
   @Input() loading = false;
   /** Фоновая подгрузка истории — не блокирует перемотку. */
   @Input() loadingOlder = false;
@@ -176,7 +181,7 @@ export class PriceChartComponent implements AfterViewInit, OnChanges, OnDestroy 
     }
   }
 
-  /** Сдвинуть окно так, чтобы dt была в правой трети видимой области. */
+  /** Сдвинуть окно так, чтобы dt была в нужной части видимой области. */
   private scrollToFocusDt(dt: string): void {
     const key = PriceChartComponent.dtKey(dt);
     let idx = -1;
@@ -187,7 +192,8 @@ export class PriceChartComponent implements AfterViewInit, OnChanges, OnDestroy 
     if (idx < 0) idx = 0;
     const count = this.viewCount();
     const maxStart = Math.max(0, this.candles.length - count);
-    this.viewStart = Math.max(0, Math.min(idx - Math.floor(count * 0.65), maxStart));
+    const bias = this.focusAlign === 'start' ? 0.2 : 0.65;
+    this.viewStart = Math.max(0, Math.min(idx - Math.floor(count * bias), maxStart));
   }
 
   ngOnDestroy(): void {

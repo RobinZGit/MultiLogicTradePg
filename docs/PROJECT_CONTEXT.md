@@ -5,7 +5,7 @@
 > Включать **запросы пользователя текстом** (секция «Запросы пользователя»).
 
 **Репозиторий:** https://github.com/RobinZGit/MultiLogicTradePg  
-**Последнее обновление:** 2026-07-14 — push v41: 10 классических логик (OsEngine) + демо; FAKE; все акции; БД 00→02
+**Последнее обновление:** 2026-07-14 — v43: комиссия 0.03; L1–L4; CCI/ADX/LINREG/ATR GROWTH5 как SMA/STOCH (script + calc_ind_* + _array + dispatcher); БД 00→02; push
 
 ---
 
@@ -25,7 +25,7 @@
 | Файл | Назначение |
 |------|------------|
 | `00_create_database.sql` | **DROP + CREATE** базы `multilogictrade` (полное пересоздание) |
-| `01_multilogictrade_tables_and_data.sql` | Таблицы, индексы, справочники (идемпотентно, **v41**) |
+| `01_multilogictrade_tables_and_data.sql` | Таблицы, индексы, справочники (идемпотентно, **v43**) |
 | `02_multilogictrade_functions_and_procedures.sql` | Функции и процедуры (идемпотентно) |
 | `03_multilogictrade_examples.sql` | Примеры SELECT (необязательно) |
 
@@ -93,12 +93,14 @@
 - **Trade runner (PostgreSQL):** `run_trade_cycle()` → `process_logic_trades()` — **AND-группы** `(position_event × position_side)`; **перед сигналами** `logic_refresh_market_data` + `logic_signal_rating_resolve_pending`; парсинг `@CODE(...) condition` на **`timeframe` из logic_params**; **сигналы только на последней закрытой свече TF**; fake/real; idempotency `(logic_id, security_id, position_event, action_id, bar_dt, is_test, is_shadow)`; модули `sql/logic_signal_and_rating.sql`, `sql/logic_trade_runner.sql`;
 - **Расписание:** **Node fallback** каждые **15 с** (`TRADE_RUNNER_INTERVAL_MS`, Windows); **pg_cron** раз в минуту (Linux); **только при открытом Angular** (heartbeat → `APP_TRADE_RUNNER_HB`, TTL 90 с); ручной `POST /api/logic-trades/run`;
 - **Демо-логика** в `01`: `SMA Price Cross Demo` — **follow/breakout**: open AND (SMA + BB UPPER/LOWER + STOCH 50), close **только SMA**; **все акции**; SL **1%** / TP **3%**;
-- **v41 пакет логик** (по мотивам OsEngine): ещё **10** логик на `FAKE-EFF-001`, `is_enabled=FALSE`, все акции, SL/TP как у демо — RSI Mean Reversion, Bollinger Bounce/Breakout, MACD Zero Line, Stochastic Levels, EMA Price Cross, Dual MA Trend, SMA Stoch Pullback, BB Stoch Bounce, SMAT3 Trend;
+- **v41 пакет логик** (по мотивам OsEngine): ещё **10** логик на `FAKE-EFF-001`, `is_enabled=FALSE`, все акции, SL/TP как у демо;
+- **v43 L1–L4** (из MultiLogicTradeA/FINRESP): лонг/шорт × тренд/боковик; AND-сигналы; без Strict/Regime/OnFlip; индикаторы SMA100, LINREG, ATR GROWTH5, ADX, CCI, MACD HISTOGRAM, STOCH; комиссия default **0.03**;
 - **`indicators.sig_profile`**: `trend_line` | `oscillator` | `channel` | `zero_line` | `strength` | `volume`; шаблоны `sig_trend_def`=follow, `sig_ct_def`=fade (для channel: UPPER / LOWER);
 - UI тип сигнала: **«По течению» / «Против»** (в БД по-прежнему `trend`/`counter`);
 - UI **Позиции / Тестирование**: в шапке рядом с фин. результатом — **% от нач.** и **год.** (простая аннуализация);
 - График бумаги в тесте: линия PnL (фиолетовый ноль) с **начала периода теста** (`date_from`), не с первой сделки;
-- UI сигналов: блок **«Сигналы на логике»**, предупреждение AND, колонка **«Рейтинг сигнала»**, параметр **базовая ставка % годовых**;
+- UI сигналов: блок **«Сигналы на логике»**, колонка **боевой «Рейтинг»** (сумма по бумагам), раскрытие сигнала → бумаги → график; параметр **базовая ставка % годовых** + **`rating_lookback_days`** (предрасчёт при enable);
+- **v42 боевой предрасчёт рейтинга:** при `is_enabled=true` фон (`logic_signal_rating_reset_live` + `logic_signal_rate_bar`); иконка ↻ у чекбокса; тест в колонке не показывается;
 
 ### Правило схемы БД
 
@@ -155,6 +157,9 @@
 53. **v40b рейтинги в тесте:** `rating_test` + `logic_signal_rating_history` (logic+signal+security); успех = ход на **след.** свече → % годовых vs `base_annual_rate_pct` → ±1 (без пола 0); UI — «Рейтинги сигналов на бумаге» под графиком в блоке Бумаги; модуль `sql/logic_signal_and_rating.sql`.
 54. **Бэктест Стоп:** сразу `status=cancelled`, результат сохранён; не зависать на длинном `rate_signals`; демо follow/breakout (SMA+BB+STOCH).
 55. **v41 seed логик:** 10 классических стратегий (OsEngine-style) + неизменённое демо; все на фейк-счёте, все акции.
+56. **v42 боевой рейтинг на вкладке Сигналы:** колонка только `rating` (сумма по бумагам); раскрытие сигнала → бумаги → график (`is_test=0`); параметр `rating_lookback_days` (default 7); при enable — фоновый предрасчёт `api/logic-rating-precalc.js` + иконка ↻; `logic_signal_rate_bar` / `logic_signal_rating_reset_live`.
+57. **Финрез + комиссия в UI:** шапка Позиции/Тестирование и плитки бумаг — комиссия; главная таблица логик — колонка «Финрез теста» (онлайн `GET /api/logic-trades/pnl-summary`, не хранится отдельным полем).
+58. **v43 L1–L4 + комиссия 0.03:** перенос FINRESP L1–L4; индикаторы **как SMA/STOCH** — каталог + `indicator_value_types` + `script` → `calc_ind_*` + `calc_ind_*_array` + CASE в `calc_indicator_series_array` (без отдельного poly); ATR серия GROWTH5; `logic_apply_indicator_params_from_signals` для period из `@IND(...)`.
 
 ### Автотесты
 
@@ -192,6 +197,9 @@
 
 - [x] Выложить v40/v40b (commit/push) и прогнать `00`→`02` на рабочей БД (2026-07-14).
 - [x] Seed ~10 классических логик (OsEngine) + демо; FAKE; все акции (v41).
+- [x] Боевой рейтинг: колонка только бой; сигнал→бумаги→график; предрасчёт при enable (`rating_lookback_days`) (v42, локально).
+- [x] Финрез: комиссия в шапках/плитках; колонка «Финрез теста» на главной (онлайн).
+- [x] v43: L1–L4 (MultiLogicTradeA) + индикаторы + комиссия 0.03; БД 00→02; push.
 - [ ] Расширить оценку формул сигналов (CROSS; AND внутри одной формулы).
 - [ ] `is_fictitious` — логика заполнения.
 - [ ] Заполнить `tbank_figi` где возможно (частично через `resolve_tbank_instrument_id`).
@@ -217,6 +225,9 @@
 
 | Дата | Суть |
 |------|------|
+| 2026-07-14 | v43: комиссия 0.03; L1–L4 FINRESP; LINREG/ADX/CCI; push + БД 00→02 |
+| 2026-07-14 | Финрез: комиссия в шапках/плитках; колонка «Финрез теста» на главной (онлайн) |
+| 2026-07-14 | v42 (локально): боевой рейтинг UI (сигнал→бумаги→график); предрасчёт при enable; rating_lookback_days |
 | 2026-07-14 | v41: 10 классических логик (OsEngine) + демо; push + БД 00→02 |
 | 2026-07-14 | Push v40b + БД 00→02: рейтинги на бумаге, мгновенный Стоп, демо follow/breakout |
 | 2026-07-14 | Рейтинг: успех на след. свече (годовые vs base_annual); ±1 без пола 0; UI «Рейтинги на бумаге» под графиком |
@@ -334,3 +345,7 @@
 58. «Стоп зависает — остановить сразу; после стопа всё протестированное оставить».
 59. «Выложить в репозиторий и собрать базу с нуля».
 60. «Добавить ~10 частых успешных стратегий из OsEngine; демо оставить; все на фейк + все акции; можно в репо».
+61. «Рейтинг на вкладке Сигналы — только бой (сумма по бумагам); сигнал раскрывается → бумаги → график рейтинга; как в тесте по всем свечам без сделок; при enable — предрасчёт за N дней (param default 7) в фоне + иконка; тест в колонке не показывать».
+62. «Где финрез на плитках (тест и бой) — добавить комиссии; на главной форме у логики — колонка финрез теста (онлайн, зелёный/красный; без хранения; если теста не было — пусто)».
+63. «Комиссия default 0.03; добавить L1–L4 из MultiLogicTradeA (адаптировать под Pg); недостающие индикаторы; в репо; БД с нуля».
+64. «Новые индикаторы считать как SMA/STOCH: SQL-функции, каталог indicators, тот же парсинг — без отдельной схемы».

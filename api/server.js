@@ -6,6 +6,10 @@ const {
   hashToken,
 } = require('./tbank');
 const { startBacktest, getBacktestStatus, cancelBacktest } = require('./logic-backtest');
+const {
+  startRatingPrecalc,
+  getRatingPrecalcStatus,
+} = require('./logic-rating-precalc');
 const { runTradeCycle, startTradeRunner } = require('./trade-runner');
 const {
   touchUiHeartbeatDb,
@@ -1405,13 +1409,46 @@ app.patch('/api/logics/:id', async (req, res) => {
       logicId: id,
       payload: { is_enabled },
     });
-    res.json(rows[0]);
+    let rating_precalc = null;
+    if (is_enabled) {
+      // Фон: не ждём; бой уже включён
+      rating_precalc = await startRatingPrecalc(pool, id);
+    }
+    res.json({ ...rows[0], rating_precalc });
   } catch (err) {
     console.error('PATCH /api/logics/:id', err);
     res.status(500).json({ error: err.message });
   }
 });
 
+app.post('/api/logics/:id/signal-rating-precalc', async (req, res) => {
+  const id = Number(req.params.id);
+  if (!Number.isInteger(id) || id <= 0) {
+    res.status(400).json({ error: 'Invalid logic id' });
+    return;
+  }
+  try {
+    const { rows } = await pool.query('SELECT id FROM logics WHERE id = $1', [id]);
+    if (rows.length === 0) {
+      res.status(404).json({ error: 'Logic not found' });
+      return;
+    }
+    const job = await startRatingPrecalc(pool, id);
+    res.json(job);
+  } catch (err) {
+    console.error('POST /api/logics/:id/signal-rating-precalc', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.get('/api/logics/:id/signal-rating-precalc', async (req, res) => {
+  const id = Number(req.params.id);
+  if (!Number.isInteger(id) || id <= 0) {
+    res.status(400).json({ error: 'Invalid logic id' });
+    return;
+  }
+  res.json(getRatingPrecalcStatus(id));
+});
 app.patch('/api/logics/:id/trading-params', async (req, res) => {
   const id = Number(req.params.id);
   if (!Number.isInteger(id) || id <= 0) {
@@ -2096,6 +2133,95 @@ app.get('/api/logic-trades', async (req, res) => {
   }
 });
 
+/** Онлайн-сводка PnL/комиссий по логикам (не хранится отдельным полем). */
+app.get('/api/logic-trades/pnl-summary', async (req, res) => {
+  const isTestRaw = req.query.is_test;
+  const isTest =
+    isTestRaw === '0' || isTestRaw === 'false'
+      ? false
+      : true; // по умолчанию тест — для колонки на главной
+  try {
+    if (isTest) {
+      // Тест: сумма сделок + fallback на последний прогон logic_backtest_runs
+      const { rows } = await pool.query(
+        `
+        WITH trade_agg AS (
+          SELECT
+            lt.logic_id,
+            COALESCE(SUM(lt.financial_result), 0)::float8 AS financial_result,
+            COALESCE(SUM(COALESCE(lt.commission, 0)), 0)::float8 AS commission,
+            COUNT(*)::int AS trade_count
+          FROM logic_trades lt
+          WHERE lt.is_test = TRUE
+            AND COALESCE(lt.is_shadow, FALSE) = FALSE
+            AND lt.status IN ('filled', 'submitted')
+          GROUP BY lt.logic_id
+        ),
+        run_latest AS (
+          SELECT DISTINCT ON (r.logic_id)
+            r.logic_id,
+            r.financial_result::float8 AS financial_result,
+            COALESCE(r.trades_created, 0)::int AS trade_count
+          FROM logic_backtest_runs r
+          WHERE r.financial_result IS NOT NULL
+            AND r.status IN ('done', 'completed', 'cancelled', 'failed')
+          ORDER BY r.logic_id, COALESCE(r.finished_at, r.started_at, r.created_at) DESC, r.id DESC
+        )
+        SELECT
+          COALESCE(t.logic_id, r.logic_id) AS logic_id,
+          COALESCE(t.financial_result, r.financial_result, 0)::float8 AS financial_result,
+          COALESCE(t.commission, 0)::float8 AS commission,
+          COALESCE(NULLIF(t.trade_count, 0), r.trade_count, 0)::int AS trade_count
+        FROM trade_agg t
+        FULL OUTER JOIN run_latest r ON r.logic_id = t.logic_id
+        WHERE COALESCE(t.trade_count, 0) > 0
+           OR r.financial_result IS NOT NULL
+        ORDER BY 1
+        `
+      );
+      res.json({
+        is_test: true,
+        rows: rows.map((r) => ({
+          logic_id: Number(r.logic_id),
+          financial_result: Number(r.financial_result),
+          commission: Number(r.commission),
+          trade_count: Number(r.trade_count),
+        })),
+      });
+      return;
+    }
+
+    const { rows } = await pool.query(
+      `
+      SELECT
+        lt.logic_id,
+        COALESCE(SUM(lt.financial_result), 0)::float8 AS financial_result,
+        COALESCE(SUM(COALESCE(lt.commission, 0)), 0)::float8 AS commission,
+        COUNT(*)::int AS trade_count
+      FROM logic_trades lt
+      WHERE lt.is_test = FALSE
+        AND COALESCE(lt.is_shadow, FALSE) = FALSE
+        AND lt.status IN ('filled', 'submitted')
+      GROUP BY lt.logic_id
+      HAVING COUNT(*) > 0
+      ORDER BY lt.logic_id
+      `
+    );
+    res.json({
+      is_test: false,
+      rows: rows.map((r) => ({
+        logic_id: Number(r.logic_id),
+        financial_result: Number(r.financial_result),
+        commission: Number(r.commission),
+        trade_count: Number(r.trade_count),
+      })),
+    });
+  } catch (err) {
+    console.error('GET /api/logic-trades/pnl-summary', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
 app.get('/api/logic-trade-lots', async (req, res) => {
   const tradeId = Number(req.query.trade_id);
   if (!Number.isInteger(tradeId) || tradeId <= 0) {
@@ -2662,6 +2788,15 @@ function parseLogicTradingParams(body) {
       return { error: 'Базовая ставка (% годовых): число от 0 до 1000' };
     }
     out.base_annual_rate_pct = v;
+    hasField = true;
+  }
+
+  if (body?.rating_lookback_days !== undefined) {
+    const v = Math.round(Number(body.rating_lookback_days));
+    if (!Number.isInteger(v) || v < 1 || v > 90) {
+      return { error: 'Дней предрасчёта рейтинга: целое от 1 до 90' };
+    }
+    out.rating_lookback_days = v;
     hasField = true;
   }
 

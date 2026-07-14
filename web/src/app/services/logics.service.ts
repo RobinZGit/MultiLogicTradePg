@@ -7,6 +7,19 @@ import { LogicTradeLotRow, LogicTradeRow } from '../shared/logic-trade';
 import type { BacktestRunStatus } from '../logics/logic-positions-panel.component';
 import { LogicPayload } from '../models/lookup.model';
 
+export interface SignalRatingPrecalcStatus {
+  logic_id: number;
+  status: 'idle' | 'pending' | 'running' | 'done' | 'failed';
+  progress_pct: number;
+  phase_message: string;
+  bars_total: number;
+  bars_done: number;
+  lookback_days: number;
+  error: string | null;
+  started_at: string | null;
+  finished_at: string | null;
+}
+
 @Injectable({ providedIn: 'root' })
 export class LogicsService {
   constructor(
@@ -32,11 +45,16 @@ export class LogicsService {
   updateLogicEnabled(
     id: number,
     is_enabled: boolean
-  ): Observable<{ id: number; is_enabled: boolean }> {
-    return this.http.patch<{ id: number; is_enabled: boolean }>(
-      `${this.appConfig.apiUrl}/logics/${id}`,
-      { is_enabled }
-    );
+  ): Observable<{
+    id: number;
+    is_enabled: boolean;
+    rating_precalc?: SignalRatingPrecalcStatus;
+  }> {
+    return this.http.patch<{
+      id: number;
+      is_enabled: boolean;
+      rating_precalc?: SignalRatingPrecalcStatus;
+    }>(`${this.appConfig.apiUrl}/logics/${id}`, { is_enabled });
   }
 
   getLogicParams(logicId: number): Observable<LogicParamsResponse> {
@@ -182,8 +200,32 @@ export class LogicsService {
       limit: String(limit),
     };
     if (isTest === true) params['is_test'] = '1';
-    else if (isTest === false) params['is_test'] = '0';
-    return this.http.get<LogicTradeRow[]>(`${this.appConfig.apiUrl}/logic-trades`, { params });
+    if (isTest === false) params['is_test'] = '0';
+    return this.http.get<LogicTradeRow[]>(`${this.appConfig.apiUrl}/logic-trades`, {
+      params,
+    });
+  }
+
+  getLogicTradesPnlSummary(isTest = true): Observable<{
+    is_test: boolean;
+    rows: Array<{
+      logic_id: number;
+      financial_result: number;
+      commission: number;
+      trade_count: number;
+    }>;
+  }> {
+    return this.http.get<{
+      is_test: boolean;
+      rows: Array<{
+        logic_id: number;
+        financial_result: number;
+        commission: number;
+        trade_count: number;
+      }>;
+    }>(`${this.appConfig.apiUrl}/logic-trades/pnl-summary`, {
+      params: { is_test: isTest ? '1' : '0' },
+    });
   }
 
   getLogicTradeLots(tradeId: number): Observable<LogicTradeLotRow[]> {
@@ -233,6 +275,19 @@ export class LogicsService {
     return this.http.post<{ ok: boolean; run_id: number }>(
       `${this.appConfig.apiUrl}/logic-backtest/cancel`,
       { run_id: runId }
+    );
+  }
+
+  startSignalRatingPrecalc(logicId: number): Observable<SignalRatingPrecalcStatus> {
+    return this.http.post<SignalRatingPrecalcStatus>(
+      `${this.appConfig.apiUrl}/logics/${logicId}/signal-rating-precalc`,
+      {}
+    );
+  }
+
+  getSignalRatingPrecalc(logicId: number): Observable<SignalRatingPrecalcStatus> {
+    return this.http.get<SignalRatingPrecalcStatus>(
+      `${this.appConfig.apiUrl}/logics/${logicId}/signal-rating-precalc`
     );
   }
 }

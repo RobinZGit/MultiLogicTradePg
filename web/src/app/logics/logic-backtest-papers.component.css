@@ -122,6 +122,13 @@
   font-size: 0.88rem;
 }
 
+.paper-comm {
+  margin-left: 0.45rem;
+  font-size: 0.75rem;
+  font-variant-numeric: tabular-nums;
+  color: #64748b;
+}
+
 .paper-trades-meta {
   margin-left: 0.5rem;
   font-size: 0.75rem;

@@ -1,6 +1,8 @@
 -- ============================================
 -- MultiLogicTrade — шаг 1: таблицы и справочники
--- Версия: v41 (идемпотентный запуск)
+-- Версия: v43 (идемпотентный запуск)
+-- v43: комиссия default 0.03; L1–L4 из MultiLogicTradeA; LINREG/ADX/CCI calc
+-- v42: rating_lookback_days — окно предрасчёта боевого рейтинга сигналов при enable
 -- v41: пакет из 10 классических логик (OsEngine-style) + демо; все на FAKE, все акции
 -- v40: сигналы AND (все open/close стороны); rating; base_annual_rate_pct; pending рейтинга
 -- v39: DROP logics_detail; убраны дубликаты колонок logics → logic_params;
@@ -587,7 +589,8 @@ INSERT INTO indicators (code, name, description, category) VALUES
     ('SAR', 'Stop And Reverse', 'Стоп и реверс', 'trend'),
     ('HMA', 'Hull Moving Average', 'Скользящее среднее Халла', 'trend'),
     ('ZLEMA', 'Zero Lag EMA', 'EMA с нулевым запаздыванием', 'trend'),
-    ('SMAT3', 'SMA Triple', 'Тройное SMA (тройная свёртка)', 'trend')
+    ('SMAT3', 'SMA Triple', 'Тройное SMA (тройная свёртка)', 'trend'),
+    ('LINREG', 'Linear Regression Channel', 'Канал линейной регрессии (mid ± Dev·σ остатков)', 'trend')
 ON CONFLICT (code) DO NOTHING;
 
 -- Шаблоны расчёта (функция + параметры; :series подставляется для каждой линии индикатора)
@@ -598,6 +601,9 @@ UPDATE indicators SET script = 'SELECT calc_ind_macd(:fast_period, :slow_period,
 UPDATE indicators SET script = 'SELECT calc_ind_bb(:period, :std_dev, :series, :security_id, :timeframe_id, :dt, :indicator_id)' WHERE code = 'BB';
 UPDATE indicators SET script = 'SELECT calc_ind_atr(:period, :series, :security_id, :timeframe_id, :dt, :indicator_id)' WHERE code = 'ATR';
 UPDATE indicators SET script = 'SELECT calc_ind_stoch(:k_period, :d_period, :smooth, :series, :security_id, :timeframe_id, :dt, :indicator_id)' WHERE code = 'STOCH';
+UPDATE indicators SET script = 'SELECT calc_ind_cci(:period, :series, :security_id, :timeframe_id, :dt, :indicator_id)' WHERE code = 'CCI';
+UPDATE indicators SET script = 'SELECT calc_ind_adx(:period, :series, :security_id, :timeframe_id, :dt, :indicator_id)' WHERE code = 'ADX';
+UPDATE indicators SET script = 'SELECT calc_ind_linreg(:period, :std_dev, :series, :security_id, :timeframe_id, :dt, :indicator_id)' WHERE code = 'LINREG';
 
 ALTER TABLE indicators ADD COLUMN IF NOT EXISTS formula TEXT;
 ALTER TABLE indicators ADD COLUMN IF NOT EXISTS is_custom BOOLEAN NOT NULL DEFAULT FALSE;
@@ -620,6 +626,8 @@ UPDATE indicators SET formula = 'sma', is_custom = FALSE WHERE code = 'SMA';
 UPDATE indicators SET formula = 'ema', is_custom = FALSE WHERE code = 'EMA';
 UPDATE indicators SET formula = 'pp * (1; -2; 1)', is_custom = TRUE WHERE code = 'PACC';
 UPDATE indicators SET formula = 'sma(period=20, series=VALUE) * sma(period=20, series=VALUE) * sma(period=20, series=VALUE)', is_custom = TRUE WHERE code = 'SMAT3';
+-- Как у STOCH/ATR/MACD: пустая formula → calc_indicator_series_array / calc_ind_*_array (не poly)
+UPDATE indicators SET formula = NULL, is_custom = FALSE WHERE code IN ('CCI', 'ADX', 'LINREG', 'ATR', 'STOCH', 'MACD', 'BB', 'RSI');
 
 -- Профили + шаблоны follow(trend) / fade(counter)
 -- trend_line: цена относительно линии
@@ -627,7 +635,7 @@ UPDATE indicators SET
     sig_profile = 'trend_line',
     sig_trend_def = 'pp > VALUE',
     sig_ct_def = 'pp < VALUE'
-WHERE code IN ('SMA', 'EMA', 'WMA', 'HMA', 'ZLEMA', 'SMAT3', 'ICHIMOKU', 'PSAR', 'SAR');
+WHERE code IN ('SMA', 'EMA', 'WMA', 'HMA', 'ZLEMA', 'SMAT3', 'ICHIMOKU', 'PSAR', 'SAR', 'LINREG');
 
 -- oscillator 0..100: follow = бычья половина / кросс; fade = зона перепроданности
 UPDATE indicators SET
@@ -814,6 +822,15 @@ JOIN (VALUES
     ('BB', 'BANDWIDTH', 'Ширина полос', 'float', FALSE, NULL, 'Bandwidth', 4),
     ('ATR', 'ATR', 'Значение ATR', 'float', FALSE, NULL, 'ATR', 1),
     ('ATR', 'ATR_PCT', 'ATR в процентах', 'float', FALSE, NULL, 'ATR %', 2),
+    ('ATR', 'GROWTH5', 'Рост ATR за 5 баров %', 'float', FALSE, NULL, 'Бывший GrOk: (ATR/ATR[-5]-1)*100', 3),
+    ('CCI', 'VALUE', 'Значение CCI', 'float', FALSE, NULL, 'CCI', 1),
+    ('ADX', 'ADX', 'Значение ADX', 'float', FALSE, NULL, 'ADX Wilder', 1),
+    ('ADX', 'PDI', '+DI', 'float', FALSE, NULL, 'Plus DI', 2),
+    ('ADX', 'MDI', '−DI', 'float', FALSE, NULL, 'Minus DI', 3),
+    ('LINREG', 'MIDDLE', 'Линия LinReg', 'float', FALSE, NULL, 'Середина канала', 1),
+    ('LINREG', 'UPPER', 'Верхняя граница', 'float', FALSE, NULL, 'mid + Dev·σ', 2),
+    ('LINREG', 'LOWER', 'Нижняя граница', 'float', FALSE, NULL, 'mid − Dev·σ', 3),
+    ('LINREG', 'SLOPE', 'Наклон LinReg', 'float', FALSE, NULL, 'Наклон регрессии', 4),
     ('PACC', 'VALUE', 'Ускорение цены', 'float', FALSE, NULL, 'pp * (1;-2;1)', 1),
     ('SMAT3', 'VALUE', 'SMA³ свёртка', 'float', FALSE, NULL, 'sma(period=20,series=VALUE)*3', 1),
     ('SMA', 'VALUE', 'Значение MA', 'float', FALSE, NULL, 'SMA value', 1),
@@ -960,7 +977,7 @@ INSERT INTO logic_param_defs (param_key, name_ru, value_type, default_value, des
      'Стартовый депозит бумажной торговли / эталон для расчёта лота', 3),
     ('current_balance', 'Текущий остаток', 'money', '',
      'Обновляется trade runner после симулированных сделок', 4),
-    ('commission_pct', '% комиссии от депозита', 'number', '0.05',
+    ('commission_pct', '% комиссии от депозита', 'number', '0.03',
      'Фейковый счёт: комиссия = текущий депозит × % / 100 (на каждую сделку)', 5),
     ('cost_method', 'Метод расчёта PnL', 'text', 'FIFO',
      'FIFO — по очереди покупок; AVERAGE — по средней цене остатка', 6),
@@ -968,6 +985,8 @@ INSERT INTO logic_param_defs (param_key, name_ru, value_type, default_value, des
      'TF для проверки стоп-лоссов (по умолчанию M5)', 7),
     ('base_annual_rate_pct', 'Базовая ставка (% годовых)', 'number', '20',
      'Порог для рейтинга сигнала: ход цены на следующей свече в годовых ≥ этой ставки', 8),
+    ('rating_lookback_days', 'Дней предрасчёта рейтинга', 'integer', '7',
+     'При включении боя: предрасчёт боевых рейтингов сигналов по свечам за N дней (фон)', 9),
     ('last_stop_bar_dt', 'Последняя свеча стоп-лосса', 'text', '',
      'Служебный: open time закрытой свечи TF стоп-лосса', 97),
     ('last_trade_check_at', 'Последняя проверка сигналов', 'text', '',
@@ -1061,10 +1080,11 @@ CROSS JOIN (VALUES
     ('max_open_positions', '3', 'integer'),
     ('initial_balance', '1000000', 'money'),
     ('current_balance', '1000000', 'money'),
-    ('commission_pct', '0.05', 'number'),
+    ('commission_pct', '0.03', 'number'),
     ('cost_method', 'FIFO', 'text'),
     ('stop_loss_timeframe', 'M5', 'text'),
-    ('base_annual_rate_pct', '20', 'number')
+    ('base_annual_rate_pct', '20', 'number'),
+    ('rating_lookback_days', '7', 'integer')
 ) AS v(param_key, param_value, value_type)
 WHERE l.name = 'SMA Price Cross Demo'
 ON CONFLICT (logic_id, param_key) DO UPDATE SET
@@ -1405,10 +1425,11 @@ CROSS JOIN (VALUES
     ('max_open_positions', '3', 'integer'),
     ('initial_balance', '1000000', 'money'),
     ('current_balance', '1000000', 'money'),
-    ('commission_pct', '0.05', 'number'),
+    ('commission_pct', '0.03', 'number'),
     ('cost_method', 'FIFO', 'text'),
     ('stop_loss_timeframe', 'M5', 'text'),
-    ('base_annual_rate_pct', '20', 'number')
+    ('base_annual_rate_pct', '20', 'number'),
+    ('rating_lookback_days', '7', 'integer')
 ) AS v(param_key, param_value, value_type)
 WHERE l.name IN (
     'RSI Mean Reversion', 'Bollinger Bounce', 'Bollinger Breakout', 'MACD Zero Line',
@@ -1637,6 +1658,176 @@ WHERE l.name IN (
     'RSI Mean Reversion', 'Bollinger Bounce', 'Bollinger Breakout', 'MACD Zero Line',
     'Stochastic Levels', 'EMA Price Cross', 'Dual MA Trend', 'SMA Stoch Pullback',
     'BB Stoch Bounce', 'SMAT3 Trend'
+);
+
+-- =====================================================================
+-- v43: L1–L4 из MultiLogicTradeA (FINRESP) — AND-сигналы, без Strict/Regime/OnFlip
+-- Адаптация: SMA100, LINREG±2σ, ATR GROWTH5≥3, ADX TrOk/WkOk, CCI, MACD HISTOGRAM
+-- =====================================================================
+
+INSERT INTO logics (name, account_id, is_enabled)
+SELECT v.name, a.id, FALSE
+FROM accounts a
+JOIN brokers b ON b.id = a.broker_id
+CROSS JOIN (VALUES
+    ('L1 — лонг, тренд'),
+    ('L2 — лонг, боковик'),
+    ('L3 — шорт, тренд'),
+    ('L4 — шорт, боковик')
+) AS v(name)
+WHERE b.code = 'T-BANK' AND a.account_code = 'FAKE-EFF-001'
+ON CONFLICT (name) DO NOTHING;
+
+INSERT INTO logic_params (logic_id, param_key, param_value, value_type)
+SELECT l.id, v.param_key, v.param_value, v.value_type
+FROM logics l
+CROSS JOIN (VALUES
+    ('timeframe', 'M15', 'text'),
+    ('position_size_pct', '10', 'number'),
+    ('max_open_positions', '3', 'integer'),
+    ('initial_balance', '1000000', 'money'),
+    ('current_balance', '1000000', 'money'),
+    ('commission_pct', '0.03', 'number'),
+    ('cost_method', 'FIFO', 'text'),
+    ('stop_loss_timeframe', 'M5', 'text'),
+    ('base_annual_rate_pct', '20', 'number'),
+    ('rating_lookback_days', '7', 'integer')
+) AS v(param_key, param_value, value_type)
+WHERE l.name IN (
+    'L1 — лонг, тренд', 'L2 — лонг, боковик', 'L3 — шорт, тренд', 'L4 — шорт, боковик'
+)
+ON CONFLICT (logic_id, param_key) DO UPDATE SET
+    param_value = EXCLUDED.param_value,
+    updated_at = CURRENT_TIMESTAMP;
+
+INSERT INTO logic_params (logic_id, param_key, param_value, value_type)
+SELECT l.id, d.param_key, d.default_value, d.value_type
+FROM logics l
+CROSS JOIN logic_param_defs d
+WHERE l.name IN (
+    'L1 — лонг, тренд', 'L2 — лонг, боковик', 'L3 — шорт, тренд', 'L4 — шорт, боковик'
+)
+ON CONFLICT (logic_id, param_key) DO NOTHING;
+
+DELETE FROM logic_indicator_signals lis
+USING logics l
+WHERE lis.logic_id = l.id
+  AND l.name IN (
+    'L1 — лонг, тренд', 'L2 — лонг, боковик', 'L3 — шорт, тренд', 'L4 — шорт, боковик'
+  );
+
+-- L1 long trend: Op SMA Ab + LinReg AbUp + ATR GrOk + ADX TrOk + CCI>=100 + MACD>Sig
+INSERT INTO logic_indicator_signals (
+    logic_id, indicator_id, position_event, position_side, signal_kind, formula, display_order
+)
+SELECT l.id, i.id, v.position_event, v.position_side, v.signal_kind, v.formula, v.display_order
+FROM logics l
+CROSS JOIN (VALUES
+    ('SMA',    'open',  'long', 'trend',   '@SMA(period=100,series=VALUE) pp > VALUE', 0),
+    ('LINREG', 'open',  'long', 'trend',   '@LINREG(period=20,std_dev=2,series=UPPER) pp > VALUE', 1),
+    ('ATR',    'open',  'long', 'trend',   '@ATR(period=14,series=GROWTH5) VALUE >= 3', 2),
+    ('ADX',    'open',  'long', 'trend',   '@ADX(period=14,series=ADX) VALUE >= 25', 3),
+    ('CCI',    'open',  'long', 'trend',   '@CCI(period=20,series=VALUE) VALUE >= 100', 4),
+    ('MACD',   'open',  'long', 'trend',   '@MACD(fast_period=12,slow_period=26,signal_period=9,series=HISTOGRAM) VALUE > 0', 5),
+    ('SMA',    'close', 'long', 'counter', '@SMA(period=100,series=VALUE) pp < VALUE', 6),
+    ('LINREG', 'close', 'long', 'counter', '@LINREG(period=20,std_dev=2,series=LOWER) pp < VALUE', 7),
+    ('CCI',    'close', 'long', 'counter', '@CCI(period=20,series=VALUE) VALUE <= -100', 8),
+    ('MACD',   'close', 'long', 'counter', '@MACD(fast_period=12,slow_period=26,signal_period=9,series=HISTOGRAM) VALUE < 0', 9)
+) AS v(ind_code, position_event, position_side, signal_kind, formula, display_order)
+JOIN indicators i ON i.code = v.ind_code
+WHERE l.name = 'L1 — лонг, тренд';
+
+-- L2 long flat: Stoch oversold + ADX weak + ATR growth + SMA Ab + MACD
+INSERT INTO logic_indicator_signals (
+    logic_id, indicator_id, position_event, position_side, signal_kind, formula, display_order
+)
+SELECT l.id, i.id, v.position_event, v.position_side, v.signal_kind, v.formula, v.display_order
+FROM logics l
+CROSS JOIN (VALUES
+    ('SMA',   'open',  'long', 'trend',   '@SMA(period=100,series=VALUE) pp > VALUE', 0),
+    ('STOCH', 'open',  'long', 'counter', '@STOCH(k_period=14,d_period=3,smooth=3,series=K) VALUE <= 10', 1),
+    ('ATR',   'open',  'long', 'trend',   '@ATR(period=14,series=GROWTH5) VALUE >= 3', 2),
+    ('ADX',   'open',  'long', 'counter', '@ADX(period=14,series=ADX) VALUE < 25', 3),
+    ('MACD',  'open',  'long', 'trend',   '@MACD(fast_period=12,slow_period=26,signal_period=9,series=HISTOGRAM) VALUE > 0', 4),
+    ('SMA',   'close', 'long', 'counter', '@SMA(period=100,series=VALUE) pp < VALUE', 5),
+    ('STOCH', 'close', 'long', 'trend',   '@STOCH(k_period=14,d_period=3,smooth=3,series=K) VALUE >= 90', 6),
+    ('MACD',  'close', 'long', 'counter', '@MACD(fast_period=12,slow_period=26,signal_period=9,series=HISTOGRAM) VALUE < 0', 7)
+) AS v(ind_code, position_event, position_side, signal_kind, formula, display_order)
+JOIN indicators i ON i.code = v.ind_code
+WHERE l.name = 'L2 — лонг, боковик';
+
+-- L3 short trend
+INSERT INTO logic_indicator_signals (
+    logic_id, indicator_id, position_event, position_side, signal_kind, formula, display_order
+)
+SELECT l.id, i.id, v.position_event, v.position_side, v.signal_kind, v.formula, v.display_order
+FROM logics l
+CROSS JOIN (VALUES
+    ('SMA',    'open',  'short', 'trend',   '@SMA(period=100,series=VALUE) pp < VALUE', 0),
+    ('LINREG', 'open',  'short', 'trend',   '@LINREG(period=20,std_dev=2,series=LOWER) pp < VALUE', 1),
+    ('ATR',    'open',  'short', 'trend',   '@ATR(period=14,series=GROWTH5) VALUE >= 3', 2),
+    ('ADX',    'open',  'short', 'trend',   '@ADX(period=14,series=ADX) VALUE >= 25', 3),
+    ('CCI',    'open',  'short', 'trend',   '@CCI(period=20,series=VALUE) VALUE <= -100', 4),
+    ('MACD',   'open',  'short', 'trend',   '@MACD(fast_period=12,slow_period=26,signal_period=9,series=HISTOGRAM) VALUE < 0', 5),
+    ('SMA',    'close', 'short', 'counter', '@SMA(period=100,series=VALUE) pp > VALUE', 6),
+    ('LINREG', 'close', 'short', 'counter', '@LINREG(period=20,std_dev=2,series=UPPER) pp > VALUE', 7),
+    ('CCI',    'close', 'short', 'counter', '@CCI(period=20,series=VALUE) VALUE >= 100', 8),
+    ('MACD',   'close', 'short', 'counter', '@MACD(fast_period=12,slow_period=26,signal_period=9,series=HISTOGRAM) VALUE > 0', 9)
+) AS v(ind_code, position_event, position_side, signal_kind, formula, display_order)
+JOIN indicators i ON i.code = v.ind_code
+WHERE l.name = 'L3 — шорт, тренд';
+
+-- L4 short flat
+INSERT INTO logic_indicator_signals (
+    logic_id, indicator_id, position_event, position_side, signal_kind, formula, display_order
+)
+SELECT l.id, i.id, v.position_event, v.position_side, v.signal_kind, v.formula, v.display_order
+FROM logics l
+CROSS JOIN (VALUES
+    ('SMA',   'open',  'short', 'trend',   '@SMA(period=100,series=VALUE) pp < VALUE', 0),
+    ('STOCH', 'open',  'short', 'counter', '@STOCH(k_period=14,d_period=3,smooth=3,series=K) VALUE >= 90', 1),
+    ('ATR',   'open',  'short', 'trend',   '@ATR(period=14,series=GROWTH5) VALUE >= 3', 2),
+    ('ADX',   'open',  'short', 'counter', '@ADX(period=14,series=ADX) VALUE < 25', 3),
+    ('MACD',  'open',  'short', 'trend',   '@MACD(fast_period=12,slow_period=26,signal_period=9,series=HISTOGRAM) VALUE < 0', 4),
+    ('SMA',   'close', 'short', 'counter', '@SMA(period=100,series=VALUE) pp > VALUE', 5),
+    ('STOCH', 'close', 'short', 'trend',   '@STOCH(k_period=14,d_period=3,smooth=3,series=K) VALUE <= 10', 6),
+    ('MACD',  'close', 'short', 'counter', '@MACD(fast_period=12,slow_period=26,signal_period=9,series=HISTOGRAM) VALUE > 0', 7)
+) AS v(ind_code, position_event, position_side, signal_kind, formula, display_order)
+JOIN indicators i ON i.code = v.ind_code
+WHERE l.name = 'L4 — шорт, боковик';
+
+INSERT INTO logic_securities (logic_id, security_id, display_order)
+SELECT l.id, q.security_id, ROW_NUMBER() OVER (PARTITION BY l.id ORDER BY q.sort_key) - 1
+FROM logics l
+CROSS JOIN LATERAL (
+    SELECT DISTINCT ON (s.id)
+        s.id AS security_id,
+        COALESCE(sp.prefix, s.name) AS sort_key
+    FROM securities s
+    JOIN security_prefixes sp ON sp.security_id = s.id AND sp.instrument_market = 'stock'
+    ORDER BY s.id, sp.prefix
+) q
+WHERE l.name IN (
+    'L1 — лонг, тренд', 'L2 — лонг, боковик', 'L3 — шорт, тренд', 'L4 — шорт, боковик'
+)
+ON CONFLICT (logic_id, security_id) DO UPDATE SET is_active = TRUE;
+
+DELETE FROM logic_stops ls
+USING logics l
+WHERE ls.logic_id = l.id
+  AND l.name IN (
+    'L1 — лонг, тренд', 'L2 — лонг, боковик', 'L3 — шорт, тренд', 'L4 — шорт, боковик'
+  );
+
+INSERT INTO logic_stops (logic_id, rule_kind, scope_type, value, value_unit, display_order, is_active)
+SELECT l.id, v.rule_kind, v.scope_type, v.value, v.value_unit, v.display_order, TRUE
+FROM logics l
+CROSS JOIN (VALUES
+    ('stop_loss',   'security_resume', 1.0, 'percent', 0),
+    ('take_profit', 'security',        3.0, 'percent', 1)
+) AS v(rule_kind, scope_type, value, value_unit, display_order)
+WHERE l.name IN (
+    'L1 — лонг, тренд', 'L2 — лонг, боковик', 'L3 — шорт, тренд', 'L4 — шорт, боковик'
 );
 
 -- Сделки по торговой логике (исполнение по сигналам индикаторов)

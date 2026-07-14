@@ -30,6 +30,7 @@ import {
   buildShadedDisabledRanges,
   buildStopMarkers,
   buildTradeMarkers,
+  clipCandlesForBacktest,
   dtKey,
   papersWithTrades,
   tradeDtWindow,
@@ -41,6 +42,7 @@ export interface BacktestPaperRow {
   security_name: string;
   security_prefix: string | null;
   pnl: number;
+  commission: number;
   trade_count: number;
 }
 
@@ -205,6 +207,12 @@ export class LogicBacktestPapersComponent implements OnChanges, OnDestroy {
     return `${sign}${value.toFixed(2)}`;
   }
 
+  formatMoney(value: number | null | undefined): string {
+    const n = Number(value);
+    if (!Number.isFinite(n)) return '0.00';
+    return n.toFixed(2);
+  }
+
   onLoadOlder(securityId: number): void {
     const tfId = this.resolveTimeframeId(securityId);
     const st = this.chartState(securityId);
@@ -284,6 +292,18 @@ export class LogicBacktestPapersComponent implements OnChanges, OnDestroy {
         equity: buildEquityPoints(secTrades, this.dateFrom),
       });
     }
+    // Период/сделки сменились — перезагрузить раскрытые графики под новое окно
+    for (const securityId of this.expandedSecurityIds) {
+      const st = this.charts.get(securityId);
+      if (!st) continue;
+      st.candles = [];
+      st.indicatorSeries = EMPTY_SERIES;
+      st.lastRangeKey = '';
+      st.focusDt = null;
+      st.error = null;
+      st.loading = false;
+      this.ensureChartLoaded(securityId);
+    }
   }
 
   private ensureChartLoaded(securityId: number): void {
@@ -293,6 +313,7 @@ export class LogicBacktestPapersComponent implements OnChanges, OnDestroy {
       st.error = 'Не задан таймфрейм логики (и нет timeframe_id в сделках)';
       st.status = null;
       st.loading = false;
+      this.cdr.detectChanges();
       return;
     }
     if (st.candles.length > 0 || st.loading) return;
@@ -304,20 +325,22 @@ export class LogicBacktestPapersComponent implements OnChanges, OnDestroy {
       this.dateTo
     );
     const win = tradeDtWindow(secTrades);
-    // Грузим от конца окна сделок (или date_to), затем догружаем до начала теста (PnL с нуля).
-    const endKey = win?.to || (this.dateTo ? `${this.dateTo} 23:59:59` : null);
-    const before = endKey ? endKey.replace(' ', 'T') : undefined;
-    st.focusDt = win?.to ?? null;
+    // Грузим с конца периода теста / последней сделки, потом догружаем к началу.
+    const coverTo = this.periodCoverTo(win?.to ?? null);
+    const before = coverTo ? coverTo.replace(' ', 'T') : undefined;
+    // Фокус на ПЕРВОЙ сделке — иначе окно уезжает в хвост и маркеры «в конце»
+    st.focusDt = win?.from ?? this.dateFrom ?? null;
     const coverFrom = this.periodCoverFrom(win?.from ?? null);
 
     st.loading = true;
     st.error = null;
     st.status = win
-      ? `Загрузка свечей вокруг сделок ${win.from.slice(0, 10)}…${win.to.slice(0, 10)}`
-      : `Загрузка свечей (tf=${tfId})…`;
+      ? `Загрузка свечей ${win.from.slice(0, 10)}…${win.to.slice(0, 10)}`
+      : `Загрузка свечей периода теста (tf=${tfId})…`;
+    this.cdr.detectChanges();
 
     const sub = this.securitiesApi
-      .getPrices(securityId, tfId, 200, before)
+      .getPrices(securityId, tfId, 250, before)
       .pipe(
         catchError((err) => {
           st.error = humanizeChartLoadError(err);
@@ -328,9 +351,9 @@ export class LogicBacktestPapersComponent implements OnChanges, OnDestroy {
         next: (rows) => {
           if (rows.length === 0 && before) {
             st.status = 'Повторная загрузка свечей без фильтра даты…';
-            const retry = this.securitiesApi.getPrices(securityId, tfId, 200).subscribe({
+            const retry = this.securitiesApi.getPrices(securityId, tfId, 250).subscribe({
               next: (retryRows) =>
-                this.finishCandleLoad(securityId, st, retryRows, coverFrom),
+                this.finishCandleLoad(securityId, st, retryRows, coverFrom, coverTo, win),
               error: (err) => {
                 st.loading = false;
                 st.error = humanizeChartLoadError(err);
@@ -341,7 +364,7 @@ export class LogicBacktestPapersComponent implements OnChanges, OnDestroy {
             this.subs.add(retry);
             return;
           }
-          this.finishCandleLoad(securityId, st, rows, coverFrom);
+          this.finishCandleLoad(securityId, st, rows, coverFrom, coverTo, win);
         },
         error: () => {
           st.loading = false;
@@ -361,12 +384,24 @@ export class LogicBacktestPapersComponent implements OnChanges, OnDestroy {
     return firstTradeDt;
   }
 
+  /** Конец покрытия: date_to или последняя сделка. */
+  private periodCoverTo(lastTradeDt: string | null): string | null {
+    if (this.dateTo) {
+      const d = String(this.dateTo).trim();
+      if (/^\d{4}-\d{2}-\d{2}$/.test(d)) return `${d} 23:59:59`;
+      return d;
+    }
+    return lastTradeDt;
+  }
+
   /** Догрузить историю до начала теста / первой сделки (PnL и маркеры в окне). */
   private finishCandleLoad(
     securityId: number,
     st: PaperChartState,
     rows: PriceCandle[],
-    coverFrom: string | null
+    coverFrom: string | null,
+    coverTo: string | null,
+    win: { from: string; to: string } | null
   ): void {
     st.candles = rows;
     st.hasMore = rows.length >= 200;
@@ -381,49 +416,57 @@ export class LogicBacktestPapersComponent implements OnChanges, OnDestroy {
     const needFrom = coverFrom ? dtKey(coverFrom) : null;
     const firstKey = dtKey(st.candles[0].dt);
     if (!needFrom || firstKey <= needFrom || !st.hasMore) {
-      this.applyCandles(securityId, st, st.candles);
+      this.applyCandles(securityId, st, st.candles, coverFrom, coverTo, win);
       return;
     }
 
     st.status = `Догрузка истории до ${needFrom.slice(0, 16)}…`;
-    this.loadOlderUntilCovered(securityId, st, needFrom, 1);
+    this.loadOlderUntilCovered(securityId, st, needFrom, coverFrom, coverTo, win, 1);
   }
 
   private loadOlderUntilCovered(
     securityId: number,
     st: PaperChartState,
     needFrom: string,
+    coverFrom: string | null,
+    coverTo: string | null,
+    win: { from: string; to: string } | null,
     page: number
   ): void {
     const tfId = this.resolveTimeframeId(securityId);
     if (!tfId || page > MAX_LOAD_PAGES || st.candles.length === 0) {
-      this.applyCandles(securityId, st, st.candles);
+      this.applyCandles(securityId, st, st.candles, coverFrom, coverTo, win);
       return;
     }
     const before = st.candles[0].dt;
-    const sub = this.securitiesApi.getPrices(securityId, tfId, 200, before).subscribe({
+    const sub = this.securitiesApi.getPrices(securityId, tfId, 250, before).subscribe({
       next: (older) => {
         if (older.length === 0) {
           st.hasMore = false;
-          this.applyCandles(securityId, st, st.candles);
+          this.applyCandles(securityId, st, st.candles, coverFrom, coverTo, win);
           return;
         }
-        const merged = [...older, ...st.candles];
-        // Не отбрасывать «хвост» со сделками: при обрезке оставляем конец массива.
-        st.candles =
-          merged.length > MAX_CANDLES ? merged.slice(merged.length - MAX_CANDLES) : merged;
+        // Пока догружаем — не режем начало: иначе теряем сделки и PnL
+        st.candles = [...older, ...st.candles];
         st.hasMore = older.length >= 200;
         const firstKey = dtKey(st.candles[0].dt);
-        // Если упёрлись в лимит и всё ещё не покрыли — обрежем окно вокруг сделок ниже в apply.
-        if (firstKey <= needFrom || !st.hasMore || st.candles.length >= MAX_CANDLES) {
-          this.applyCandles(securityId, st, st.candles);
+        if (firstKey <= needFrom || !st.hasMore || page >= MAX_LOAD_PAGES) {
+          this.applyCandles(securityId, st, st.candles, coverFrom, coverTo, win);
           return;
         }
         st.status = `Догрузка истории (${st.candles.length} свечей)…`;
         this.cdr.detectChanges();
-        this.loadOlderUntilCovered(securityId, st, needFrom, page + 1);
+        this.loadOlderUntilCovered(
+          securityId,
+          st,
+          needFrom,
+          coverFrom,
+          coverTo,
+          win,
+          page + 1
+        );
       },
-      error: () => this.applyCandles(securityId, st, st.candles),
+      error: () => this.applyCandles(securityId, st, st.candles, coverFrom, coverTo, win),
     });
     this.subs.add(sub);
   }
@@ -431,27 +474,41 @@ export class LogicBacktestPapersComponent implements OnChanges, OnDestroy {
   private applyCandles(
     securityId: number,
     st: PaperChartState,
-    rows: PriceCandle[]
+    rows: PriceCandle[],
+    coverFrom: string | null,
+    coverTo: string | null,
+    win: { from: string; to: string } | null
   ): void {
-    st.candles = rows;
-    st.hasMore = rows.length >= 200;
+    const clipped = clipCandlesForBacktest(rows, {
+      coverFrom,
+      coverTo,
+      tradeFrom: win?.from ?? null,
+      tradeTo: win?.to ?? null,
+      maxCandles: MAX_CANDLES,
+    });
+    st.candles = clipped;
+    st.hasMore = rows.length >= 200 && clipped.length >= MAX_CANDLES;
     st.loading = false;
     const ov = this.overlays(securityId);
-    st.error = rows.length === 0 ? 'В БД нет свечей для этой бумаги / таймфрейма' : null;
+    st.error = clipped.length === 0 ? 'В БД нет свечей для этой бумаги / таймфрейма' : null;
     st.status =
-      rows.length > 0
-        ? `${rows.length} свечей · сделок: ${ov.markers.length} · стопов: ${ov.stops.length}`
+      clipped.length > 0
+        ? `${clipped.length} свечей · сделок: ${ov.markers.length} · стопов: ${ov.stops.length}`
         : null;
     if (!st.focusDt && ov.markers.length > 0) {
-      st.focusDt = ov.markers[ov.markers.length - 1].dt;
+      st.focusDt = ov.markers[0].dt;
     }
     this.cdr.detectChanges();
-    if (rows.length > 0) {
+    if (clipped.length > 0) {
+      // Чуть шире видимого: чтобы индикаторы успели попасть в окно
+      const n = Math.min(clipped.length, 120);
+      const startIdx = Math.max(0, clipped.findIndex((c) => dtKey(c.dt) >= dtKey(st.focusDt || clipped[0].dt)) - 20);
+      const endIdx = Math.min(clipped.length - 1, startIdx + n - 1);
       this.loadIndicatorValues(securityId, {
-        startDt: rows[0].dt,
-        endDt: rows[rows.length - 1].dt,
-        count: rows.length,
-        viewStart: 0,
+        startDt: clipped[Math.max(0, startIdx)].dt,
+        endDt: clipped[endIdx].dt,
+        count: endIdx - Math.max(0, startIdx) + 1,
+        viewStart: Math.max(0, startIdx),
         userInitiated: false,
       });
     }

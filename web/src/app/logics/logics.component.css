@@ -76,6 +76,30 @@
   text-align: right;
 }
 
+.col-test-pnl {
+  text-align: right;
+  white-space: nowrap;
+  min-width: 6.5rem;
+  font-variant-numeric: tabular-nums;
+}
+
+.logic-test-pnl {
+  font-weight: 700;
+  font-size: 0.9rem;
+}
+
+.logic-test-pnl-empty {
+  color: #94a3b8;
+}
+
+.trade-pnl-pos {
+  color: #15803d;
+}
+
+.trade-pnl-neg {
+  color: #b91c1c;
+}
+
 .col-actions .icon-btn {
   width: 1.85rem;
   height: 1.85rem;
@@ -171,29 +195,69 @@ th {
   font-weight: 600;
 }
 
-tbody tr:hover {
-  background: #f9fafb;
+tbody tr.logic-main-row:hover {
+  filter: brightness(0.98);
 }
 
 .row-enabled {
   font-weight: 700;
-  color: #111827;
+  color: #0f172a;
+  background: #c7d7f0;
+}
+
+.row-enabled:hover {
+  background: #b9cce9;
 }
 
 .row-disabled {
   font-weight: 400;
-  opacity: 0.32;
-  color: #9ca3af;
+  opacity: 1;
+  color: #334155;
+  background: #dde3ec;
 }
 
 .row-disabled:hover {
-  opacity: 0.42;
-  background: #fafafa;
+  opacity: 1;
+  background: #d3dae5;
+}
+
+.row-testing {
+  background: #fde68a !important;
+  box-shadow: inset 3px 0 0 #f59e0b;
+}
+
+.row-testing:hover {
+  background: #fcd34d !important;
+}
+
+.logic-name-cell {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.45rem;
+}
+
+.logic-test-spin {
+  display: inline-block;
+  font-size: 1rem;
+  line-height: 1;
+  color: #b45309;
+  animation: logic-spin 0.85s linear infinite;
+  flex-shrink: 0;
+}
+
+@keyframes logic-spin {
+  from {
+    transform: rotate(0deg);
+  }
+  to {
+    transform: rotate(360deg);
+  }
 }
 
 .col-check {
-  width: 3rem;
+  width: 3.5rem;
   text-align: center;
+  white-space: nowrap;
 }
 
 .enable-check {
@@ -201,11 +265,21 @@ tbody tr:hover {
   height: 1.05rem;
   cursor: pointer;
   accent-color: #2563eb;
+  vertical-align: middle;
 }
 
 .enable-check:disabled {
   cursor: wait;
   opacity: 0.5;
+}
+
+.rating-precalc-spin {
+  display: inline-block;
+  margin-left: 0.25rem;
+  color: #ca8a04;
+  font-size: 0.95rem;
+  vertical-align: middle;
+  animation: logic-spin 0.85s linear infinite;
 }
 
 .table-dimmed {
@@ -256,7 +330,7 @@ tbody tr:hover {
 }
 
 .logic-detail-row td {
-  background: #f8fafc;
+  background: #fff;
   padding: 0.5rem 0.75rem 1rem;
   border-bottom: 1px solid #e5e7eb;
 }
@@ -348,6 +422,29 @@ tbody tr:hover {
   font-variant-numeric: tabular-nums;
   font-weight: 600;
   white-space: nowrap;
+}
+
+.col-sig-expand {
+  width: 1.75rem;
+  padding-right: 0 !important;
+}
+
+.sig-expand-btn {
+  border: 0;
+  background: transparent;
+  padding: 0.15rem;
+  cursor: pointer;
+  line-height: 1;
+}
+
+.sig-combat-detail-row > td {
+  padding: 0 !important;
+  border-top: none;
+  background: #f8fafc;
+}
+
+.sig-main-row.sig-combat-open td {
+  border-bottom-color: transparent;
 }
 
 .sig-rating-test {

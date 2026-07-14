@@ -11,6 +11,7 @@ const PARAM_KEYS = {
   COST_METHOD: 'cost_method',
   STOP_LOSS_TIMEFRAME: 'stop_loss_timeframe',
   BASE_ANNUAL_RATE_PCT: 'base_annual_rate_pct',
+  RATING_LOOKBACK_DAYS: 'rating_lookback_days',
 };
 
 const DEFAULTS = {
@@ -19,10 +20,11 @@ const DEFAULTS = {
   [PARAM_KEYS.MAX_OPEN_POSITIONS]: { value: '5', type: 'integer' },
   [PARAM_KEYS.INITIAL_BALANCE]: { value: '', type: 'money' },
   [PARAM_KEYS.CURRENT_BALANCE]: { value: '', type: 'money' },
-  [PARAM_KEYS.COMMISSION_PCT]: { value: '0.05', type: 'number' },
+  [PARAM_KEYS.COMMISSION_PCT]: { value: '0.03', type: 'number' },
   [PARAM_KEYS.COST_METHOD]: { value: 'FIFO', type: 'text' },
   [PARAM_KEYS.STOP_LOSS_TIMEFRAME]: { value: 'M5', type: 'text' },
   [PARAM_KEYS.BASE_ANNUAL_RATE_PCT]: { value: '20', type: 'number' },
+  [PARAM_KEYS.RATING_LOOKBACK_DAYS]: { value: '7', type: 'integer' },
 };
 
 function parseParamValue(paramKey, raw, valueType) {
@@ -76,7 +78,7 @@ function rowsToTradingParams(rows) {
     commission_pct:
       map[PARAM_KEYS.COMMISSION_PCT] != null
         ? Number(map[PARAM_KEYS.COMMISSION_PCT])
-        : 0.05,
+        : 0.03,
     cost_method:
       map[PARAM_KEYS.COST_METHOD] != null &&
       String(map[PARAM_KEYS.COST_METHOD]).trim() !== ''
@@ -91,6 +93,10 @@ function rowsToTradingParams(rows) {
       map[PARAM_KEYS.BASE_ANNUAL_RATE_PCT] != null
         ? Number(map[PARAM_KEYS.BASE_ANNUAL_RATE_PCT])
         : 20,
+    rating_lookback_days:
+      map[PARAM_KEYS.RATING_LOOKBACK_DAYS] != null
+        ? Number(map[PARAM_KEYS.RATING_LOOKBACK_DAYS])
+        : 7,
   };
 }
 
@@ -230,6 +236,20 @@ async function saveTradingParams(pool, logicId, payload) {
       PARAM_KEYS.BASE_ANNUAL_RATE_PCT,
       v,
       'number'
+    );
+  }
+
+  if (payload.rating_lookback_days !== undefined) {
+    const v = Math.round(Number(payload.rating_lookback_days));
+    if (!Number.isInteger(v) || v < 1 || v > 90) {
+      throw new Error('Дней предрасчёта рейтинга: целое от 1 до 90');
+    }
+    await upsertParam(
+      pool,
+      logicId,
+      PARAM_KEYS.RATING_LOOKBACK_DAYS,
+      v,
+      'integer'
     );
   }
 

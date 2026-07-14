@@ -301,6 +301,7 @@ BEGIN
         END IF;
         BEGIN
             CALL ensure_security_indicator_series(p_security_id, v_ind.indicator_id);
+            CALL logic_apply_indicator_params_from_signals(p_logic_id, p_security_id);
             CALL sync_security_indicator_series_for_indicator(
                 p_security_id, v_ind.indicator_id, p_tf_id, p_end_dt, p_point_count, FALSE
             );

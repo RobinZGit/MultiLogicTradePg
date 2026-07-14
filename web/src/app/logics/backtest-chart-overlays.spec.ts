@@ -3,11 +3,13 @@ import {
   buildShadedDisabledRanges,
   buildStopMarkers,
   buildTradeMarkers,
+  clipCandlesForBacktest,
   isDtInsideDisabledShade,
   papersWithTrades,
   tradeDtWindow,
 } from './backtest-chart-overlays';
 import { LogicTradeRow } from '../shared/logic-trade';
+import { PriceCandle } from '../models/market.model';
 
 function trade(partial: Partial<LogicTradeRow>): LogicTradeRow {
   return {
@@ -62,6 +64,7 @@ describe('backtest-chart-overlays', () => {
     expect(rows.length).toBe(1);
     expect(rows[0].security_id).toBe(1);
     expect(rows[0].pnl).toBe(10);
+    expect(rows[0].commission).toBe(0);
   });
 
   it('buildTradeMarkers marks open/close and shadow', () => {
@@ -167,6 +170,27 @@ describe('backtest-chart-overlays', () => {
     ]);
     expect(win?.from).toBe('2026-06-02 10:00:00');
     expect(win?.to).toBe('2026-06-09 13:30:00');
+  });
+
+  it('clipCandlesForBacktest keeps trade window instead of only the tail', () => {
+    const seq: PriceCandle[] = Array.from({ length: 100 }, (_, i) => ({
+      dt: `2026-04-10 ${String(Math.floor(i / 60)).padStart(2, '0')}:${String(i % 60).padStart(2, '0')}:00`,
+      open_price: 1,
+      high_price: 1,
+      low_price: 1,
+      close_price: 1,
+      volume: 0,
+    }));
+    const clipped = clipCandlesForBacktest(seq, {
+      coverFrom: '2026-04-10 00:00:00',
+      coverTo: '2026-04-10 23:59:59',
+      tradeFrom: '2026-04-10 00:10:00',
+      tradeTo: '2026-04-10 00:20:00',
+      maxCandles: 40,
+    });
+    expect(clipped.length).toBeLessThanOrEqual(40);
+    expect(clipped.some((c) => c.dt.startsWith('2026-04-10 00:10'))).toBeTrue();
+    expect(clipped.some((c) => c.dt.startsWith('2026-04-10 00:20'))).toBeTrue();
   });
 
   it('buildEquityPoints accumulates close PnL from zero', () => {

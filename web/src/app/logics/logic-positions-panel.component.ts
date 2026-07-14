@@ -344,7 +344,18 @@ export class LogicPositionsPanelComponent implements OnChanges {
 
   }
 
-
+  /** Сумма комиссий по сделкам панели (бой или тест — те же trades). */
+  totalCommission(): number {
+    return this.trades
+      .filter((t) => !t.is_shadow)
+      .reduce(
+        (sum, t) =>
+          t.commission != null && Number.isFinite(Number(t.commission))
+            ? sum + Number(t.commission)
+            : sum,
+        0
+      );
+  }
 
   hasOpenPositions(): boolean {
 

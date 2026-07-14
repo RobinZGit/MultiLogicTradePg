@@ -1,8 +1,8 @@
 import { Component, OnDestroy, OnInit } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { FormsModule } from '@angular/forms';
-import { Subject, switchMap, takeUntil, timer } from 'rxjs';
-import { forkJoin } from 'rxjs';
+import { Subject, switchMap, takeUntil, timer, forkJoin, of } from 'rxjs';
+import { catchError, map } from 'rxjs/operators';
 import { LogicsService } from '../services/logics.service';
 import { ReferencesService } from '../services/references.service';
 import { SecuritiesService } from '../services/securities.service';
@@ -53,6 +53,8 @@ import {
   BacktestRunStatus,
   LogicPositionsPanelComponent,
 } from './logic-positions-panel.component';
+import { LogicCombatSignalDetailComponent } from './logic-combat-signal-detail.component';
+import type { SignalRatingPrecalcStatus } from '../services/logics.service';
 
 const POLL_INTERVAL_MS = 2000;
 
@@ -77,7 +79,14 @@ type StopFormDraft = {
 @Component({
   selector: 'app-logics',
   standalone: true,
-  imports: [CommonModule, FormsModule, LogicEditorComponent, TbankTokenDialogComponent, LogicPositionsPanelComponent],
+  imports: [
+    CommonModule,
+    FormsModule,
+    LogicEditorComponent,
+    TbankTokenDialogComponent,
+    LogicPositionsPanelComponent,
+    LogicCombatSignalDetailComponent,
+  ],
   templateUrl: './logics.component.html',
   styleUrl: './logics.component.css',
 })
@@ -94,6 +103,11 @@ export class LogicsComponent implements OnInit, OnDestroy {
   expandedLogics = new Set<number>();
   expandedParamsBlocks = new Set<number>();
   expandedSignalsBlocks = new Set<number>();
+  /** key = `${logicId}:${signalId}` — раскрытие сигнала → бумаги → график боя */
+  expandedCombatSignals = new Set<string>();
+  ratingPrecalcByLogic = new Map<number, SignalRatingPrecalcStatus>();
+  combatRatingReloadToken = new Map<number, number>();
+  private ratingPrecalcPollIds = new Set<number>();
   expandedStopsBlocks = new Set<number>();
   expandedSecuritiesBlocks = new Set<number>();
   expandedTradesBlocks = new Set<number>();
@@ -108,6 +122,11 @@ export class LogicsComponent implements OnInit, OnDestroy {
   logicTradesTest = new Map<number, LogicTradeRow[]>();
   backtestRuns = new Map<number, BacktestRunStatus>();
   private backtestPollIds = new Set<number>();
+  /** Онлайн-сводка тестового финреза по логикам (не колонка в БД). */
+  testPnlByLogic = new Map<
+    number,
+    { financial_result: number; commission: number; trade_count: number }
+  >();
   logicTradeLots = new Map<number, LogicTradeLotRow[]>();
   signalsLoading = new Set<number>();
   stopsLoading = new Set<number>();
@@ -173,6 +192,7 @@ export class LogicsComponent implements OnInit, OnDestroy {
       cost_method: 'FIFO' | 'AVERAGE';
       stop_loss_timeframe: string;
       base_annual_rate_pct: string;
+      rating_lookback_days: string;
       reset_balance: boolean;
     }
   >();
@@ -230,6 +250,7 @@ export class LogicsComponent implements OnInit, OnDestroy {
           this.error = null;
           // Сделки — read-only, обновляем; редактируемые блоки (параметры, формулы) — нет
           this.refreshAllTradesSummaries();
+          this.refreshTestPnlSummary();
           this.maybeCheckTbankTokenForTrades();
         },
         error: (err) => {
@@ -334,6 +355,12 @@ export class LogicsComponent implements OnInit, OnDestroy {
 
   onParamsBaseAnnualRateChange(logicId: number, value: string): void {
     this.getParamsDraft(logicId).base_annual_rate_pct = value;
+    this.paramsDirtyIds.add(logicId);
+    this.paramsSaveErrors.delete(logicId);
+  }
+
+  onParamsRatingLookbackChange(logicId: number, value: string): void {
+    this.getParamsDraft(logicId).rating_lookback_days = value;
     this.paramsDirtyIds.add(logicId);
     this.paramsSaveErrors.delete(logicId);
   }
@@ -443,6 +470,7 @@ export class LogicsComponent implements OnInit, OnDestroy {
       cost_method?: 'FIFO' | 'AVERAGE';
       stop_loss_timeframe?: string;
       base_annual_rate_pct?: number;
+      rating_lookback_days?: number;
     }
   ): void {
     const idx = this.logics.findIndex((l) => l.id === logicId);
@@ -461,6 +489,7 @@ export class LogicsComponent implements OnInit, OnDestroy {
     cost_method?: 'FIFO' | 'AVERAGE';
     stop_loss_timeframe?: string;
     base_annual_rate_pct?: number;
+    rating_lookback_days?: number;
   }): {
     timeframe: string;
     position_size_pct: string;
@@ -470,6 +499,7 @@ export class LogicsComponent implements OnInit, OnDestroy {
     cost_method: 'FIFO' | 'AVERAGE';
     stop_loss_timeframe: string;
     base_annual_rate_pct: string;
+    rating_lookback_days: string;
     reset_balance: boolean;
   } {
     const method: 'FIFO' | 'AVERAGE' =
@@ -479,10 +509,11 @@ export class LogicsComponent implements OnInit, OnDestroy {
       position_size_pct: this.formatPctParam(trading.position_size_pct),
       max_open_positions: this.formatIntParam(trading.max_open_positions, 5),
       initial_balance: this.formatBalanceDraft(trading.initial_balance),
-      commission_pct: this.formatPctParam(trading.commission_pct ?? 0.05),
+      commission_pct: this.formatPctParam(trading.commission_pct ?? 0.03),
       cost_method: method,
       stop_loss_timeframe: (trading.stop_loss_timeframe ?? 'M5').toUpperCase(),
       base_annual_rate_pct: this.formatPctParam(trading.base_annual_rate_pct ?? 20),
+      rating_lookback_days: this.formatIntParam(trading.rating_lookback_days ?? 7, 7),
       reset_balance: false,
     };
   }
@@ -518,6 +549,7 @@ export class LogicsComponent implements OnInit, OnDestroy {
       cost_method: row.cost_method,
       stop_loss_timeframe: row.stop_loss_timeframe,
       base_annual_rate_pct: row.base_annual_rate_pct,
+      rating_lookback_days: row.rating_lookback_days,
     });
   }
 
@@ -535,6 +567,9 @@ export class LogicsComponent implements OnInit, OnDestroy {
       initialRaw === '' ? null : this.parseDecimalInput(initialRaw.replace(',', '.'));
     const commission_pct = this.parseDecimalInput(draft.commission_pct);
     const base_annual_rate_pct = this.parseDecimalInput(draft.base_annual_rate_pct);
+    const rating_lookback_days = Math.round(
+      this.parseDecimalInput(draft.rating_lookback_days)
+    );
 
     if (!Number.isFinite(position_size_pct) || position_size_pct <= 0 || position_size_pct > 100) {
       this.paramsSaveErrors.set(
@@ -563,6 +598,14 @@ export class LogicsComponent implements OnInit, OnDestroy {
       this.paramsSaveErrors.set(row.id, 'Базовая ставка (% годовых): число от 0 до 1000');
       return;
     }
+    if (
+      !Number.isInteger(rating_lookback_days) ||
+      rating_lookback_days < 1 ||
+      rating_lookback_days > 90
+    ) {
+      this.paramsSaveErrors.set(row.id, 'Дней предрасчёта рейтинга: целое от 1 до 90');
+      return;
+    }
 
     this.paramsSaveErrors.delete(row.id);
     this.savingParamsIds.add(row.id);
@@ -576,6 +619,7 @@ export class LogicsComponent implements OnInit, OnDestroy {
         cost_method: draft.cost_method,
         stop_loss_timeframe: draft.stop_loss_timeframe,
         base_annual_rate_pct,
+        rating_lookback_days,
         reset_balance: draft.reset_balance,
       })
       .subscribe({
@@ -756,6 +800,24 @@ export class LogicsComponent implements OnInit, OnDestroy {
             : sum,
         0
       );
+  }
+
+  hasTestFinancialResult(logicId: number): boolean {
+    return this.testPnlByLogic.has(logicId);
+  }
+
+  testFinancialResult(logicId: number): number | null {
+    const row = this.testPnlByLogic.get(logicId);
+    if (!row) return null;
+    return Number(row.financial_result);
+  }
+
+  testFinancialResultTitle(logicId: number): string {
+    const row = this.testPnlByLogic.get(logicId);
+    if (!row) return '';
+    const pnl = this.formatPnl(row.financial_result);
+    const com = this.formatMoney(row.commission);
+    return `Тест: финрез ${pnl}, комиссия ${com}, сделок ${row.trade_count}`;
   }
 
   hasOpenPositions(logicId: number): boolean {
@@ -1529,7 +1591,7 @@ export class LogicsComponent implements OnInit, OnDestroy {
     row.is_enabled = checked;
     this.savingIds.add(row.id);
     this.logicsService.updateLogicEnabled(row.id, checked).subscribe({
-      next: () => {
+      next: (resp) => {
         this.savingIds.delete(row.id);
         this.techLog.event(
           this.techLog.logicThreadKey(row.id, 'control'),
@@ -1540,6 +1602,11 @@ export class LogicsComponent implements OnInit, OnDestroy {
         if (checked) {
           this.lastTbankTokenCheckAt = 0;
           this.maybeCheckTbankTokenForTrades();
+          const precalc = resp?.rating_precalc;
+          if (precalc) {
+            this.ratingPrecalcByLogic.set(row.id, precalc);
+          }
+          this.watchRatingPrecalc(row.id);
         } else if (!this.hasEnabledLogic()) {
           this.tbankTokenAlert = null;
         }
@@ -1549,6 +1616,70 @@ export class LogicsComponent implements OnInit, OnDestroy {
         this.savingIds.delete(row.id);
       },
     });
+  }
+
+  combatSignalKey(logicId: number, signalId: number): string {
+    return `${logicId}:${signalId}`;
+  }
+
+  isCombatSignalExpanded(logicId: number, signalId: number): boolean {
+    return this.expandedCombatSignals.has(this.combatSignalKey(logicId, signalId));
+  }
+
+  toggleCombatSignal(logicId: number, signalId: number, event: Event): void {
+    event.preventDefault();
+    event.stopPropagation();
+    const key = this.combatSignalKey(logicId, signalId);
+    if (this.expandedCombatSignals.has(key)) {
+      this.expandedCombatSignals.delete(key);
+      return;
+    }
+    this.expandedCombatSignals.add(key);
+    this.loadSecuritiesForLogic(logicId);
+  }
+
+  isRatingPrecalcActive(logicId: number): boolean {
+    const s = this.ratingPrecalcByLogic.get(logicId);
+    return !!s && (s.status === 'pending' || s.status === 'running');
+  }
+
+  ratingPrecalcTitle(logicId: number): string {
+    const s = this.ratingPrecalcByLogic.get(logicId);
+    if (!s) return '';
+    const pct = Math.round(Number(s.progress_pct) || 0);
+    return `Предрасчёт рейтинга: ${s.phase_message || s.status} (${pct}%)`;
+  }
+
+  combatReloadToken(logicId: number): number {
+    return this.combatRatingReloadToken.get(logicId) ?? 0;
+  }
+
+  private watchRatingPrecalc(logicId: number): void {
+    if (this.ratingPrecalcPollIds.has(logicId)) return;
+    this.ratingPrecalcPollIds.add(logicId);
+    const pollOnce = () => {
+      this.logicsService.getSignalRatingPrecalc(logicId).subscribe({
+        next: (status) => {
+          this.ratingPrecalcByLogic.set(logicId, status);
+          if (status.status === 'pending' || status.status === 'running') {
+            window.setTimeout(pollOnce, 1500);
+            return;
+          }
+          this.ratingPrecalcPollIds.delete(logicId);
+          if (status.status === 'done') {
+            this.combatRatingReloadToken.set(
+              logicId,
+              (this.combatRatingReloadToken.get(logicId) ?? 0) + 1
+            );
+            this.loadSignalsForLogic(logicId, true);
+          }
+        },
+        error: () => {
+          this.ratingPrecalcPollIds.delete(logicId);
+        },
+      });
+    };
+    pollOnce();
   }
 
   isSaving(row: LogicRow): boolean {
@@ -1589,8 +1720,8 @@ export class LogicsComponent implements OnInit, OnDestroy {
     });
   }
 
-  private loadSignalsForLogic(logicId: number): void {
-    if (this.signalsLoading.has(logicId)) return;
+  private loadSignalsForLogic(logicId: number, force = false): void {
+    if (!force && this.signalsLoading.has(logicId)) return;
     this.signalsLoading.add(logicId);
     this.logicsService.getLogicIndicatorSignals(logicId).subscribe({
       next: (rows) => {
@@ -1717,6 +1848,63 @@ export class LogicsComponent implements OnInit, OnDestroy {
     for (const logicId of this.backtestPollIds) {
       this.refreshBacktestStatus(logicId);
     }
+  }
+
+  private refreshTestPnlSummary(): void {
+    this.logicsService.getLogicTradesPnlSummary(true).subscribe({
+      next: (resp) => {
+        const next = new Map<
+          number,
+          { financial_result: number; commission: number; trade_count: number }
+        >();
+        for (const r of resp.rows ?? []) {
+          const pnl = Number(r.financial_result);
+          next.set(r.logic_id, {
+            financial_result: Number.isFinite(pnl) ? pnl : 0,
+            commission: Number(r.commission) || 0,
+            trade_count: Number(r.trade_count) || 0,
+          });
+        }
+        this.testPnlByLogic = next;
+      },
+      error: () => {
+        // Старый API без /pnl-summary — берём financial_result из последнего backtest run
+        this.refreshTestPnlFromBacktestRuns();
+      },
+    });
+  }
+
+  /** Fallback, пока API не перезапущен с /logic-trades/pnl-summary. */
+  private refreshTestPnlFromBacktestRuns(): void {
+    if (!this.logics.length) return;
+    forkJoin(
+      this.logics.map((row) =>
+        this.logicsService.getBacktestStatus(row.id).pipe(
+          catchError(() => of(null)),
+          map((run) => ({ logicId: row.id, run }))
+        )
+      )
+    ).subscribe((results) => {
+      const next = new Map<
+        number,
+        { financial_result: number; commission: number; trade_count: number }
+      >();
+      for (const { logicId, run } of results) {
+        if (!run) continue;
+        const pnl = Number(run.financial_result);
+        if (!Number.isFinite(pnl) || run.financial_result == null) continue;
+        const extra = run as BacktestRunStatus & {
+          trades_created?: number;
+          finished_at?: string | null;
+        };
+        next.set(logicId, {
+          financial_result: pnl,
+          commission: 0,
+          trade_count: Number(extra.trades_created) || 0,
+        });
+      }
+      this.testPnlByLogic = next;
+    });
   }
 
   private loadMoexExchangeId(): void {

@@ -93,5 +93,32 @@ if (sql02.includes('-- @include sql/logic_backtest_runner.sql')) {
   sql02 = sql02.replace('-- @optional-pgcron-block', insertBacktest);
 }
 
+const calcExtra = read('sql/calc_ind_extra.sql').trimEnd() + '\n';
+{
+  const beginMark = '-- @begin calc_ind_extra';
+  const endMark = '-- @end calc_ind_extra';
+  const start = sql02.indexOf(beginMark);
+  if (start === -1) {
+    throw new Error('sync-02: markers not found for calc_ind_extra (begin)');
+  }
+  // Конец блока — последний @end до диспетчера (не путать с текстом внутри модуля)
+  const dispatcher = '\n-- Диспетчер массивного расчёта';
+  const regionEnd = sql02.indexOf(dispatcher, start);
+  const searchTo = regionEnd === -1 ? sql02.length : regionEnd;
+  let end = sql02.lastIndexOf(endMark, searchTo - 1);
+  if (end === -1 || end < start) {
+    throw new Error('sync-02: markers not found for calc_ind_extra (end)');
+  }
+  let after = end + endMark.length;
+  while (sql02.slice(after).startsWith(endMark) || sql02.slice(after).startsWith('\n' + endMark)) {
+    if (sql02[after] === '\n') after += 1;
+    after += endMark.length;
+  }
+  sql02 =
+    sql02.slice(0, start) +
+    `${beginMark}\n${calcExtra}${endMark}\n` +
+    sql02.slice(after);
+}
+
 fs.writeFileSync(path.join(root, '02_multilogictrade_functions_and_procedures.sql'), sql02, 'utf8');
 console.log('sync-02: OK — 02_multilogictrade_functions_and_procedures.sql updated');

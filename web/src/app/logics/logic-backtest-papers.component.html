@@ -34,6 +34,9 @@
                 >
                   {{ formatPnl(paper.pnl) }}
                 </span>
+                <span class="paper-comm" title="Комиссия по сделкам бумаги">
+                  ком. {{ formatMoney(paper.commission) }}
+                </span>
                 <span class="paper-trades-meta">{{ paper.trade_count }} сд.</span>
               </button>
 
@@ -56,6 +59,7 @@
                       [shadedRanges]="overlays(paper.security_id).shaded"
                       [equityPoints]="overlays(paper.security_id).equity"
                       [focusDt]="chartState(paper.security_id).focusDt"
+                      focusAlign="start"
                       [loading]="chartState(paper.security_id).loading"
                       [loadingOlder]="chartState(paper.security_id).loadingOlder"
                       [showRecalcButton]="false"

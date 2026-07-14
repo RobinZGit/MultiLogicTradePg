@@ -64,14 +64,39 @@
             {{ formatPct(annualPct()) }}
           </span>
           <span class="positions-total-pct-hint">год.</span>
+          <span class="positions-summary-sep" aria-hidden="true">·</span>
+          <span class="positions-total-label" title="Сумма комиссий по сделкам">Комиссия:</span>
+          <span class="positions-total-commission">{{ formatMoney(totalCommission()) }}</span>
         </span>
 
         @if (loading) {
           <span class="signals-loading">загрузка…</span>
         }
-      </span>
+        </span>
 
-      @if (!isTest) {
+      @if (isTest) {
+        <span class="signals-summary-actions backtest-run-controls" (click)="$event.stopPropagation()">
+          <button
+            type="button"
+            class="btn-run-backtest"
+            [class.btn-stop]="isBacktestRunning"
+            [disabled]="isCancelling"
+            [title]="isBacktestRunning ? 'Остановить тестирование' : 'Запустить тестирование'"
+            (click)="onPlayOrStop($event)"
+          >
+            @if (isCancelling) {
+              Останавливаю…
+            } @else if (isBacktestRunning) {
+              Стоп
+            } @else {
+              ▶ Запуск
+            }
+          </button>
+          @if (isBacktestRunning) {
+            <span class="backtest-toolbar-hint">Сворачивание не останавливает</span>
+          }
+        </span>
+      } @else {
         <span class="signals-summary-actions backtest-run-controls">
           @if (hasOpenPositions()) {
             <button
@@ -106,30 +131,6 @@
         </span>
       }
   </summary>
-
-  @if (isTest) {
-    <div class="backtest-toolbar" (click)="$event.stopPropagation()">
-      <button
-        type="button"
-        class="btn-run-backtest"
-        [class.btn-stop]="isBacktestRunning"
-        [disabled]="isCancelling"
-        [title]="isBacktestRunning ? 'Остановить тестирование' : 'Запустить тестирование'"
-        (click)="onPlayOrStop($event)"
-      >
-        @if (isCancelling) {
-          Останавливаю…
-        } @else if (isBacktestRunning) {
-          Стоп
-        } @else {
-          ▶ Запуск
-        }
-      </button>
-      @if (isBacktestRunning) {
-        <span class="backtest-toolbar-hint">Сворачивание блока тест не останавливает</span>
-      }
-    </div>
-  }
 
   @if (isTest && isBacktestRunning) {
     <div class="backtest-progress backtest-progress-in-block">
