@@ -5,7 +5,7 @@
 > Включать **запросы пользователя текстом** (секция «Запросы пользователя»).
 
 **Репозиторий:** https://github.com/RobinZGit/MultiLogicTradePg  
-**Последнее обновление:** 2026-07-13 (v32: проверка токена T-Bank для trade runner)
+**Последнее обновление:** 2026-07-14 (v38: сигналы open/close + trend/counter; демо все акции, SL1%/TP3%)
 
 ---
 
@@ -25,7 +25,7 @@
 | Файл | Назначение |
 |------|------------|
 | `00_create_database.sql` | **DROP + CREATE** базы `multilogictrade` (полное пересоздание) |
-| `01_multilogictrade_tables_and_data.sql` | Таблицы, индексы, справочники (идемпотентно, **v31**) |
+| `01_multilogictrade_tables_and_data.sql` | Таблицы, индексы, справочники (идемпотентно, **v38**) |
 | `02_multilogictrade_functions_and_procedures.sql` | Функции и процедуры (идемпотентно) |
 | `03_multilogictrade_examples.sql` | Примеры SELECT (необязательно) |
 
@@ -72,10 +72,10 @@
 
 - справочник `indicators` (32 шт.: + **SMAT3**), классические + **PACC** + пользовательские через `formula`;
 - **`indicators.sig_trend_def`**, **`indicators.sig_ct_def`** — условия тренда/контртренда по умолчанию (на сериях: `VALUE > 50`, `pp > VALUE`, …);
-- **`logic_indicator_signals`** — сигналы индикаторов на логике (`position_side` long|short, `signal_kind` trend|counter, `formula`);
+- **`logic_indicator_signals`** — сигналы на логике: **`position_event`** open|close, **`position_side`** long|short, **`signal_kind`** trend|counter, `formula`;
 - **`logic_stops`** — стоп-лосс и тейк-профит по логике (`rule_kind` stop_loss|take_profit, `scope_type` security|portfolio, `value`, `value_unit` percent|atr);
 - **`logic_securities`** — портфель бумаг логики (`logic_id`, `security_id`, `display_order`, `is_active`);
-- **`logic_trades`** — сделки по сигналам: `is_simulated`, **`is_fictitious`**, `commission`, **`financial_result`** (только Close), `signal_kind`, `bar_dt`, `status`; side Open/Close через `sides`;
+- **`logic_trades`** — сделки: `position_event`, `signal_kind`, `is_simulated`, **`is_fictitious`**, `commission`, **`financial_result`** (только Close), `bar_dt`, `status`; side Open/Close через `sides`;
 - **`logic_trade_lots`** — пакеты закрытия (FIFO / средняя): связь close↔open, суммы, комиссии, PnL по пакету;
 - **`logic_param_defs`** + **`logic_params`** — параметры торговли (EAV): **`timeframe`**, `position_size_pct`, `max_open_positions`, `initial_balance`, `current_balance`, **`commission_pct`**, **`cost_method`** (FIFO|AVERAGE), `last_trade_check_at`;
 - **`indicators.formula`** — многочлен для `calc_poly_formula_array`; **`is_custom`** — подсветка в списке;
@@ -87,9 +87,10 @@
 - `logics` + `logics_detail` — движок формул **ещё не реализован**;
 - UI **Операции** (`/operations`): пять сворачиваемых блоков — **«Параметры логики»**, **«Сигналы индикаторов»**, **«Стоп-лосс и тейк-профит»**, **«Ценные бумаги»**, **«Сделки»** (по умолчанию свёрнуты);
 - API logics: **`GET/PUT /api/logic-params`** — чтение/запись `logic_params`; signals/stops/securities/trades;
-- **Trade runner (PostgreSQL):** `run_trade_cycle()` → `process_logic_trades()` — **перед сигналами** `logic_refresh_market_data` (авто `load_prices` + sync индикаторов сигналов логики); парсинг `@CODE(...) condition` на **`timeframe` из logic_params**; **сигналы только на последней закрытой свече TF**; fake/real счета; idempotency по `(logic_id, security_id, signal_kind, bar_dt)`;
+- **Trade runner (PostgreSQL):** `run_trade_cycle()` → `process_logic_trades()` — open/close по **`position_event`** (не выводится из trend/counter); **перед сигналами** `logic_refresh_market_data`; парсинг `@CODE(...) condition` на **`timeframe` из logic_params**; **сигналы только на последней закрытой свече TF**; fake/real; idempotency `(logic_id, security_id, position_event, signal_kind, bar_dt, is_test, is_shadow)`;
 - **Расписание:** **Node fallback** каждые **15 с** (`TRADE_RUNNER_INTERVAL_MS`, Windows); **pg_cron** раз в минуту (Linux); **только при открытом Angular** (heartbeat → `APP_TRADE_RUNNER_HB`, TTL 90 с); ручной `POST /api/logic-trades/run`;
-- **Демо-логика** в `01`: `SMA Price Cross Demo` на `FAKE-EFF-001` — SMA(20), **M15**: long trend `pp > VALUE`, short trend `pp < VALUE`, SBER, 1M, 10%, max 3;
+- **Демо-логика** в `01`: `SMA Price Cross Demo` — SMA(20) M15: open long trend / close long counter / open short trend / close short counter; **все акции** (`instrument_market=stock`); SL **1%**, TP **3%** (security); 1M, 10%, max 3;
+- UI сигналов: кнопки **«+ Открытие» / «+ Закрытие»**, в picker — сторона Long/Short и тип Тренд/К-тренд; таблица: Действие | Сторона | Тип | …;
 
 ### Правило схемы БД
 
@@ -140,6 +141,7 @@
 47. **v31 PnL и пакеты сделок:** параметры **`commission_pct`** (% от депозита на сделку для фейка) и **`cost_method`** (FIFO / AVERAGE); колонки `logic_trades.commission`, `financial_result`; таблица **`logic_trade_lots`**; функции `logic_trade_finalize`, `logic_trade_build_lots`, `logic_trade_rebuild_pnl`; UI — параметры комиссии/метода, разворот строки сделки → таблица пакетов; API `GET /api/logic-trade-lots?trade_id=`; fix клика по блоку «Сделки»; исходник `sql/logic_trade_pnl.sql`.
 48. **v32 проверка токена T-Bank:** `tbank_verify_token()`; красный баннер у блока позиций; клик → диалог.
 49. **v33 позиции UI + runner:** блок «Сделки» → **«Позиции»**; подблоки **Открытые** / **Закрытые**; общий фин. результат сверху; runner не блокирует цикл из‑за одной бумаги без данных M1.
+50. **v38 сигналы open/close:** `logic_indicator_signals.position_event`, `logic_trades.position_event`; UI «+ Открытие/+ Закрытие»; runner по `position_event`; демо — 4 сигнала SMA, все акции, SL1%/TP3%; графики бумаг теста (PnL-полоса, ⟸сд./сд.⟹, fullscreen); БД 00→02.
 
 ### Автотесты
 
@@ -201,6 +203,10 @@
 
 | Дата | Суть |
 |------|------|
+| 2026-07-14 | v38: сигналы open/close + trend/counter; демо все акции + SL1%/TP3%; выкладка + БД 00→02 |
+| 2026-07-14 | PnL — отдельная полоса под ценой; кнопки ⟸сд./сд.⟹; подблоки теста свёрнуты |
+| 2026-07-14 | PnL: разрыв в зоне «выкл.» (PHOR); Тестирование — все подблоки свёрнуты; fullscreen/timeout ранее |
+| 2026-07-14 | Бумаги теста: убран recalc, кнопка «Полный экран», бледные зоны выкл., timeout при pan не на графике |
 | 2026-07-13 | v25: глобальное логирование (app-bar, APP_TECH_LOGGING, trade runner logs) |
 | 2026-07-13 | v24: закрытие свечи TF в runner, last_trade_bar_dt, fix evaluate_signal/timezone |
 | 2026-07-13 | v23: run_trade_cycle в PostgreSQL, timeframe, pg_cron; БД 00→02 |
@@ -289,3 +295,5 @@
 44. «Сделки не идут — переделать runner: timeframe в параметрах, цикл в PostgreSQL (pg_cron job), парсинг сигналов в БД; пересобрать БД; в репо».
 45. «Финансовый результат сделок: комиссия % от депозита (фейк) / с биржи (реал); метод FIFO или средняя; таблица пакетов по сделкам; разворот сделки в UI; параметры в блоке параметров; блок «Сделки» не разворачивается — исправить».
 46. «Проверка токена T-Bank при сделках: если не валиден — сообщение и диалог ввода; если диалог уже открыт — не дублировать; пересобрать БД с нуля».
+47. «На графике бумаг теста: убрать кнопку пересчёта индикаторов; добавить полный экран; PnL/точки/стопы пересчитывать в фоне при rewind; бледные зоны пока бумага выкл.; Timeout has occurred при rewind — убрать».
+48. «Сигналы: open/close и trend/counter на форме; кнопки выбора; поле в таблице; демо — сигнал открытия и закрытия; все акции; take profit 3% и stop loss 1%; в репо; БД с нуля; обновить контекст».

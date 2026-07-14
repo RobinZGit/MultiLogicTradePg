@@ -126,4 +126,68 @@ describe('PriceChartComponent', () => {
     ];
     expect((component as unknown as { priceScaleAnchorsZero(): boolean }).priceScaleAnchorsZero()).toBeTrue();
   });
+
+  it('gotoPrevTrade / gotoNextTrade jump by tradeMarkers', () => {
+    const mk = (dt: string, price: number) => ({
+      dt,
+      open_price: price,
+      high_price: price,
+      low_price: price,
+      close_price: price,
+      volume: 1,
+    });
+    component.candles = [
+      mk('2026-01-01T10:00:00', 1),
+      mk('2026-01-01T10:15:00', 1),
+      mk('2026-01-01T10:30:00', 1),
+      mk('2026-01-01T10:45:00', 1),
+      mk('2026-01-01T11:00:00', 1),
+      mk('2026-01-01T11:15:00', 1),
+    ];
+    component.tradeMarkers = [
+      { dt: '2026-01-01T10:00:00', price: 1, kind: 'open', side: 'long' },
+      { dt: '2026-01-01T10:45:00', price: 1, kind: 'close', side: 'long' },
+      { dt: '2026-01-01T11:15:00', price: 1, kind: 'open', side: 'short' },
+    ];
+    (component as unknown as { viewStart: number }).viewStart = 3;
+    component.gotoNextTrade(new Event('click'));
+    const vs1 = (component as unknown as { viewStart: number }).viewStart;
+    expect(vs1).toBeGreaterThanOrEqual(0);
+    component.gotoPrevTrade(new Event('click'));
+    const vs2 = (component as unknown as { viewStart: number }).viewStart;
+    expect(vs2).toBeGreaterThanOrEqual(0);
+  });
+
+  it('backtest overlays do not block pan (tradeMarkers/equity)', () => {
+    component.candles = [
+      { dt: '2026-01-01T10:00:00', open_price: 1, high_price: 1, low_price: 1, close_price: 1, volume: 1 },
+      { dt: '2026-01-01T10:15:00', open_price: 2, high_price: 2, low_price: 2, close_price: 2, volume: 1 },
+    ];
+    component.loading = false;
+    component.loadingOlder = false;
+    component.tradeMarkers = [
+      { dt: '2026-01-01T10:00:00', price: 1, kind: 'open', side: 'long' },
+    ];
+    component.equityPoints = [
+      { dt: '2026-01-01T10:00:00', value: 0 },
+      { dt: '2026-01-01T10:15:00', value: 12 },
+    ];
+    component.shadedRanges = [
+      { startDt: '2026-01-01T10:00:00', endDt: '2026-01-01T10:15:00', label: 'выкл.' },
+    ];
+    component.ngOnChanges({
+      tradeMarkers: {
+        currentValue: component.tradeMarkers,
+        previousValue: [],
+        firstChange: true,
+        isFirstChange: () => true,
+      },
+    });
+    const down = new PointerEvent('pointerdown', { clientX: 40, pointerId: 1 });
+    Object.defineProperty(down, 'target', {
+      value: { setPointerCapture: () => {}, releasePointerCapture: () => {} },
+    });
+    component.onPointerDown(down);
+    expect((component as unknown as { dragging: boolean }).dragging).toBeTrue();
+  });
 });

@@ -63,6 +63,7 @@ export interface LogicIndicatorSignalRow {
   id: number;
   logic_id: number;
   indicator_id: number;
+  position_event: 'open' | 'close';
   position_side: 'long' | 'short';
   signal_kind: 'trend' | 'counter';
   formula: string;

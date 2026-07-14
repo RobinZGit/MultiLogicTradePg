@@ -384,6 +384,18 @@ tbody tr:hover {
   background: #fef2f2;
 }
 
+.btn-open-event {
+  border-color: #86efac;
+  color: #15803d;
+  background: #f0fdf4;
+}
+
+.btn-close-event {
+  border-color: #c4b5fd;
+  color: #5b21b6;
+  background: #f5f3ff;
+}
+
 .btn-counter {
   border-color: #fcd34d;
   color: #92400e;
@@ -547,6 +559,16 @@ tbody tr:hover {
 .sig-trend {
   background: #dbeafe;
   color: #1d4ed8;
+}
+
+.sig-open {
+  background: #dcfce7;
+  color: #15803d;
+}
+
+.sig-close {
+  background: #ede9fe;
+  color: #5b21b6;
 }
 
 .sig-long {

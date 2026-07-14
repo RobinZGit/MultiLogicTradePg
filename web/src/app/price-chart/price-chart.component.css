@@ -92,7 +92,42 @@
 }
 
 .chart-btn-expand {
-  color: #2563eb;
+  color: #1d4ed8;
+  gap: 0.25rem;
+  min-width: auto;
+  padding: 0 0.45rem;
+  font-weight: 600;
+  background: #eff6ff;
+  border-color: #93c5fd;
+  flex-shrink: 0;
+  margin-left: 0.15rem;
+}
+
+.chart-btn-trade {
+  min-width: auto;
+  padding: 0 0.4rem;
+  font-size: 0.72rem;
+  font-weight: 600;
+  color: #0f766e;
+  background: #f0fdfa;
+  border-color: #99f6e4;
+  flex-shrink: 0;
+}
+
+.chart-btn-expand-label {
+  font-size: 1rem;
+  line-height: 1;
+}
+
+.chart-btn-expand-text {
+  font-size: 0.72rem;
+  white-space: nowrap;
+}
+
+@media (max-width: 640px) {
+  .chart-btn-expand-text {
+    display: none;
+  }
 }
 
 .chart-body {

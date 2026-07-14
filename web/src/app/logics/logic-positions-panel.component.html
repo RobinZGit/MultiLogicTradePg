@@ -42,6 +42,26 @@
           >
             {{ formatPnl(displayFinancialResult()) }}
           </span>
+          @if (isTest) {
+            <span
+              class="trade-pnl positions-total-pct"
+              [class.trade-pnl-pos]="(testReturnPct() ?? 0) > 0"
+              [class.trade-pnl-neg]="(testReturnPct() ?? 0) < 0"
+              title="От начального остатка"
+            >
+              {{ formatPct(testReturnPct()) }}
+            </span>
+            <span class="positions-total-pct-hint">от нач.</span>
+            <span
+              class="trade-pnl positions-total-pct"
+              [class.trade-pnl-pos]="(testAnnualPct() ?? 0) > 0"
+              [class.trade-pnl-neg]="(testAnnualPct() ?? 0) < 0"
+              title="В годовых (простая аннуализация за период теста)"
+            >
+              {{ formatPct(testAnnualPct()) }}
+            </span>
+            <span class="positions-total-pct-hint">год.</span>
+          }
         </span>
 
         @if (loading) {
@@ -353,10 +373,21 @@
       </div>
     </details>
 
+    @if (isTest) {
+      <app-logic-backtest-papers
+        [trades]="trades"
+        [dateFrom]="backtestRun?.date_from ?? null"
+        [dateTo]="backtestRun?.date_to ?? null"
+        [timeframeId]="timeframeId"
+        [signalIndicatorIds]="signalIndicatorIds"
+      />
+    }
+
     <p class="signals-help">
       @if (isTest) {
         Историческое тестирование на выбранном периоде. Сделки помечены <strong>тест</strong> и не смешиваются с боевыми.
         Теневые сделки в тесте — отдельно от теневых на реальном счёте.
+        Блок <strong>Бумаги</strong> — графики только по инструментам со сделками: входы/выходы, стопы, PnL, периоды выключения.
       } @else {
         <strong>Сделки открытия</strong> — покупки (long) или продажи в шорт с ненулевым остатком.
         <strong>Сделки закрытия</strong> — продажи или покрытие шорта; раскройте строку для пакетов FIFO/средней.

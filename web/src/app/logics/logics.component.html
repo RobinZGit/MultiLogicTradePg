@@ -529,18 +529,18 @@
 
                           <button
                             type="button"
-                            class="btn btn-sm btn-long"
-                            (click)="openSignalPicker(row.id, 'long', $event)"
+                            class="btn btn-sm btn-open-event"
+                            (click)="openSignalPicker(row.id, 'open', $event)"
                           >
-                            + Индикатор Long
+                            + Открытие
                           </button>
 
                           <button
                             type="button"
-                            class="btn btn-sm btn-short"
-                            (click)="openSignalPicker(row.id, 'short', $event)"
+                            class="btn btn-sm btn-close-event"
+                            (click)="openSignalPicker(row.id, 'close', $event)"
                           >
-                            + Индикатор Short
+                            + Закрытие
                           </button>
 
                         </span>
@@ -555,12 +555,34 @@
 
                           <p class="picker-title">
                             Добавить индикатор —
-                            <strong>{{ positionSideLabel(signalPicker.positionSide) }}</strong>
+                            <strong>{{ positionEventLabel(signalPicker.positionEvent) }}</strong>
                           </p>
 
                           <div class="signal-picker-options" (click)="$event.stopPropagation()">
 
-                            <span class="picker-option-label">Тип сигнала:</span>
+                            <span class="picker-option-label">Сторона:</span>
+
+                            <label class="picker-radio">
+                              <input
+                                type="radio"
+                                name="picker-side-{{ row.id }}"
+                                [checked]="signalPicker.positionSide === 'long'"
+                                (change)="onPickerPositionSideChange('long')"
+                              />
+                              Long
+                            </label>
+
+                            <label class="picker-radio">
+                              <input
+                                type="radio"
+                                name="picker-side-{{ row.id }}"
+                                [checked]="signalPicker.positionSide === 'short'"
+                                (change)="onPickerPositionSideChange('short')"
+                              />
+                              Short
+                            </label>
+
+                            <span class="picker-option-label">Тип:</span>
 
                             <label class="picker-radio">
                               <input
@@ -585,8 +607,9 @@
                           </div>
 
                           <p class="picker-hint">
+                            Действие: <strong>{{ positionEventLabel(signalPicker.positionEvent) }}</strong>.
                             Формула по умолчанию — из
-                            <code>sig_trend_def</code> / <code>sig_ct_def</code> индикатора
+                            <code>sig_trend_def</code> / <code>sig_ct_def</code>
                             ({{ signalKindLabel(signalPicker.signalKind) }}).
                           </p>
 
@@ -659,6 +682,8 @@
 
                           <tr>
 
+                            <th>Действие</th>
+
                             <th>Сторона</th>
 
                             <th>Тип</th>
@@ -678,6 +703,18 @@
                           @for (sig of signalsFor(row.id); track sig.id) {
 
                             <tr [class.sig-inactive]="!sig.is_active">
+
+                              <td>
+
+                                <span
+                                  class="sig-badge"
+                                  [class.sig-open]="sig.position_event === 'open'"
+                                  [class.sig-close]="sig.position_event === 'close'"
+                                >
+                                  {{ positionEventLabel(sig.position_event) }}
+                                </span>
+
+                              </td>
 
                               <td>
 
@@ -1328,6 +1365,8 @@
                         [lotsLoading]="tradeLotsLoading"
                         [blockExpanded]="isTestTradesBlockExpanded(row.id)"
                         [backtestRun]="backtestFor(row.id)"
+                        [timeframeId]="timeframeIdForLogic(row)"
+                        [signalIndicatorIds]="signalIndicatorIdsFor(row.id)"
                         (toggleBlock)="toggleTestTradesBlock(row.id)"
                         (startBacktest)="startBacktestRun(row.id, $event)"
                         (cancelBacktest)="cancelBacktestRun(row.id)"

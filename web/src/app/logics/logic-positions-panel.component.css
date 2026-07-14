@@ -120,6 +120,18 @@
   font-weight: 700;
 }
 
+.positions-panel-outer .positions-total-pct {
+  font-size: 0.88rem;
+  font-weight: 700;
+  margin-left: 0.15rem;
+}
+
+.positions-panel-outer .positions-total-pct-hint {
+  font-size: 0.72rem;
+  font-weight: 500;
+  color: #94a3b8;
+}
+
 .positions-panel-outer .positions-period-label {
   font-size: 0.78rem;
   color: #6b7280;

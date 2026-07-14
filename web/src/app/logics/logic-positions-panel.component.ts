@@ -22,6 +22,8 @@ import {
 
 import { LogicRow } from '../models/logic.model';
 
+import { LogicBacktestPapersComponent } from './logic-backtest-papers.component';
+
 
 
 export interface BacktestRunStatus {
@@ -62,7 +64,7 @@ export interface BacktestRunStatus {
 
   standalone: true,
 
-  imports: [CommonModule, FormsModule],
+  imports: [CommonModule, FormsModule, LogicBacktestPapersComponent],
 
   templateUrl: './logic-positions-panel.component.html',
 
@@ -94,6 +96,12 @@ export class LogicPositionsPanelComponent {
 
   @Input() tbankTokenAlert: { message: string } | null = null;
 
+  /** Таймфрейм логики для графиков теста. */
+  @Input() timeframeId: number | null = null;
+
+  /** Индикаторы сигналов логики (для overlay на графике). */
+  @Input() signalIndicatorIds: number[] = [];
+
 
 
   @Output() closeAll = new EventEmitter<void>();
@@ -110,7 +118,8 @@ export class LogicPositionsPanelComponent {
 
 
 
-  expandedOpen = true;
+  /** В Тестировании и Позициях подблоки свёрнуты по умолчанию. */
+  expandedOpen = false;
 
   expandedClosed = false;
 
@@ -200,6 +209,72 @@ export class LogicPositionsPanelComponent {
     }
 
     return this.totalFinancialResult();
+
+  }
+
+
+
+  /** Число календарных дней периода теста (включительно). */
+
+  testPeriodDays(): number | null {
+
+    const from = this.backtestRun?.date_from;
+
+    const to = this.backtestRun?.date_to;
+
+    if (!from || !to) return null;
+
+    const ms = Date.parse(to) - Date.parse(from);
+
+    if (!Number.isFinite(ms) || ms < 0) return null;
+
+    return Math.max(1, Math.round(ms / 86400000) + 1);
+
+  }
+
+
+
+  /** Фин. результат в % от начального остатка. */
+
+  testReturnPct(): number | null {
+
+    if (!this.isTest) return null;
+
+    const initial = Number(this.logicRow.initial_balance);
+
+    if (!Number.isFinite(initial) || initial <= 0) return null;
+
+    return (this.displayFinancialResult() / initial) * 100;
+
+  }
+
+
+
+  /** Простая аннуализация: return% × (365 / дни периода). */
+
+  testAnnualPct(): number | null {
+
+    const ret = this.testReturnPct();
+
+    const days = this.testPeriodDays();
+
+    if (ret == null || days == null || days <= 0) return null;
+
+    return ret * (365 / days);
+
+  }
+
+
+
+  formatPct(value: number | null | undefined): string {
+
+    if (value == null || !Number.isFinite(Number(value))) return '—';
+
+    const n = Number(value);
+
+    const sign = n > 0 ? '+' : '';
+
+    return `${sign}${n.toFixed(2)}%`;
 
   }
 
@@ -509,15 +584,27 @@ function defaultBacktestWeek(): { from: string; to: string } {
 
   sunday.setDate(monday.getDate() + 6);
 
-  return { from: fmtDate(monday), to: fmtDate(sunday) };
+  // Не ставить date_to в будущее — иначе бэктест гоняет T-Bank впустую.
+
+  const to = sunday.getTime() > now.getTime() ? now : sunday;
+
+  return { from: fmtDate(monday), to: fmtDate(to) };
 
 }
 
 
 
+/** Локальный YYYY-MM-DD (не UTC — иначе сдвиг дня в MSK). */
+
 function fmtDate(d: Date): string {
 
-  return d.toISOString().slice(0, 10);
+  const y = d.getFullYear();
+
+  const m = String(d.getMonth() + 1).padStart(2, '0');
+
+  const day = String(d.getDate()).padStart(2, '0');
+
+  return `${y}-${m}-${day}`;
 
 }
 

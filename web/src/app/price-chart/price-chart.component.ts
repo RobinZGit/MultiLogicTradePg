@@ -14,7 +14,11 @@ import {
 } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import {
+  ChartEquityPoint,
   ChartIndicatorSeries,
+  ChartShadedRange,
+  ChartStopMarker,
+  ChartTradeMarker,
   ChartVisibleRange,
   PriceCandle,
 } from '../models/market.model';
@@ -33,11 +37,26 @@ export class PriceChartComponent implements AfterViewInit, OnChanges, OnDestroy 
 
   @Input() candles: PriceCandle[] = [];
   @Input() indicatorSeries: ChartIndicatorSeries[] = [];
+  /** Маркеры входов/выходов (бэктест). */
+  @Input() tradeMarkers: ChartTradeMarker[] = [];
+  /** Линии стоп-лосс / тейк-профит с подписью типа. */
+  @Input() stopMarkers: ChartStopMarker[] = [];
+  /** Периоды отключения бумаги (blur/shade). */
+  @Input() shadedRanges: ChartShadedRange[] = [];
+  /** Кумулятивный PnL по бумаге (отдельная панель под ценой). */
+  @Input() equityPoints: ChartEquityPoint[] = [];
+  /**
+   * Прокрутить окно так, чтобы эта дата была видна (справа/в центре).
+   * Нужно для бэктеста: сделки часто не в последних 200 свечах.
+   */
+  @Input() focusDt: string | null = null;
   @Input() loading = false;
   /** Фоновая подгрузка истории — не блокирует перемотку. */
   @Input() loadingOlder = false;
   @Input() error: string | null = null;
   @Input() title = '';
+  /** Кнопка ↻ пересчёта индикаторов (на графиках бумаг теста не нужна). */
+  @Input() showRecalcButton = true;
   /** Для app_tech_log (sec:N). */
   @Input() securityId: number | null = null;
 
@@ -84,6 +103,19 @@ export class PriceChartComponent implements AfterViewInit, OnChanges, OnDestroy 
     };
   }
 
+  get hasTradeNav(): boolean {
+    return this.tradeMarkers.length > 0;
+  }
+
+  /** Нормализация dt для сопоставления свечи и маркера. */
+  private static dtKey(dt: string): string {
+    return String(dt || '')
+      .replace('T', ' ')
+      .replace(/Z$/i, '')
+      .replace(/\.\d+/, '')
+      .slice(0, 19);
+  }
+
   private px(base: number): number {
     return Math.round(base * this.labelScale);
   }
@@ -112,7 +144,50 @@ export class PriceChartComponent implements AfterViewInit, OnChanges, OnDestroy 
         this.scheduleEmitVisibleRange();
       }
     }
-    queueMicrotask(() => this.scheduleRedraw());
+    if (
+      (changes['focusDt'] || changes['candles']) &&
+      this.focusDt &&
+      this.candles.length > 0
+    ) {
+      this.scrollToFocusDt(this.focusDt);
+    }
+    // Не планировать redraw, если изменились только ссылки без смысла
+    // (родительский poll пересоздавал массивы оверлеев и вешал UI).
+    const meaningful =
+      changes['candles'] ||
+      changes['indicatorSeries'] ||
+      changes['loading'] ||
+      changes['loadingOlder'] ||
+      changes['error'] ||
+      changes['tradeMarkers'] ||
+      changes['stopMarkers'] ||
+      changes['shadedRanges'] ||
+      changes['equityPoints'] ||
+      changes['focusDt'] ||
+      changes['title'];
+    if (meaningful) {
+      queueMicrotask(() => this.scheduleRedraw());
+      // Повтор после layout: во вложенных панелях первый кадр часто width=0.
+      if (changes['candles'] && this.candles.length > 0) {
+        requestAnimationFrame(() => {
+          requestAnimationFrame(() => this.scheduleRedraw());
+        });
+      }
+    }
+  }
+
+  /** Сдвинуть окно так, чтобы dt была в правой трети видимой области. */
+  private scrollToFocusDt(dt: string): void {
+    const key = PriceChartComponent.dtKey(dt);
+    let idx = -1;
+    for (let i = 0; i < this.candles.length; i++) {
+      if (PriceChartComponent.dtKey(this.candles[i].dt) <= key) idx = i;
+      else break;
+    }
+    if (idx < 0) idx = 0;
+    const count = this.viewCount();
+    const maxStart = Math.max(0, this.candles.length - count);
+    this.viewStart = Math.max(0, Math.min(idx - Math.floor(count * 0.65), maxStart));
   }
 
   ngOnDestroy(): void {
@@ -171,6 +246,60 @@ export class PriceChartComponent implements AfterViewInit, OnChanges, OnDestroy 
   panRight(event: Event): void {
     event.stopPropagation();
     this.shiftView(Math.max(5, Math.floor(this.viewCount() / 4)));
+  }
+
+  /** Предыдущая сделка (open/close — одинаково). */
+  gotoPrevTrade(event: Event): void {
+    event.stopPropagation();
+    const target = this.findTradeDt(-1);
+    if (!target) return;
+    this.scrollToFocusDt(target);
+    this.scheduleRedraw();
+    this.scheduleEmitVisibleRange(true);
+  }
+
+  /** Следующая сделка (open/close — одинаково). */
+  gotoNextTrade(event: Event): void {
+    event.stopPropagation();
+    const target = this.findTradeDt(1);
+    if (!target) return;
+    this.scrollToFocusDt(target);
+    this.scheduleRedraw();
+    this.scheduleEmitVisibleRange(true);
+  }
+
+  /** Уникальные dt сделок по возрастанию. */
+  private tradeNavDts(): string[] {
+    const set = new Set<string>();
+    for (const m of this.tradeMarkers) {
+      const k = PriceChartComponent.dtKey(m.dt);
+      if (k) set.add(k);
+    }
+    return [...set].sort();
+  }
+
+  /** direction -1 = назад, +1 = вперёд относительно центра видимого окна. */
+  private findTradeDt(direction: -1 | 1): string | null {
+    const dts = this.tradeNavDts();
+    if (dts.length === 0 || this.candles.length === 0) return null;
+    const count = this.viewCount();
+    const visible = this.candles.slice(this.viewStart, this.viewStart + count);
+    if (visible.length === 0) return null;
+    const anchor = PriceChartComponent.dtKey(
+      visible[Math.floor(visible.length * 0.65)].dt
+    );
+    if (direction < 0) {
+      let prev: string | null = null;
+      for (const d of dts) {
+        if (d < anchor) prev = d;
+        else break;
+      }
+      return prev;
+    }
+    for (const d of dts) {
+      if (d > anchor) return d;
+    }
+    return null;
   }
 
   zoomIn(event: Event): void {
@@ -472,13 +601,20 @@ export class PriceChartComponent implements AfterViewInit, OnChanges, OnDestroy 
     if (visible.length === 0) return;
 
     const showOsc = this.hasOscillatorPanel();
-    const oscRatio = showOsc ? 0.28 : 0;
+    const showPnl = this.equityPoints.length > 0;
+    // Отдельная полоса PnL под ценой (и под OSC, если есть) — не конкурирует с ценой.
+    const pnlRatio = showPnl ? (showOsc ? 0.2 : 0.26) : 0;
+    const oscRatio = showOsc ? (showPnl ? 0.2 : 0.28) : 0;
+    const usableBottom = cssH - pad.bottom;
     const priceTop = pad.top;
-    const priceBottom = cssH - pad.bottom - cssH * oscRatio;
+    const priceBottom = usableBottom - cssH * (oscRatio + pnlRatio);
     const priceH = priceBottom - priceTop;
-    const oscTop = priceBottom + 6;
-    const oscBottom = cssH - pad.bottom;
+    const oscTop = priceBottom + 4;
+    const oscBottom = showOsc ? usableBottom - cssH * pnlRatio : priceBottom;
     const oscH = Math.max(0, oscBottom - oscTop);
+    const pnlTop = showPnl ? (showOsc ? oscBottom : priceBottom) + 4 : usableBottom;
+    const pnlBottom = usableBottom;
+    const pnlH = Math.max(0, pnlBottom - pnlTop);
 
     let minP = Infinity;
     let maxP = -Infinity;
@@ -536,6 +672,16 @@ export class PriceChartComponent implements AfterViewInit, OnChanges, OnDestroy 
       '0'
     );
 
+    this.drawShadedRanges(
+      ctx,
+      visible,
+      pad.left,
+      cssW - pad.right,
+      priceTop,
+      priceBottom,
+      cw
+    );
+
     visible.forEach((c, i) => {
       const x = pad.left + i * cw + cw / 2;
       const open = Number(c.open_price);
@@ -563,6 +709,9 @@ export class PriceChartComponent implements AfterViewInit, OnChanges, OnDestroy 
     for (const s of priceSeries) {
       this.drawLineSeries(ctx, visible, s, yScale, pad.left, cw);
     }
+
+    this.drawStopMarkers(ctx, visible, yScale, pad.left, cw, priceTop, priceBottom);
+    this.drawTradeMarkers(ctx, visible, yScale, pad.left, cw, priceTop, priceBottom);
 
     if (showOsc && oscH > 20) {
       ctx.strokeStyle = '#d1d5db';
@@ -617,6 +766,18 @@ export class PriceChartComponent implements AfterViewInit, OnChanges, OnDestroy 
       ctx.fillText('OSC', 4, oscTop + this.px(10));
     }
 
+    if (showPnl && pnlH > 24) {
+      this.drawEquityPanel(
+        ctx,
+        visible,
+        pad.left,
+        cssW - pad.right,
+        pnlTop,
+        pnlBottom,
+        cw
+      );
+    }
+
     this.drawLegend(ctx, cssW, pad);
 
     const last = visible[visible.length - 1];
@@ -658,6 +819,326 @@ export class PriceChartComponent implements AfterViewInit, OnChanges, OnDestroy 
         series: this.indicatorSeries.length,
         dragging: this.dragging,
       });
+    }
+  }
+
+  private indexForDt(visible: PriceCandle[], dt: string): number {
+    const key = PriceChartComponent.dtKey(dt);
+    for (let i = 0; i < visible.length; i++) {
+      if (PriceChartComponent.dtKey(visible[i].dt) === key) return i;
+    }
+    // ближайшая свеча не позже маркера
+    let best = -1;
+    for (let i = 0; i < visible.length; i++) {
+      if (PriceChartComponent.dtKey(visible[i].dt) <= key) best = i;
+      else break;
+    }
+    return best;
+  }
+
+  private drawShadedRanges(
+    ctx: CanvasRenderingContext2D,
+    visible: PriceCandle[],
+    left: number,
+    right: number,
+    top: number,
+    bottom: number,
+    candleWidth: number
+  ): void {
+    if (!this.shadedRanges.length || visible.length === 0) return;
+    const firstKey = PriceChartComponent.dtKey(visible[0].dt);
+    const lastKey = PriceChartComponent.dtKey(visible[visible.length - 1].dt);
+    for (const range of this.shadedRanges) {
+      const startKey = PriceChartComponent.dtKey(range.startDt);
+      const endKey = PriceChartComponent.dtKey(range.endDt);
+      if (endKey < firstKey || startKey > lastKey) continue;
+      let i0 = this.indexForDt(visible, range.startDt);
+      let i1 = this.indexForDt(visible, range.endDt);
+      if (i0 < 0) i0 = 0;
+      if (i1 < 0) i1 = visible.length - 1;
+      if (i1 < i0) [i0, i1] = [i1, i0];
+      const x0 = left + i0 * candleWidth;
+      const x1 = left + (i1 + 1) * candleWidth;
+      // Бледнее зона «бумага выкл.» (теневой режим / после стопа)
+      ctx.fillStyle = 'rgba(148, 163, 184, 0.42)';
+      ctx.fillRect(x0, top, Math.max(3, x1 - x0), bottom - top);
+      ctx.strokeStyle = 'rgba(100, 116, 139, 0.55)';
+      ctx.lineWidth = 1;
+      ctx.setLineDash([3, 3]);
+      ctx.strokeRect(x0 + 0.5, top + 0.5, Math.max(3, x1 - x0) - 1, bottom - top - 1);
+      ctx.setLineDash([]);
+      if (range.label) {
+        ctx.fillStyle = 'rgba(51, 65, 85, 0.95)';
+        ctx.font = `600 ${this.px(10)}px system-ui, sans-serif`;
+        ctx.fillText(range.label, x0 + 4, top + this.px(14));
+      }
+    }
+  }
+
+  /**
+   * Отдельная панель PnL под ценой: своя шкала, заливка, разрывы в зоне «выкл.».
+   * Не конкурирует с ценой (HYDR ~0.35 / PnL в рублях).
+   */
+  private drawEquityPanel(
+    ctx: CanvasRenderingContext2D,
+    visible: PriceCandle[],
+    left: number,
+    right: number,
+    top: number,
+    bottom: number,
+    candleWidth: number
+  ): void {
+    if (!this.equityPoints.length || visible.length === 0) return;
+
+    ctx.fillStyle = '#f5f3ff';
+    ctx.fillRect(left, top, right - left, bottom - top);
+    ctx.strokeStyle = '#ddd6fe';
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.moveTo(left, top);
+    ctx.lineTo(right, top);
+    ctx.stroke();
+    // Бледные зоны «выкл.» под линией PnL
+    this.drawShadedRanges(ctx, visible, left, right, top, bottom, candleWidth);
+
+    let minE = Infinity;
+    let maxE = -Infinity;
+    const samples: { i: number; v: number; gapBefore: boolean }[] = [];
+    const sorted = [...this.equityPoints].sort((a, b) =>
+      PriceChartComponent.dtKey(a.dt).localeCompare(PriceChartComponent.dtKey(b.dt))
+    );
+
+    let last: number | null = null;
+    let j = 0;
+    const firstVis = PriceChartComponent.dtKey(visible[0].dt);
+    while (j < sorted.length && PriceChartComponent.dtKey(sorted[j].dt) <= firstVis) {
+      const v = Number(sorted[j].value);
+      if (Number.isFinite(v)) last = v;
+      j += 1;
+    }
+
+    let gapPending = false;
+    for (let i = 0; i < visible.length; i++) {
+      const key = PriceChartComponent.dtKey(visible[i].dt);
+      while (j < sorted.length && PriceChartComponent.dtKey(sorted[j].dt) <= key) {
+        const v = Number(sorted[j].value);
+        if (Number.isFinite(v)) last = v;
+        j += 1;
+      }
+      if (this.isEquityDtInDisabledInterior(key)) {
+        gapPending = true;
+        continue;
+      }
+      if (last != null && Number.isFinite(last)) {
+        samples.push({ i, v: last, gapBefore: gapPending });
+        gapPending = false;
+        minE = Math.min(minE, last);
+        maxE = Math.max(maxE, last);
+      }
+    }
+    if (samples.length === 0) {
+      ctx.fillStyle = '#7c3aed';
+      ctx.font = `600 ${this.px(10)}px system-ui, sans-serif`;
+      ctx.fillText('PnL', left + 4, top + this.px(14));
+      ctx.fillStyle = '#a78bfa';
+      ctx.font = `${this.px(9)}px system-ui, sans-serif`;
+      ctx.fillText('нет закрытий в окне', left + 36, top + this.px(14));
+      return;
+    }
+
+    minE = Math.min(minE, 0);
+    maxE = Math.max(maxE, 0);
+    // Минимальный размах, чтобы линия у нуля не схлопывалась в точку
+    const span = maxE - minE;
+    const padE = Math.max(span * 0.12, Math.abs(maxE) * 0.05, Math.abs(minE) * 0.05, 1);
+    minE -= padE;
+    maxE += padE;
+    const h = bottom - top;
+    const yEq = (v: number) => top + h - ((v - minE) / (maxE - minE)) * h;
+
+    // Нулевая линия
+    const y0 = yEq(0);
+    ctx.strokeStyle = 'rgba(124, 58, 237, 0.35)';
+    ctx.lineWidth = 1;
+    ctx.setLineDash([3, 3]);
+    ctx.beginPath();
+    ctx.moveTo(left, y0);
+    ctx.lineTo(right, y0);
+    ctx.stroke();
+    ctx.setLineDash([]);
+
+    // Заливка под ступенями
+    ctx.fillStyle = 'rgba(124, 58, 237, 0.14)';
+    let seg: { i: number; v: number }[] = [];
+    const flushFill = () => {
+      if (seg.length === 0) return;
+      ctx.beginPath();
+      const x0 = left + seg[0].i * candleWidth + candleWidth / 2;
+      ctx.moveTo(x0, y0);
+      for (const s of seg) {
+        ctx.lineTo(left + s.i * candleWidth + candleWidth / 2, yEq(s.v));
+      }
+      const x1 = left + seg[seg.length - 1].i * candleWidth + candleWidth / 2;
+      ctx.lineTo(x1, y0);
+      ctx.closePath();
+      ctx.fill();
+      seg = [];
+    };
+    for (const s of samples) {
+      if (s.gapBefore) flushFill();
+      seg.push(s);
+    }
+    flushFill();
+
+    // Линия PnL (ступень)
+    ctx.strokeStyle = '#7c3aed';
+    ctx.lineWidth = 2.2;
+    ctx.beginPath();
+    let started = false;
+    let prevY: number | null = null;
+    for (const s of samples) {
+      const x = left + s.i * candleWidth + candleWidth / 2;
+      const y = yEq(s.v);
+      if (!started || s.gapBefore) {
+        ctx.moveTo(x, y);
+        started = true;
+      } else {
+        // Горизонталь предыдущего значения, затем вертикальный шаг
+        if (prevY != null && Math.abs(prevY - y) > 0.5) {
+          ctx.lineTo(x, prevY);
+        }
+        ctx.lineTo(x, y);
+      }
+      prevY = y;
+    }
+    ctx.stroke();
+
+    const axisSize = this.px(9);
+    ctx.fillStyle = '#7c3aed';
+    ctx.font = `600 ${this.px(10)}px system-ui, sans-serif`;
+    ctx.fillText('PnL', 4, top + this.px(12));
+    ctx.font = `${axisSize}px system-ui, sans-serif`;
+    ctx.fillStyle = '#6d28d9';
+    ctx.fillText(this.formatPnlAxis(maxE), 4, top + this.px(22));
+    ctx.fillText(this.formatPnlAxis(minE), 4, bottom - 2);
+    const lastV = samples[samples.length - 1].v;
+    ctx.fillText(this.formatPnlAxis(lastV), right - this.px(36), top + this.px(12));
+  }
+
+  private formatPnlAxis(v: number): string {
+    if (!Number.isFinite(v)) return '—';
+    const abs = Math.abs(v);
+    if (abs >= 1000) return v.toFixed(0);
+    if (abs >= 10) return v.toFixed(1);
+    return v.toFixed(2);
+  }
+
+  /** Строго внутри shadedRanges — не на границах (там рисуем шаг PnL). */
+  private isEquityDtInDisabledInterior(dtKey: string): boolean {
+    for (const r of this.shadedRanges) {
+      const a = PriceChartComponent.dtKey(r.startDt);
+      const b = PriceChartComponent.dtKey(r.endDt);
+      if (dtKey > a && dtKey < b) return true;
+    }
+    return false;
+  }
+
+  private drawStopMarkers(
+    ctx: CanvasRenderingContext2D,
+    visible: PriceCandle[],
+    yScale: (v: number) => number,
+    left: number,
+    candleWidth: number,
+    priceTop: number,
+    priceBottom: number
+  ): void {
+    if (!this.stopMarkers.length) return;
+    const labelSize = this.px(10);
+    for (const m of this.stopMarkers) {
+      const i = this.indexForDt(visible, m.dt);
+      if (i < 0) continue;
+      const x = left + i * candleWidth + candleWidth / 2;
+      const y = yScale(Number(m.price));
+      const color = m.ruleKind === 'take_profit' ? '#059669' : '#dc2626';
+      // Вертикальная полоса — где сработал стоп/тейк
+      ctx.strokeStyle = color;
+      ctx.globalAlpha = 0.35;
+      ctx.lineWidth = Math.max(2, candleWidth * 0.45);
+      ctx.setLineDash([]);
+      ctx.beginPath();
+      ctx.moveTo(x, priceTop);
+      ctx.lineTo(x, priceBottom);
+      ctx.stroke();
+      ctx.globalAlpha = 1;
+      ctx.lineWidth = 1.5;
+      ctx.setLineDash([5, 3]);
+      ctx.beginPath();
+      ctx.moveTo(left, y);
+      ctx.lineTo(left + visible.length * candleWidth, y);
+      ctx.stroke();
+      ctx.setLineDash([]);
+      ctx.fillStyle = color;
+      ctx.font = `600 ${labelSize}px system-ui, sans-serif`;
+      const tag = m.ruleKind === 'take_profit' ? 'TP' : 'SL';
+      ctx.fillText(`${tag} ${m.label || ''}`.trim(), x + 4, Math.max(priceTop + labelSize, y - 4));
+    }
+  }
+
+  private drawTradeMarkers(
+    ctx: CanvasRenderingContext2D,
+    visible: PriceCandle[],
+    yScale: (v: number) => number,
+    left: number,
+    candleWidth: number,
+    priceTop: number,
+    priceBottom: number
+  ): void {
+    if (!this.tradeMarkers.length) return;
+    for (const m of this.tradeMarkers) {
+      const i = this.indexForDt(visible, m.dt);
+      if (i < 0) continue;
+      const x = left + i * candleWidth + candleWidth / 2;
+      const y = yScale(Number(m.price));
+      const isLong = m.side === 'long';
+      const isOpen = m.kind === 'open';
+      const color = m.isShadow
+        ? '#94a3b8'
+        : isOpen
+          ? isLong
+            ? '#16a34a'
+            : '#dc2626'
+          : isLong
+            ? '#15803d'
+            : '#b91c1c';
+      // Вертикальная полоса входа/выхода
+      ctx.strokeStyle = color;
+      ctx.globalAlpha = m.isShadow ? 0.22 : 0.4;
+      ctx.lineWidth = Math.max(2, candleWidth * 0.5);
+      ctx.setLineDash([]);
+      ctx.beginPath();
+      ctx.moveTo(x, priceTop);
+      ctx.lineTo(x, priceBottom);
+      ctx.stroke();
+
+      ctx.globalAlpha = m.isShadow ? 0.6 : 1;
+      ctx.fillStyle = color;
+      ctx.strokeStyle = '#0f172a';
+      ctx.lineWidth = 1;
+      const size = Math.max(9, candleWidth * 1.15);
+      ctx.beginPath();
+      if (isOpen) {
+        ctx.moveTo(x, y - size);
+        ctx.lineTo(x - size, y + size * 0.65);
+        ctx.lineTo(x + size, y + size * 0.65);
+      } else {
+        ctx.moveTo(x, y + size);
+        ctx.lineTo(x - size, y - size * 0.65);
+        ctx.lineTo(x + size, y - size * 0.65);
+      }
+      ctx.closePath();
+      ctx.fill();
+      ctx.stroke();
+      ctx.globalAlpha = 1;
     }
   }
 
@@ -719,13 +1200,19 @@ export class PriceChartComponent implements AfterViewInit, OnChanges, OnDestroy 
     pad: { left: number }
   ): void {
     const drawn = this.indicatorSeries.filter((s) => !s.is_threshold);
-    if (drawn.length === 0) return;
     let x = pad.left;
     const y = this.px(18);
     const legendSize = this.px(9);
     const swatchW = this.px(10);
     const swatchH = Math.max(3, this.px(3));
     ctx.font = `${legendSize}px system-ui, sans-serif`;
+    if (this.equityPoints.length > 0) {
+      ctx.fillStyle = '#7c3aed';
+      ctx.fillRect(x, y - swatchH - 2, swatchW, swatchH);
+      ctx.fillStyle = '#374151';
+      ctx.fillText('PnL', x + swatchW + 3, y);
+      x += ctx.measureText('PnL').width + this.px(22);
+    }
     for (const s of drawn.slice(0, 8)) {
       const label = `${s.indicator_code}.${s.line_code}`;
       ctx.fillStyle = s.color;

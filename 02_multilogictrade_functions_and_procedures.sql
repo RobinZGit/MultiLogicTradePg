@@ -159,6 +159,31 @@ $$ LANGUAGE plpgsql IMMUTABLE;
 COMMENT ON FUNCTION get_tbank_candle_interval(VARCHAR) IS
 'Возвращает CANDLE_INTERVAL_* для T-Bank GetCandles API';
 
+CREATE OR REPLACE FUNCTION get_tbank_max_request_days(p_tf VARCHAR)
+RETURNS INTEGER
+LANGUAGE sql IMMUTABLE AS $$
+    SELECT CASE p_tf
+        WHEN 'M1' THEN 1
+        WHEN 'M2' THEN 1
+        WHEN 'M3' THEN 1
+        WHEN 'M5' THEN 1
+        WHEN 'M10' THEN 1
+        WHEN 'M15' THEN 1
+        WHEN 'M20' THEN 1
+        WHEN 'M30' THEN 2
+        WHEN 'H1' THEN 7
+        WHEN 'H2' THEN 30
+        WHEN 'H4' THEN 30
+        WHEN 'D1' THEN 365
+        WHEN 'W1' THEN 730
+        WHEN 'MN1' THEN 3650
+        ELSE 1
+    END;
+$$;
+
+COMMENT ON FUNCTION get_tbank_max_request_days(VARCHAR) IS
+'Макс. длина периода (календарных дней) для одного GetCandles T-Bank по TF';
+
 -- ISO-8601 UTC для T-Bank GetCandles (обязателен символ T, иначе HTTP 400)
 CREATE OR REPLACE FUNCTION tbank_iso_utc(p_date DATE, p_time TIME DEFAULT TIME '00:00:00')
 RETURNS TEXT
@@ -5215,6 +5240,34 @@ $$;
 COMMENT ON FUNCTION logic_resolve_stop_timeframe_id(INTEGER) IS
 'timeframe_id из logic_params.stop_loss_timeframe (по умолчанию M5)';
 
+-- @include sql/logic_stop_runner.sql (см. sql/logic_stop_runner.sql — дублируется ниже)
+-- ============================================
+-- Stop-loss runner: security / security_resume / portfolio
+-- ============================================
+
+CREATE OR REPLACE FUNCTION logic_resolve_stop_timeframe_id(p_logic_id INTEGER)
+RETURNS INTEGER
+LANGUAGE plpgsql STABLE AS $$
+DECLARE
+    v_tf TEXT;
+    v_id INTEGER;
+BEGIN
+    v_tf := upper(btrim(COALESCE(get_logic_param_text(p_logic_id, 'stop_loss_timeframe'), 'M5')));
+    SELECT t.id INTO v_id
+    FROM timeframes t
+    WHERE upper(t.tf) = v_tf AND COALESCE(t.is_active, TRUE)
+    ORDER BY t.sec
+    LIMIT 1;
+    IF v_id IS NULL THEN
+        SELECT t.id INTO v_id FROM timeframes t WHERE upper(t.tf) = 'M5' LIMIT 1;
+    END IF;
+    RETURN v_id;
+END;
+$$;
+
+COMMENT ON FUNCTION logic_resolve_stop_timeframe_id(INTEGER) IS
+'timeframe_id из logic_params.stop_loss_timeframe (по умолчанию M5)';
+
 CREATE OR REPLACE FUNCTION logic_long_position_qty(
     p_logic_id INTEGER,
     p_security_id INTEGER,
@@ -5642,13 +5695,13 @@ BEGIN
         IF v_quantity >= 1 THEN
             INSERT INTO logic_trades (
                 logic_id, account_id, security_id, timeframe_id,
-                side_id, action_id, signal_kind, signal_formula,
+                side_id, action_id, position_event, signal_kind, signal_formula,
                 quantity, price, bar_dt, is_simulated, is_fictitious, is_shadow, is_test,
                 status
             )
             VALUES (
                 p_logic_id, v_logic.account_id, p_security_id, v_tf_id,
-                v_side_close_id, v_action_long_id, 'counter', v_formula,
+                v_side_close_id, v_action_long_id, 'close', 'counter', v_formula,
                 v_quantity, v_price, v_bar_dt, v_is_simulated, FALSE, p_is_shadow, FALSE,
                 'filled'
             )
@@ -5675,13 +5728,13 @@ BEGIN
         IF v_quantity >= 1 THEN
             INSERT INTO logic_trades (
                 logic_id, account_id, security_id, timeframe_id,
-                side_id, action_id, signal_kind, signal_formula,
+                side_id, action_id, position_event, signal_kind, signal_formula,
                 quantity, price, bar_dt, is_simulated, is_fictitious, is_shadow,
                 status
             )
             VALUES (
                 p_logic_id, v_logic.account_id, p_security_id, v_tf_id,
-                v_side_close_id, v_action_short_id, 'counter', v_formula,
+                v_side_close_id, v_action_short_id, 'close', 'counter', v_formula,
                 v_quantity, v_price, v_bar_dt, v_is_simulated, FALSE, p_is_shadow,
                 'filled'
             )
@@ -6846,13 +6899,13 @@ BEGIN
 
             INSERT INTO logic_trades (
                 logic_id, account_id, security_id, timeframe_id,
-                side_id, action_id, signal_kind, signal_formula,
+                side_id, action_id, position_event, signal_kind, signal_formula,
                 quantity, price, bar_dt, is_simulated, is_fictitious, is_shadow, is_test,
                 broker_order_id, status, note
             )
             VALUES (
                 p_logic_id, v_logic.account_id, v_sec.security_id, v_tf_id,
-                v_side_close_id, v_action_id, 'counter', v_formula,
+                v_side_close_id, v_action_id, 'close', 'counter', v_formula,
                 v_quantity, v_price, v_bar_dt, v_is_simulated, FALSE, FALSE, FALSE,
                 v_broker_order_id, v_status, v_note
             )
@@ -6950,13 +7003,13 @@ BEGIN
 
             INSERT INTO logic_trades (
                 logic_id, account_id, security_id, timeframe_id,
-                side_id, action_id, signal_kind, signal_formula,
+                side_id, action_id, position_event, signal_kind, signal_formula,
                 quantity, price, bar_dt, is_simulated, is_fictitious, is_shadow, is_test,
                 broker_order_id, status, note
             )
             VALUES (
                 p_logic_id, v_logic.account_id, v_sec.security_id, v_tf_id,
-                v_side_close_id, v_action_id, 'counter', v_formula,
+                v_side_close_id, v_action_id, 'close', 'counter', v_formula,
                 v_quantity, v_price, v_bar_dt, v_is_simulated, FALSE, FALSE, FALSE,
                 v_broker_order_id, v_status, v_note
             )
@@ -7037,7 +7090,7 @@ DECLARE
     v_pp NUMERIC;
     v_held_long NUMERIC;
     v_held_short NUMERIC;
-    v_is_trend BOOLEAN;
+    v_is_open_event BOOLEAN;
     v_quantity INTEGER;
     v_side_id INTEGER;
     v_action_id INTEGER;
@@ -7150,7 +7203,7 @@ BEGIN
         v_is_shadow := v_sec.real_trading_paused;
 
         FOR v_sig IN
-            SELECT lis.id, lis.position_side, lis.signal_kind, lis.formula, lis.indicator_id
+            SELECT lis.id, lis.position_event, lis.position_side, lis.signal_kind, lis.formula, lis.indicator_id
             FROM logic_indicator_signals lis
             WHERE lis.logic_id = p_logic_id AND lis.is_active = TRUE
             ORDER BY lis.display_order, lis.id
@@ -7189,6 +7242,7 @@ BEGIN
                     format('Условие не выполнено: %s (pp=%s, value=%s)', v_parsed.condition, v_pp, v_ind_value),
                     jsonb_build_object(
                         'formula', v_sig.formula,
+                        'position_event', v_sig.position_event,
                         'signal_kind', v_sig.signal_kind,
                         'position_side', v_sig.position_side,
                         'pp', v_pp,
@@ -7204,9 +7258,10 @@ BEGIN
             PERFORM logic_trade_log(
                 p_logic_id,
                 'trade.signal_hit',
-                format('Сигнал %s/%s: %s', v_sig.position_side, v_sig.signal_kind, v_sig.formula),
+                format('Сигнал %s/%s/%s: %s', v_sig.position_event, v_sig.position_side, v_sig.signal_kind, v_sig.formula),
                 jsonb_build_object(
                     'formula', v_sig.formula,
+                    'position_event', v_sig.position_event,
                     'pp', v_pp,
                     'ind_value', v_ind_value,
                     'bar_dt', v_ind_dt
@@ -7217,10 +7272,10 @@ BEGIN
 
             v_held_long := CASE WHEN v_sig.position_side = 'long' THEN logic_long_position_qty(p_logic_id, v_sec.security_id, v_is_shadow) ELSE 0 END;
             v_held_short := CASE WHEN v_sig.position_side = 'short' THEN logic_short_position_qty(p_logic_id, v_sec.security_id, v_is_shadow) ELSE 0 END;
-            v_is_trend := v_sig.signal_kind = 'trend';
+            v_is_open_event := COALESCE(v_sig.position_event, 'open') = 'open';
 
             IF v_sig.position_side = 'long' THEN
-                IF v_is_trend THEN
+                IF v_is_open_event THEN
                     IF v_held_long > 0 OR (NOT v_is_shadow AND v_open_positions >= v_max_positions) THEN
                         CONTINUE;
                     END IF;
@@ -7243,7 +7298,7 @@ BEGIN
                     v_action_id := v_action_long_id;
                     v_direction := 'SELL';
                 END IF;
-            ELSIF v_is_trend THEN
+            ELSIF v_is_open_event THEN
                 IF v_held_short > 0 OR (NOT v_is_shadow AND v_open_positions >= v_max_positions) THEN
                     CONTINUE;
                 END IF;
@@ -7313,17 +7368,17 @@ BEGIN
 
             INSERT INTO logic_trades (
                 logic_id, account_id, security_id, timeframe_id,
-                side_id, action_id, signal_kind, signal_formula,
+                side_id, action_id, position_event, signal_kind, signal_formula,
                 quantity, price, bar_dt, is_simulated, is_fictitious, is_shadow, is_test,
                 broker_order_id, status, note
             )
             VALUES (
                 p_logic_id, v_logic.account_id, v_sec.security_id, v_tf_id,
-                v_side_id, v_action_id, v_sig.signal_kind, v_sig.formula,
+                v_side_id, v_action_id, v_sig.position_event, v_sig.signal_kind, v_sig.formula,
                 v_quantity, v_pp, v_ind_dt, v_is_simulated, FALSE, v_is_shadow, FALSE,
                 v_broker_order_id, v_status, v_note
             )
-            ON CONFLICT (logic_id, security_id, signal_kind, bar_dt, is_test, is_shadow) DO NOTHING
+            ON CONFLICT (logic_id, security_id, position_event, signal_kind, bar_dt, is_test, is_shadow) DO NOTHING
             RETURNING id INTO v_trade_id;
 
             IF v_trade_id IS NULL THEN
@@ -7335,8 +7390,7 @@ BEGIN
             IF NOT v_is_shadow AND v_logic.account_type = 'fake' AND v_balance IS NOT NULL AND v_status <> 'rejected' THEN
                 v_balance := logic_trade_finalize(v_trade_id, v_balance);
                 v_notional := v_quantity * v_pp;
-                v_is_open := (v_sig.position_side = 'long' AND v_is_trend)
-                           OR (v_sig.position_side = 'short' AND v_is_trend);
+                v_is_open := v_is_open_event;
                 IF v_sig.position_side = 'long' THEN
                     v_balance := v_balance + CASE WHEN v_is_open THEN -v_notional ELSE v_notional END;
                 ELSE
@@ -7363,6 +7417,7 @@ BEGIN
                     'quantity', v_quantity,
                     'price', v_pp,
                     'status', v_status,
+                    'position_event', v_sig.position_event,
                     'signal_kind', v_sig.signal_kind,
                     'formula', v_sig.formula,
                     'bar_dt', v_ind_dt
@@ -7630,14 +7685,21 @@ DECLARE
     v_max_date DATE;
     v_edge_slack INTEGER;
     v_min_bars INTEGER;
+    v_date_to DATE;
 BEGIN
     IF p_date_from IS NULL OR p_date_to IS NULL OR p_date_from > p_date_to THEN
         RETURN FALSE;
     END IF;
 
+    -- Будущие даты в date_to недостижимы для рынка — иначе вечный re-fetch T-Bank.
+    v_date_to := LEAST(p_date_to, CURRENT_DATE);
+    IF p_date_from > v_date_to THEN
+        RETURN FALSE;
+    END IF;
+
     SELECT t.sec INTO v_tf_sec FROM timeframes t WHERE t.id = p_timeframe_id;
     v_tf_sec := COALESCE(v_tf_sec, 86400);
-    v_span_days := GREATEST(1, (p_date_to - p_date_from) + 1);
+    v_span_days := GREATEST(1, (v_date_to - p_date_from) + 1);
     v_edge_slack := GREATEST(3, LEAST(14, v_span_days / 20));
 
     SELECT COUNT(*)::INTEGER, MIN(p.dt::date), MAX(p.dt::date)
@@ -7645,7 +7707,7 @@ BEGIN
     FROM prices p
     WHERE p.security_id = p_security_id
       AND p.timeframe_id = p_timeframe_id
-      AND p.dt::date BETWEEN p_date_from AND p_date_to;
+      AND p.dt::date BETWEEN p_date_from AND v_date_to;
 
     IF v_in_period = 0 OR v_min_date IS NULL THEN
         RETURN FALSE;
@@ -7654,7 +7716,7 @@ BEGIN
     IF v_min_date > p_date_from + v_edge_slack THEN
         RETURN FALSE;
     END IF;
-    IF v_max_date < p_date_to - v_edge_slack THEN
+    IF v_max_date < v_date_to - v_edge_slack THEN
         RETURN FALSE;
     END IF;
 
@@ -7662,7 +7724,7 @@ BEGIN
     FROM prices p
     WHERE p.security_id = p_security_id
       AND p.timeframe_id = p_timeframe_id
-      AND p.dt::date BETWEEN p_warmup_from AND p_date_to;
+      AND p.dt::date BETWEEN p_warmup_from AND v_date_to;
 
     IF v_warmup_count < GREATEST(p_min_warmup, 1) THEN
         RETURN FALSE;
@@ -7682,7 +7744,7 @@ END;
 $$;
 
 COMMENT ON FUNCTION backtest_prices_cached(INTEGER, INTEGER, DATE, DATE, DATE, INTEGER) IS
-'True если свечи покрывают период теста (даты начала/конца + мин. число баров) и прогрев; иначе load_prices';
+'True если свечи покрывают период теста до LEAST(date_to, сегодня); иначе load_prices. Будущий date_to не форсит HTTP.';
 
 CREATE OR REPLACE FUNCTION backtest_indicators_cached(
     p_security_id INTEGER,
@@ -7892,6 +7954,7 @@ CREATE OR REPLACE FUNCTION logic_backtest_insert_trade(
     p_is_shadow BOOLEAN,
     p_trade_reason TEXT,
     p_balance NUMERIC,
+    p_position_event TEXT DEFAULT NULL,
     OUT o_trade_id BIGINT,
     OUT o_new_balance NUMERIC
 )
@@ -7902,20 +7965,27 @@ DECLARE
     v_notional NUMERIC;
     v_trade_id BIGINT;
     v_balance NUMERIC := p_balance;
+    v_position_event TEXT;
 BEGIN
+    SELECT sd.name INTO v_side_name FROM sides sd WHERE sd.id = p_side_id;
+    v_position_event := COALESCE(
+        NULLIF(btrim(p_position_event), ''),
+        CASE WHEN v_side_name = 'Close' THEN 'close' ELSE 'open' END
+    );
+
     INSERT INTO logic_trades (
         logic_id, account_id, security_id, timeframe_id,
-        side_id, action_id, signal_kind, signal_formula,
+        side_id, action_id, position_event, signal_kind, signal_formula,
         quantity, price, bar_dt, is_simulated, is_fictitious,
         is_shadow, is_test, trade_reason, status
     )
     VALUES (
         p_logic_id, p_account_id, p_security_id, p_timeframe_id,
-        p_side_id, p_action_id, p_signal_kind, p_formula,
+        p_side_id, p_action_id, v_position_event, p_signal_kind, p_formula,
         p_quantity, p_price, p_bar_dt, TRUE, FALSE,
         p_is_shadow, TRUE, p_trade_reason, 'filled'
     )
-    ON CONFLICT (logic_id, security_id, signal_kind, bar_dt, is_test, is_shadow) DO NOTHING
+    ON CONFLICT (logic_id, security_id, position_event, signal_kind, bar_dt, is_test, is_shadow) DO NOTHING
     RETURNING id INTO v_trade_id;
 
     IF v_trade_id IS NULL THEN
@@ -8178,7 +8248,7 @@ BEGIN
             END IF;
 
             IF v_drawdown >= v_stop.value THEN
-                v_reason := format('stop_loss:portfolio (%.2f%%)', v_drawdown);
+                v_reason := format('stop_loss:portfolio (%s%%)', round(v_drawdown, 2));
                 FOR v_sec IN
                     SELECT DISTINCT lt.security_id
                     FROM logic_trades lt
@@ -8210,7 +8280,7 @@ BEGIN
                     CONTINUE;
                 END IF;
 
-                v_reason := format('stop_loss:%s (%.2f%%)', v_stop.scope_type, v_drawdown);
+                v_reason := format('stop_loss:%s (%s%%)', v_stop.scope_type, round(v_drawdown, 2));
                 SELECT *
                 INTO v_closed, p_balance
                 FROM logic_backtest_close_security(
@@ -8238,7 +8308,7 @@ BEGIN
                 ) / NULLIF(get_logic_param_numeric(p_logic_id, 'initial_balance', 0), 0) * 100.0;
             END IF;
             IF v_gain >= v_stop.value THEN
-                v_reason := format('take_profit:portfolio (%.2f%%)', v_gain);
+                v_reason := format('take_profit:portfolio (%s%%)', round(v_gain, 2));
                 FOR v_sec IN
                     SELECT DISTINCT lt.security_id
                     FROM logic_trades lt
@@ -8262,7 +8332,7 @@ BEGIN
                     p_logic_id, v_sec.security_id, p_tf_id, p_bar_dt, FALSE
                 );
                 IF v_gain >= v_stop.value THEN
-                    v_reason := format('take_profit:security (%.2f%%)', v_gain);
+                    v_reason := format('take_profit:security (%s%%)', round(v_gain, 2));
                     SELECT *
                     INTO v_closed, p_balance
                     FROM logic_backtest_close_security(
@@ -8304,7 +8374,7 @@ DECLARE
     v_is_shadow BOOLEAN;
     v_held_long NUMERIC;
     v_held_short NUMERIC;
-    v_is_trend BOOLEAN;
+    v_is_open_event BOOLEAN;
     v_quantity INTEGER;
     v_side_id INTEGER;
     v_action_id INTEGER;
@@ -8355,11 +8425,14 @@ BEGIN
                 THEN logic_long_position_qty(p_logic_id, v_sec.security_id, v_is_shadow, TRUE) ELSE 0 END;
             v_held_short := CASE WHEN v_sig.position_side = 'short'
                 THEN logic_short_position_qty(p_logic_id, v_sec.security_id, v_is_shadow, TRUE) ELSE 0 END;
-            v_is_trend := v_sig.signal_kind = 'trend';
-            v_reason := format('signal:%s/%s %s', v_sig.position_side, v_sig.signal_kind, v_sig.formula);
+            v_is_open_event := COALESCE(v_sig.position_event, 'open') = 'open';
+            v_reason := format(
+                'signal:%s/%s/%s %s',
+                v_sig.position_event, v_sig.position_side, v_sig.signal_kind, v_sig.formula
+            );
 
             IF v_sig.position_side = 'long' THEN
-                IF v_is_trend THEN
+                IF v_is_open_event THEN
                     IF v_held_long > 0 OR (NOT v_is_shadow AND v_open_positions >= v_max_positions) THEN
                         CONTINUE;
                     END IF;
@@ -8380,7 +8453,7 @@ BEGIN
                     v_action_id := v_action_long_id;
                 END IF;
             ELSE
-                IF v_is_trend THEN
+                IF v_is_open_event THEN
                     IF v_held_short > 0 OR (NOT v_is_shadow AND v_open_positions >= v_max_positions) THEN
                         CONTINUE;
                     END IF;
@@ -8408,7 +8481,7 @@ BEGIN
                 p_run_id, p_logic_id, p_account_id, v_sec.security_id, p_tf_id,
                 v_side_id, v_action_id, v_sig.signal_kind, v_sig.formula,
                 v_quantity, v_bar_row.close_price, v_bar_dt, v_is_shadow, v_reason,
-                p_balance
+                p_balance, v_sig.position_event
             );
 
             IF v_trade_id IS NOT NULL THEN
@@ -8418,16 +8491,17 @@ BEGIN
                     jsonb_build_object(
                         'trade_id', v_trade_id, 'bar_dt', v_bar_dt, 'quantity', v_quantity,
                         'price', v_bar_row.close_price, 'formula', v_sig.formula,
+                        'position_event', v_sig.position_event,
                         'pp', v_bar_row.close_price, 'ind_value', v_bar_row.ind_value
                     ),
                     v_sec.security_id, p_tf_id
                 );
             END IF;
 
-            IF v_trade_id IS NOT NULL AND v_is_trend AND NOT v_is_shadow
+            IF v_trade_id IS NOT NULL AND v_is_open_event AND NOT v_is_shadow
                AND v_side_id = v_side_open_id THEN
                 v_open_positions := v_open_positions + 1;
-            ELSIF v_trade_id IS NOT NULL AND NOT v_is_trend AND NOT v_is_shadow THEN
+            ELSIF v_trade_id IS NOT NULL AND NOT v_is_open_event AND NOT v_is_shadow THEN
                 v_open_positions := GREATEST(0, v_open_positions - 1);
             END IF;
         END LOOP;
@@ -8904,6 +8978,7 @@ DROP PROCEDURE IF EXISTS load_prices_from_moex_http(INTEGER, INTEGER, DATE, DATE
 DROP PROCEDURE IF EXISTS load_prices_from_moex_http(INTEGER, INTEGER, DATE, DATE, VARCHAR);
 DROP PROCEDURE IF EXISTS load_prices_from_moex_http(INTEGER, INTEGER, DATE, DATE, VARCHAR, INTEGER, INTEGER);
 
+-- @include sql/load_prices_tbank_http.sql (см. sql/load_prices_tbank_http.sql — процедура ниже)
 -- Процедура: load_prices_from_tbank_http
 -- Загрузка цен через T-Bank API с использованием pgsql-http
 -- ============================================
@@ -8942,10 +9017,14 @@ DECLARE
     v_store_contract VARCHAR(50);
     v_moex_secid VARCHAR(20);
     v_note TEXT;
+    v_max_days INTEGER;
+    v_chunk_from DATE;
+    v_chunk_to DATE;
 BEGIN
     PERFORM configure_http_ssl();
 
     SELECT tf INTO v_tf_name FROM timeframes WHERE id = p_timeframe_id;
+    v_max_days := GREATEST(1, get_tbank_max_request_days(v_tf_name));
 
     IF p_contract_prefix IS NOT NULL THEN
         v_prefix := p_contract_prefix;
@@ -8998,111 +9077,102 @@ BEGIN
             END IF;
         END IF;
     END IF;
+
     v_token := get_tbank_token();
     IF v_token IS NULL THEN
         RAISE EXCEPTION 'T-Bank токен не найден. Задайте TBANK_API_TOKEN в параметрах или token_encrypted в accounts.';
     END IF;
 
-    -- ============================================================
-    -- БЛОК 5: ФОРМИРОВАНИЕ HTTP-ЗАПРОСА
-    -- ============================================================
     v_instrument_id := resolve_tbank_instrument_id(
         p_security_id, v_prefix, v_tbank_figi, v_is_future, 'TQBR', v_moex_secid
     );
 
     v_api_url := 'https://invest-public-api.tinkoff.ru/rest/tinkoff.public.invest.api.contract.v1.MarketDataService/GetCandles';
 
-    v_payload := jsonb_build_object(
-        'instrumentId', v_instrument_id,
-        'from', tbank_iso_utc(p_date_from),
-        'to', tbank_iso_utc(p_date_to + 1),
-        'interval', get_tbank_candle_interval(v_tf_name)
-    )::TEXT;
-
-    -- Заголовки (Content-Type задаётся в http_request, не в массиве headers)
     v_headers := ARRAY[
         http_header('Authorization', 'Bearer ' || v_token),
         http_header('Accept', 'application/json')
     ];
 
-    -- ============================================================
-    -- БЛОК 6: ВЫПОЛНЕНИЕ HTTP POST-ЗАПРОСА ЧЕРЕЗ pgsql-http
-    -- ============================================================
-    -- Функция http() из расширения pgsql-http выполняет запрос через libcurl
-    -- Возвращает тип http_response со статусом, заголовками и телом ответа
-    SELECT * INTO v_response FROM http((
-        'POST',
-        v_api_url,
-        v_headers,
-        'application/json',
-        v_payload
-    )::http_request);
+    v_chunk_from := p_date_from;
+    WHILE v_chunk_from <= p_date_to LOOP
+        v_chunk_to := LEAST(v_chunk_from + v_max_days - 1, p_date_to);
 
-    -- Проверяем HTTP-статус
-    v_status := v_response.status;
+        v_payload := jsonb_build_object(
+            'instrumentId', v_instrument_id,
+            'from', tbank_iso_utc(v_chunk_from),
+            'to', tbank_iso_utc(v_chunk_to + 1),
+            'interval', get_tbank_candle_interval(v_tf_name)
+        )::TEXT;
 
-    IF v_status != 200 THEN
-        RAISE EXCEPTION 'T-Bank API вернул статус %: %', v_status, v_response.content;
-    END IF;
+        SELECT * INTO v_response FROM http((
+            'POST',
+            v_api_url,
+            v_headers,
+            'application/json',
+            v_payload
+        )::http_request);
 
-    -- ============================================================
-    -- БЛОК 7: РАЗБОР JSON-ОТВЕТА
-    -- ============================================================
-    -- Преобразуем текст ответа в JSONB
-    v_content := v_response.content::JSONB;
+        v_status := v_response.status;
 
-    -- Извлекаем массив свечей
-    v_candles := v_content->'candles';
+        IF v_status != 200 THEN
+            IF v_status IN (401, 403) OR v_response.content ILIKE '%unauthenticated%' THEN
+                RAISE EXCEPTION 'T-Bank API вернул статус %: %', v_status, v_response.content;
+            END IF;
+            RAISE NOTICE 'T-Bank chunk %..%: HTTP %', v_chunk_from, v_chunk_to, v_status;
+        ELSE
+            v_content := v_response.content::JSONB;
+            v_candles := v_content->'candles';
 
-    IF v_candles IS NULL OR jsonb_array_length(v_candles) = 0 THEN
+            IF v_candles IS NOT NULL AND jsonb_array_length(v_candles) > 0 THEN
+                FOR v_i IN 0 .. jsonb_array_length(v_candles) - 1
+                LOOP
+                    v_candle := v_candles->v_i;
+                    v_candle_time := market_candle_dt_from_iso(v_candle->>'time');
+                    v_candle_open := parse_tbank_quotation(v_candle->'open');
+                    v_candle_high := parse_tbank_quotation(v_candle->'high');
+                    v_candle_low := parse_tbank_quotation(v_candle->'low');
+                    v_candle_close := parse_tbank_quotation(v_candle->'close');
+                    v_candle_volume := COALESCE(
+                        parse_tbank_quotation(v_candle->'volume'),
+                        (v_candle->>'volume')::NUMERIC
+                    );
+
+                    CALL insert_candle(
+                        p_security_id,
+                        p_timeframe_id,
+                        v_candle_time,
+                        v_candle_open,
+                        v_candle_high,
+                        v_candle_low,
+                        v_candle_close,
+                        v_candle_volume,
+                        NULL,
+                        NULL,
+                        v_store_contract
+                    );
+
+                    v_records_loaded := v_records_loaded + 1;
+                END LOOP;
+            END IF;
+        END IF;
+
+        v_chunk_from := v_chunk_to + 1;
+    END LOOP;
+
+    IF v_records_loaded = 0 THEN
         INSERT INTO price_load_log (
             security_id, timeframe_id, date_from, date_to,
             source, records_loaded, contract_prefix, error_message
         )
         VALUES (
             p_security_id, p_timeframe_id, p_date_from, p_date_to,
-            'T-BANK', 0, v_store_contract, 'T-Bank вернул пустой массив свечей'
+            'T-BANK', 0, v_store_contract, 'T-Bank вернул 0 свечей за период'
         );
-        RAISE NOTICE 'T-Bank вернул пустой массив свечей';
+        RAISE NOTICE 'T-Bank: 0 свечей (% — %)', p_date_from, p_date_to;
         RETURN;
     END IF;
 
-    -- ============================================================
-    -- БЛОК 8: ЗАПИСЬ СВЕЧЕЙ В БАЗУ ДАННЫХ
-    -- ============================================================
-    FOR v_i IN 0 .. jsonb_array_length(v_candles) - 1
-    LOOP
-        v_candle := v_candles->v_i;
-
-        -- Извлекаем поля свечи из JSON (T-Bank отдаёт UTC с суффиксом Z)
-        v_candle_time := market_candle_dt_from_iso(v_candle->>'time');
-        v_candle_open := parse_tbank_quotation(v_candle->'open');
-        v_candle_high := parse_tbank_quotation(v_candle->'high');
-        v_candle_low := parse_tbank_quotation(v_candle->'low');
-        v_candle_close := parse_tbank_quotation(v_candle->'close');
-        v_candle_volume := COALESCE(parse_tbank_quotation(v_candle->'volume'), (v_candle->>'volume')::NUMERIC);
-
-        -- Вставляем свечу через процедуру insert_candle (UPSERT)
-        CALL insert_candle(
-            p_security_id,
-            p_timeframe_id,
-            v_candle_time,
-            v_candle_open,
-            v_candle_high,
-            v_candle_low,
-            v_candle_close,
-            v_candle_volume,
-            NULL,
-            NULL,
-            v_store_contract
-        );
-
-        v_records_loaded := v_records_loaded + 1;
-    END LOOP;
-
-    -- ============================================================
-    -- БЛОК 9: ЛОГИРОВАНИЕ РЕЗУЛЬТАТА
-    -- ============================================================
     INSERT INTO price_load_log (
         security_id, timeframe_id, date_from, date_to,
         source, records_loaded, contract_prefix
@@ -9112,10 +9182,24 @@ BEGIN
         'T-BANK', v_records_loaded, v_store_contract
     );
 
-    RAISE NOTICE 'Загружено % свечей из T-Bank (контракт %)', v_records_loaded, v_store_contract;
+    RAISE NOTICE 'Загружено % свечей из T-Bank (% — %, контракт %)',
+        v_records_loaded, p_date_from, p_date_to, v_store_contract;
 
 EXCEPTION
     WHEN OTHERS THEN
+        IF v_records_loaded > 0 THEN
+            INSERT INTO price_load_log (
+                security_id, timeframe_id, date_from, date_to,
+                source, records_loaded, contract_prefix, error_message
+            )
+            VALUES (
+                p_security_id, p_timeframe_id, p_date_from, p_date_to,
+                'T-BANK', v_records_loaded, v_store_contract,
+                format('Частичная загрузка, затем ошибка: %s', SQLERRM)
+            );
+            RAISE NOTICE 'T-Bank: частично % свечей, ошибка: %', v_records_loaded, SQLERRM;
+            RETURN;
+        END IF;
         INSERT INTO price_load_log (
             security_id, timeframe_id, date_from, date_to,
             source, records_loaded, contract_prefix, error_message
@@ -9128,8 +9212,8 @@ EXCEPTION
 END;
 $$;
 
-COMMENT ON PROCEDURE load_prices_from_tbank_http(INTEGER, INTEGER, DATE, DATE, VARCHAR, VARCHAR) IS 
-'Загрузка свечей T-Bank. p_contract_prefix — тикер контракта (Si-6.26) для фьючерсов.';
+COMMENT ON PROCEDURE load_prices_from_tbank_http(INTEGER, INTEGER, DATE, DATE, VARCHAR, VARCHAR) IS
+'Загрузка свечей T-Bank по чанкам (лимит периода API). p_contract_prefix — тикер контракта для фьючерсов.';
 
 -- ============================================
 -- Процедура: load_prices_from_moex_http

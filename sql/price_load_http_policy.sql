@@ -27,7 +27,11 @@ DECLARE
     v_tf_sec INTEGER;
 BEGIN
     PERFORM set_config('lock_timeout', '15000', true);
-    PERFORM set_config('statement_timeout', '180000', true);
+    PERFORM set_config(
+        'statement_timeout',
+        LEAST(3600000, GREATEST(180000, (p_date_to - p_date_from + 1) * 3000))::TEXT,
+        true
+    );
     PERFORM configure_http_ssl();
 
     SELECT (st.name = 'Futures') INTO v_is_future

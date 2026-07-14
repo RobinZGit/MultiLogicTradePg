@@ -23,6 +23,8 @@ import { TbankTokenDialogComponent } from '../tbank-token-dialog/tbank-token-dia
 import {
   buildLogicSignalFormula,
   parseSignalFormula,
+  positionEventLabel,
+  PositionEvent,
   positionSideLabel,
   PositionSide,
   signalKindLabel,
@@ -56,6 +58,7 @@ const POLL_INTERVAL_MS = 2000;
 
 type SignalPickerState = {
   logicId: number;
+  positionEvent: PositionEvent;
   positionSide: PositionSide;
   signalKind: SignalKind;
 } | null;
@@ -243,6 +246,7 @@ export class LogicsComponent implements OnInit, OnDestroy {
 
   signalKindLabel = signalKindLabel;
   positionSideLabel = positionSideLabel;
+  positionEventLabel = positionEventLabel;
   ruleKindLabel = ruleKindLabel;
   scopeTypeLabel = scopeTypeLabel;
   valueUnitLabel = valueUnitLabel;
@@ -869,6 +873,27 @@ export class LogicsComponent implements OnInit, OnDestroy {
     return this.backtestRuns.get(logicId) ?? null;
   }
 
+  timeframeIdForLogic(row: LogicRow): number | null {
+    const draft = this.paramsDrafts.get(row.id);
+    const tfName = (draft?.timeframe || row.timeframe || 'M15').trim();
+    const byName = this.timeframesCatalog.find((t) => t.tf === tfName)?.id;
+    if (byName != null) return byName;
+    // fallback: M15 / первый из каталога
+    return (
+      this.timeframesCatalog.find((t) => t.tf === 'M15')?.id ??
+      this.timeframesCatalog[0]?.id ??
+      null
+    );
+  }
+
+  signalIndicatorIdsFor(logicId: number): number[] {
+    const ids = new Set<number>();
+    for (const s of this.signalsFor(logicId)) {
+      if (s.is_active && s.indicator_id != null) ids.add(Number(s.indicator_id));
+    }
+    return [...ids];
+  }
+
   isBacktestRunning(logicId: number): boolean {
     const s = this.backtestRuns.get(logicId)?.status;
     return s === 'pending' || s === 'loading_prices' || s === 'loading_indicators' || s === 'running';
@@ -1151,12 +1176,13 @@ export class LogicsComponent implements OnInit, OnDestroy {
     return this.signalsLoading.has(logicId);
   }
 
-  openSignalPicker(logicId: number, positionSide: PositionSide, event: Event): void {
+  openSignalPicker(logicId: number, positionEvent: PositionEvent, event: Event): void {
     event.stopPropagation();
     this.signalPicker = {
       logicId,
-      positionSide,
-      signalKind: positionSide === 'long' ? 'trend' : 'counter',
+      positionEvent,
+      positionSide: 'long',
+      signalKind: positionEvent === 'open' ? 'trend' : 'counter',
     };
     this.pickerSelectedIds.clear();
     if (!this.expandedLogics.has(logicId)) {
@@ -1169,6 +1195,12 @@ export class LogicsComponent implements OnInit, OnDestroy {
   onPickerSignalKindChange(kind: SignalKind): void {
     if (this.signalPicker) {
       this.signalPicker = { ...this.signalPicker, signalKind: kind };
+    }
+  }
+
+  onPickerPositionSideChange(side: PositionSide): void {
+    if (this.signalPicker) {
+      this.signalPicker = { ...this.signalPicker, positionSide: side };
     }
   }
 
@@ -1207,11 +1239,14 @@ export class LogicsComponent implements OnInit, OnDestroy {
 
   addSelectedSignals(): void {
     if (!this.signalPicker || this.pickerSelectedIds.size === 0) return;
-    const { logicId, positionSide, signalKind } = this.signalPicker;
+    const { logicId, positionEvent, positionSide, signalKind } = this.signalPicker;
     const existing = new Set(
       this.signalsFor(logicId)
         .filter(
-          (s) => s.position_side === positionSide && s.signal_kind === signalKind
+          (s) =>
+            s.position_event === positionEvent &&
+            s.position_side === positionSide &&
+            s.signal_kind === signalKind
         )
         .map((s) => s.indicator_id)
     );
@@ -1232,6 +1267,7 @@ export class LogicsComponent implements OnInit, OnDestroy {
         .createLogicIndicatorSignal({
           logic_id: logicId,
           indicator_id: indicatorId,
+          position_event: positionEvent,
           position_side: positionSide,
           signal_kind: signalKind,
           formula,

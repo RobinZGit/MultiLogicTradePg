@@ -1,6 +1,7 @@
 -- ============================================
 -- MultiLogicTrade — шаг 1: таблицы и справочники
--- Версия: v37 (идемпотентный запуск)
+-- Версия: v38 (идемпотентный запуск)
+-- v38: logic_indicator_signals.position_event (open|close); logic_trades.position_event
 -- ============================================
 -- Подключение: база multilogictrade
 -- Можно выполнять многократно: объекты и строки не дублируются.
@@ -1075,17 +1076,21 @@ CREATE TABLE IF NOT EXISTS logic_indicator_signals (
     id SERIAL PRIMARY KEY,
     logic_id INTEGER NOT NULL REFERENCES logics(id) ON DELETE CASCADE,
     indicator_id INTEGER NOT NULL REFERENCES indicators(id) ON DELETE RESTRICT,
+    position_event VARCHAR(10) NOT NULL DEFAULT 'open' CHECK (position_event IN ('open', 'close')),
     position_side VARCHAR(10) NOT NULL DEFAULT 'long' CHECK (position_side IN ('long', 'short')),
     signal_kind VARCHAR(10) NOT NULL CHECK (signal_kind IN ('trend', 'counter')),
     formula TEXT NOT NULL,
     display_order INTEGER NOT NULL DEFAULT 0,
     is_active BOOLEAN NOT NULL DEFAULT TRUE,
     created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    UNIQUE (logic_id, indicator_id, position_side, signal_kind)
+    UNIQUE (logic_id, indicator_id, position_event, position_side, signal_kind)
 );
 
 -- Миграция v18 → v19: position_side (long | short)
 ALTER TABLE logic_indicator_signals ADD COLUMN IF NOT EXISTS position_side VARCHAR(10) NOT NULL DEFAULT 'long';
+
+-- Миграция v38: position_event (open | close) — явно открытие/закрытие
+ALTER TABLE logic_indicator_signals ADD COLUMN IF NOT EXISTS position_event VARCHAR(10) NOT NULL DEFAULT 'open';
 
 DO $$
 BEGIN
@@ -1095,14 +1100,37 @@ EXCEPTION
     WHEN duplicate_object THEN NULL;
 END $$;
 
+DO $$
+BEGIN
+    ALTER TABLE logic_indicator_signals ADD CONSTRAINT logic_indicator_signals_position_event_check
+        CHECK (position_event IN ('open', 'close'));
+EXCEPTION
+    WHEN duplicate_object THEN NULL;
+END $$;
+
 UPDATE logic_indicator_signals SET position_side = 'long' WHERE position_side IS NULL OR position_side = '';
 
+-- Backfill v38 один раз: если ещё нет ни одного close — старая модель (counter = закрытие)
+DO $$
+BEGIN
+    IF EXISTS (
+        SELECT 1 FROM logic_indicator_signals WHERE position_event = 'close' LIMIT 1
+    ) THEN
+        RETURN;
+    END IF;
+    UPDATE logic_indicator_signals
+    SET position_event = CASE WHEN signal_kind = 'counter' THEN 'close' ELSE 'open' END;
+END $$;
+
 ALTER TABLE logic_indicator_signals DROP CONSTRAINT IF EXISTS logic_indicator_signals_logic_id_indicator_id_signal_kind_key;
+ALTER TABLE logic_indicator_signals DROP CONSTRAINT IF EXISTS logic_indicator_signals_logic_id_indicator_id_position_side_signal_kind_key;
+ALTER TABLE logic_indicator_signals DROP CONSTRAINT IF EXISTS logic_indicator_signals_logic_id_indicator_id_position_event_position_side_signal_kind_key;
 
 DROP INDEX IF EXISTS logic_indicator_signals_logic_id_indicator_id_signal_kind_key;
+DROP INDEX IF EXISTS idx_logic_indicator_signals_unique;
 
 CREATE UNIQUE INDEX IF NOT EXISTS idx_logic_indicator_signals_unique
-    ON logic_indicator_signals (logic_id, indicator_id, position_side, signal_kind);
+    ON logic_indicator_signals (logic_id, indicator_id, position_event, position_side, signal_kind);
 
 CREATE INDEX IF NOT EXISTS idx_logic_indicator_signals_logic_id
     ON logic_indicator_signals(logic_id);
@@ -1110,7 +1138,8 @@ CREATE INDEX IF NOT EXISTS idx_logic_indicator_signals_indicator_id
     ON logic_indicator_signals(indicator_id);
 
 COMMENT ON TABLE logic_indicator_signals IS
-'Сигналы индикаторов для logics: формула @CODE(params) + условие из indicators.sig_*_def';
+'Сигналы индикаторов для logics: position_event open|close, сторона long|short, тип trend|counter';
+COMMENT ON COLUMN logic_indicator_signals.position_event IS 'open | close — открытие или закрытие позиции';
 COMMENT ON COLUMN logic_indicator_signals.position_side IS 'long | short — сторона позиции сигнала';
 COMMENT ON COLUMN logic_indicator_signals.signal_kind IS 'trend | counter';
 COMMENT ON COLUMN logic_indicator_signals.formula IS
@@ -1185,37 +1214,59 @@ ALTER TABLE logic_securities ADD COLUMN IF NOT EXISTS stop_resume_equity NUMERIC
 ALTER TABLE logic_securities ADD COLUMN IF NOT EXISTS stop_resume_baseline NUMERIC(20, 6);
 ALTER TABLE logic_securities ADD COLUMN IF NOT EXISTS stop_resume_triggered_at TIMESTAMP;
 
--- Демо-логика SMA Price Cross Demo: только long-trend и short-trend + SBER
+-- Демо-логика SMA Price Cross Demo (v38): open/close × long/short, все акции, SL 1%, TP 3%
 DELETE FROM logic_indicator_signals lis
 USING logics l
 WHERE lis.logic_id = l.id
-  AND l.name = 'SMA Price Cross Demo'
-  AND lis.signal_kind = 'counter';
+  AND l.name = 'SMA Price Cross Demo';
 
-INSERT INTO logic_indicator_signals (logic_id, indicator_id, position_side, signal_kind, formula, display_order)
-SELECT l.id, i.id, 'long', 'trend', '@SMA(period=20,series=VALUE) pp > VALUE', 0
+INSERT INTO logic_indicator_signals (
+    logic_id, indicator_id, position_event, position_side, signal_kind, formula, display_order
+)
+SELECT l.id, i.id, v.position_event, v.position_side, v.signal_kind, v.formula, v.display_order
 FROM logics l
 CROSS JOIN indicators i
+CROSS JOIN (VALUES
+    ('open',  'long',  'trend',   '@SMA(period=20,series=VALUE) pp > VALUE', 0),
+    ('close', 'long',  'counter', '@SMA(period=20,series=VALUE) pp < VALUE', 1),
+    ('open',  'short', 'trend',   '@SMA(period=20,series=VALUE) pp < VALUE', 2),
+    ('close', 'short', 'counter', '@SMA(period=20,series=VALUE) pp > VALUE', 3)
+) AS v(position_event, position_side, signal_kind, formula, display_order)
 WHERE l.name = 'SMA Price Cross Demo' AND i.code = 'SMA'
-ON CONFLICT (logic_id, indicator_id, position_side, signal_kind) DO UPDATE SET
+ON CONFLICT (logic_id, indicator_id, position_event, position_side, signal_kind) DO UPDATE SET
     formula = EXCLUDED.formula,
+    display_order = EXCLUDED.display_order,
     is_active = TRUE;
 
-INSERT INTO logic_indicator_signals (logic_id, indicator_id, position_side, signal_kind, formula, display_order)
-SELECT l.id, i.id, 'short', 'trend', '@SMA(period=20,series=VALUE) pp < VALUE', 1
-FROM logics l
-CROSS JOIN indicators i
-WHERE l.name = 'SMA Price Cross Demo' AND i.code = 'SMA'
-ON CONFLICT (logic_id, indicator_id, position_side, signal_kind) DO UPDATE SET
-    formula = EXCLUDED.formula,
-    is_active = TRUE;
-
+-- Все акции (stock) в портфель демо-логики (без дублей при нескольких prefix)
 INSERT INTO logic_securities (logic_id, security_id, display_order)
-SELECT l.id, s.id, 0
+SELECT l.id, q.security_id, ROW_NUMBER() OVER (ORDER BY q.sort_key) - 1
 FROM logics l
-JOIN securities s ON s.name = 'Сбербанк (обыкновенные)'
+CROSS JOIN LATERAL (
+    SELECT DISTINCT ON (s.id)
+        s.id AS security_id,
+        COALESCE(sp.prefix, s.name) AS sort_key
+    FROM securities s
+    JOIN security_prefixes sp ON sp.security_id = s.id AND sp.instrument_market = 'stock'
+    ORDER BY s.id, sp.prefix
+) q
 WHERE l.name = 'SMA Price Cross Demo'
 ON CONFLICT (logic_id, security_id) DO UPDATE SET is_active = TRUE;
+
+-- Стоп-лосс 1% и тейк-профит 3% по бумаге
+DELETE FROM logic_stops ls
+USING logics l
+WHERE ls.logic_id = l.id
+  AND l.name = 'SMA Price Cross Demo';
+
+INSERT INTO logic_stops (logic_id, rule_kind, scope_type, value, value_unit, display_order, is_active)
+SELECT l.id, v.rule_kind, v.scope_type, v.value, v.value_unit, v.display_order, TRUE
+FROM logics l
+CROSS JOIN (VALUES
+    ('stop_loss',    'security', 1.0, 'percent', 0),
+    ('take_profit',  'security', 3.0, 'percent', 1)
+) AS v(rule_kind, scope_type, value, value_unit, display_order)
+WHERE l.name = 'SMA Price Cross Demo';
 
 -- Сделки по торговой логике (исполнение по сигналам индикаторов)
 CREATE TABLE IF NOT EXISTS logic_trades (
@@ -1226,6 +1277,8 @@ CREATE TABLE IF NOT EXISTS logic_trades (
     timeframe_id INTEGER NOT NULL REFERENCES timeframes(id) ON DELETE RESTRICT,
     side_id INTEGER NOT NULL REFERENCES sides(id) ON DELETE RESTRICT,
     action_id INTEGER NOT NULL REFERENCES actions(id) ON DELETE RESTRICT,
+    position_event VARCHAR(10) NOT NULL DEFAULT 'open'
+        CHECK (position_event IN ('open', 'close')),
     signal_kind VARCHAR(10) NOT NULL CHECK (signal_kind IN ('trend', 'counter')),
     signal_formula TEXT NOT NULL,
     quantity NUMERIC(20, 6) NOT NULL DEFAULT 1 CHECK (quantity > 0),
@@ -1255,11 +1308,32 @@ ALTER TABLE logic_trades ADD COLUMN IF NOT EXISTS financial_result NUMERIC(20, 6
 ALTER TABLE logic_trades ADD COLUMN IF NOT EXISTS is_shadow BOOLEAN NOT NULL DEFAULT FALSE;
 ALTER TABLE logic_trades ADD COLUMN IF NOT EXISTS is_test BOOLEAN NOT NULL DEFAULT FALSE;
 ALTER TABLE logic_trades ADD COLUMN IF NOT EXISTS trade_reason TEXT;
+ALTER TABLE logic_trades ADD COLUMN IF NOT EXISTS position_event VARCHAR(10) NOT NULL DEFAULT 'open';
+
+DO $$
+BEGIN
+    ALTER TABLE logic_trades ADD CONSTRAINT logic_trades_position_event_check
+        CHECK (position_event IN ('open', 'close'));
+EXCEPTION
+    WHEN duplicate_object THEN NULL;
+END $$;
+
+-- Backfill: Close side → position_event=close
+UPDATE logic_trades lt
+SET position_event = 'close'
+FROM sides s
+WHERE s.id = lt.side_id AND s.name = 'Close' AND lt.position_event = 'open';
+
+UPDATE logic_trades lt
+SET position_event = 'open'
+FROM sides s
+WHERE s.id = lt.side_id AND s.name = 'Open' AND lt.position_event = 'close';
 
 ALTER TABLE logic_trades DROP CONSTRAINT IF EXISTS logic_trades_logic_id_security_id_signal_kind_bar_dt_key;
 DROP INDEX IF EXISTS logic_trades_logic_id_security_id_signal_kind_bar_dt_key;
+DROP INDEX IF EXISTS idx_logic_trades_signal_bar_book;
 CREATE UNIQUE INDEX IF NOT EXISTS idx_logic_trades_signal_bar_book
-    ON logic_trades (logic_id, security_id, signal_kind, bar_dt, is_test, is_shadow);
+    ON logic_trades (logic_id, security_id, position_event, signal_kind, bar_dt, is_test, is_shadow);
 
 CREATE INDEX IF NOT EXISTS idx_logic_trades_test ON logic_trades(logic_id) WHERE is_test;
 
@@ -1661,6 +1735,7 @@ COMMENT ON COLUMN logic_trades.security_id IS 'FK → securities';
 COMMENT ON COLUMN logic_trades.timeframe_id IS 'FK → timeframes — TF сигнала';
 COMMENT ON COLUMN logic_trades.side_id IS 'FK → sides: Open | Close';
 COMMENT ON COLUMN logic_trades.action_id IS 'FK → actions: Long | Short';
+COMMENT ON COLUMN logic_trades.position_event IS 'open | close — действие сигнала (копия с logic_indicator_signals)';
 COMMENT ON COLUMN logic_trades.signal_kind IS 'trend | counter — какой тип сигнала сработал';
 COMMENT ON COLUMN logic_trades.signal_formula IS 'Копия формулы logic_indicator_signals на момент сделки';
 COMMENT ON COLUMN logic_trades.quantity IS 'Объём в лотах/штуках';

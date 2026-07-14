@@ -1464,6 +1464,7 @@ app.get('/api/logic-indicator-signals', async (req, res) => {
         lis.id,
         lis.logic_id,
         lis.indicator_id,
+        lis.position_event,
         lis.position_side,
         lis.signal_kind,
         lis.formula,
@@ -1488,6 +1489,7 @@ app.get('/api/logic-indicator-signals', async (req, res) => {
 app.post('/api/logic-indicator-signals', async (req, res) => {
   const logicId = Number(req.body?.logic_id);
   const indicatorId = Number(req.body?.indicator_id);
+  const positionEvent = req.body?.position_event;
   const positionSide = req.body?.position_side;
   const signalKind = req.body?.signal_kind;
   const formula = btrimStr(req.body?.formula);
@@ -1497,6 +1499,10 @@ app.post('/api/logic-indicator-signals', async (req, res) => {
   }
   if (!Number.isInteger(indicatorId) || indicatorId <= 0) {
     res.status(400).json({ error: 'indicator_id required' });
+    return;
+  }
+  if (positionEvent !== 'open' && positionEvent !== 'close') {
+    res.status(400).json({ error: 'position_event must be open or close' });
     return;
   }
   if (positionSide !== 'long' && positionSide !== 'short') {
@@ -1521,14 +1527,14 @@ app.post('/api/logic-indicator-signals', async (req, res) => {
     const { rows } = await pool.query(
       `
       INSERT INTO logic_indicator_signals
-        (logic_id, indicator_id, position_side, signal_kind, formula, display_order)
-      VALUES ($1, $2, $3, $4, $5, $6)
-      ON CONFLICT (logic_id, indicator_id, position_side, signal_kind) DO UPDATE SET
+        (logic_id, indicator_id, position_event, position_side, signal_kind, formula, display_order)
+      VALUES ($1, $2, $3, $4, $5, $6, $7)
+      ON CONFLICT (logic_id, indicator_id, position_event, position_side, signal_kind) DO UPDATE SET
         formula = EXCLUDED.formula,
         is_active = TRUE
-      RETURNING id, logic_id, indicator_id, position_side, signal_kind, formula, display_order, is_active
+      RETURNING id, logic_id, indicator_id, position_event, position_side, signal_kind, formula, display_order, is_active
     `,
-      [logicId, indicatorId, positionSide, signalKind, formula, displayOrder]
+      [logicId, indicatorId, positionEvent, positionSide, signalKind, formula, displayOrder]
     );
     const row = rows[0];
     const { rows: meta } = await pool.query(
@@ -1561,7 +1567,7 @@ app.put('/api/logic-indicator-signals/:id', async (req, res) => {
       SET formula = $2,
           is_active = COALESCE($3::boolean, is_active)
       WHERE id = $1
-      RETURNING id, logic_id, indicator_id, position_side, signal_kind, formula, display_order, is_active
+      RETURNING id, logic_id, indicator_id, position_event, position_side, signal_kind, formula, display_order, is_active
     `,
       [id, formula, isActive === undefined ? null : isActive]
     );

@@ -1,0 +1,166 @@
+.papers-block {
+  margin-top: 0.5rem;
+  border: 1px solid #e2e8f0;
+  border-radius: 6px;
+  background: #fff;
+}
+
+.papers-block-toggle,
+.paper-item-toggle {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  width: 100%;
+  margin: 0;
+  padding: 0.45rem 0.6rem;
+  border: 0;
+  background: transparent;
+  text-align: left;
+  cursor: pointer;
+  font: inherit;
+  color: inherit;
+}
+
+.papers-block-toggle:hover,
+.paper-item-toggle:hover {
+  background: #f8fafc;
+}
+
+.papers-count {
+  margin-left: 0.35rem;
+  font-size: 0.78rem;
+  color: #64748b;
+  font-weight: 600;
+}
+
+.papers-body {
+  border-top: 1px solid #e2e8f0;
+  padding: 0.4rem;
+}
+
+.papers-empty {
+  padding: 0.5rem 0.25rem;
+  color: #94a3b8;
+  font-size: 0.85rem;
+}
+
+.papers-list {
+  max-height: min(560px, 55vh);
+  overflow: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+}
+
+.paper-item {
+  border: 1px solid #e2e8f0;
+  border-radius: 6px;
+  background: #fff;
+}
+
+.paper-item-open {
+  border-color: #93c5fd;
+}
+
+.paper-name-muted {
+  margin-left: 0.35rem;
+  font-size: 0.78rem;
+  color: #94a3b8;
+  font-weight: 400;
+}
+
+.paper-pnl {
+  margin-left: auto;
+  font-weight: 700;
+  font-size: 0.88rem;
+}
+
+.paper-trades-meta {
+  margin-left: 0.5rem;
+  font-size: 0.75rem;
+  color: #94a3b8;
+}
+
+.paper-chart-wrap {
+  padding: 0.35rem 0.5rem 0.6rem;
+  border-top: 1px solid #eef2f7;
+  background: #f8fafc;
+}
+
+.paper-chart-host {
+  display: block;
+  width: 100%;
+  height: 380px;
+  min-height: 380px;
+  background: #fafafa;
+  border: 1px solid #e5e7eb;
+  border-radius: 8px;
+  /* visible — иначе fullscreen (position:fixed) может клипиться */
+  overflow: visible;
+}
+
+.paper-chart-host app-price-chart {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+
+/* Жёсткая высота shell — иначе canvas часто 0px во вложенных панелях */
+.paper-chart-host ::ng-deep .chart-shell:not(.chart-shell--fullscreen) {
+  height: 100% !important;
+  min-height: 380px;
+  border: 0;
+  border-radius: 0;
+  overflow: hidden;
+}
+
+/* Кнопка полного экрана всегда видна в узкой панели бумаг */
+.paper-chart-host ::ng-deep .chart-btn-expand {
+  display: inline-flex !important;
+}
+
+.paper-chart-host ::ng-deep .chart-btn-expand-text {
+  display: inline !important;
+}
+
+.paper-chart-status {
+  margin: 0 0 0.35rem;
+  font-size: 0.78rem;
+  color: #64748b;
+}
+
+.paper-chart-error {
+  margin: 0 0 0.35rem;
+  font-size: 0.8rem;
+  color: #b45309;
+  font-weight: 600;
+}
+
+.paper-chart-legend {
+  margin: 0.35rem 0 0;
+  font-size: 0.72rem;
+  color: #94a3b8;
+  line-height: 1.35;
+}
+
+.trade-pnl-pos {
+  color: #15803d;
+}
+
+.trade-pnl-neg {
+  color: #b91c1c;
+}
+
+.signals-chevron {
+  display: inline-block;
+  transition: transform 0.12s ease;
+  color: #64748b;
+}
+
+.signals-chevron.open {
+  transform: rotate(90deg);
+}
+
+.signals-title {
+  font-weight: 600;
+}

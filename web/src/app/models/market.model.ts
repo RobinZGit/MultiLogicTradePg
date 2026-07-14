@@ -136,3 +136,35 @@ export interface ChartVisibleRange {
   /** true — пользователь перемотал/масштабировал; false — автоматически при загрузке свечей */
   userInitiated?: boolean;
 }
+
+/** Маркер сделки на графике бэктеста (вход / выход). */
+export interface ChartTradeMarker {
+  dt: string;
+  price: number;
+  kind: 'open' | 'close';
+  side: 'long' | 'short';
+  /** Теневая / отключённая бумага */
+  isShadow?: boolean;
+  label?: string;
+}
+
+/** Горизонтальная линия стопа / тейка с подписью типа. */
+export interface ChartStopMarker {
+  dt: string;
+  price: number;
+  ruleKind: 'stop_loss' | 'take_profit' | 'other';
+  label: string;
+}
+
+/** Затемнённый интервал (бумага выключена / теневой режим). */
+export interface ChartShadedRange {
+  startDt: string;
+  endDt: string;
+  label?: string;
+}
+
+/** Точка кумулятивного PnL по бумаге (с нуля). */
+export interface ChartEquityPoint {
+  dt: string;
+  value: number;
+}

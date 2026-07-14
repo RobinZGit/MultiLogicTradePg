@@ -524,7 +524,7 @@ DECLARE
     v_pp NUMERIC;
     v_held_long NUMERIC;
     v_held_short NUMERIC;
-    v_is_trend BOOLEAN;
+    v_is_open_event BOOLEAN;
     v_quantity INTEGER;
     v_side_id INTEGER;
     v_action_id INTEGER;
@@ -637,7 +637,7 @@ BEGIN
         v_is_shadow := v_sec.real_trading_paused;
 
         FOR v_sig IN
-            SELECT lis.id, lis.position_side, lis.signal_kind, lis.formula, lis.indicator_id
+            SELECT lis.id, lis.position_event, lis.position_side, lis.signal_kind, lis.formula, lis.indicator_id
             FROM logic_indicator_signals lis
             WHERE lis.logic_id = p_logic_id AND lis.is_active = TRUE
             ORDER BY lis.display_order, lis.id
@@ -676,6 +676,7 @@ BEGIN
                     format('Условие не выполнено: %s (pp=%s, value=%s)', v_parsed.condition, v_pp, v_ind_value),
                     jsonb_build_object(
                         'formula', v_sig.formula,
+                        'position_event', v_sig.position_event,
                         'signal_kind', v_sig.signal_kind,
                         'position_side', v_sig.position_side,
                         'pp', v_pp,
@@ -691,9 +692,10 @@ BEGIN
             PERFORM logic_trade_log(
                 p_logic_id,
                 'trade.signal_hit',
-                format('Сигнал %s/%s: %s', v_sig.position_side, v_sig.signal_kind, v_sig.formula),
+                format('Сигнал %s/%s/%s: %s', v_sig.position_event, v_sig.position_side, v_sig.signal_kind, v_sig.formula),
                 jsonb_build_object(
                     'formula', v_sig.formula,
+                    'position_event', v_sig.position_event,
                     'pp', v_pp,
                     'ind_value', v_ind_value,
                     'bar_dt', v_ind_dt
@@ -704,10 +706,10 @@ BEGIN
 
             v_held_long := CASE WHEN v_sig.position_side = 'long' THEN logic_long_position_qty(p_logic_id, v_sec.security_id, v_is_shadow) ELSE 0 END;
             v_held_short := CASE WHEN v_sig.position_side = 'short' THEN logic_short_position_qty(p_logic_id, v_sec.security_id, v_is_shadow) ELSE 0 END;
-            v_is_trend := v_sig.signal_kind = 'trend';
+            v_is_open_event := COALESCE(v_sig.position_event, 'open') = 'open';
 
             IF v_sig.position_side = 'long' THEN
-                IF v_is_trend THEN
+                IF v_is_open_event THEN
                     IF v_held_long > 0 OR (NOT v_is_shadow AND v_open_positions >= v_max_positions) THEN
                         CONTINUE;
                     END IF;
@@ -730,7 +732,7 @@ BEGIN
                     v_action_id := v_action_long_id;
                     v_direction := 'SELL';
                 END IF;
-            ELSIF v_is_trend THEN
+            ELSIF v_is_open_event THEN
                 IF v_held_short > 0 OR (NOT v_is_shadow AND v_open_positions >= v_max_positions) THEN
                     CONTINUE;
                 END IF;
@@ -800,17 +802,17 @@ BEGIN
 
             INSERT INTO logic_trades (
                 logic_id, account_id, security_id, timeframe_id,
-                side_id, action_id, signal_kind, signal_formula,
+                side_id, action_id, position_event, signal_kind, signal_formula,
                 quantity, price, bar_dt, is_simulated, is_fictitious, is_shadow, is_test,
                 broker_order_id, status, note
             )
             VALUES (
                 p_logic_id, v_logic.account_id, v_sec.security_id, v_tf_id,
-                v_side_id, v_action_id, v_sig.signal_kind, v_sig.formula,
+                v_side_id, v_action_id, v_sig.position_event, v_sig.signal_kind, v_sig.formula,
                 v_quantity, v_pp, v_ind_dt, v_is_simulated, FALSE, v_is_shadow, FALSE,
                 v_broker_order_id, v_status, v_note
             )
-            ON CONFLICT (logic_id, security_id, signal_kind, bar_dt, is_test, is_shadow) DO NOTHING
+            ON CONFLICT (logic_id, security_id, position_event, signal_kind, bar_dt, is_test, is_shadow) DO NOTHING
             RETURNING id INTO v_trade_id;
 
             IF v_trade_id IS NULL THEN
@@ -822,8 +824,7 @@ BEGIN
             IF NOT v_is_shadow AND v_logic.account_type = 'fake' AND v_balance IS NOT NULL AND v_status <> 'rejected' THEN
                 v_balance := logic_trade_finalize(v_trade_id, v_balance);
                 v_notional := v_quantity * v_pp;
-                v_is_open := (v_sig.position_side = 'long' AND v_is_trend)
-                           OR (v_sig.position_side = 'short' AND v_is_trend);
+                v_is_open := v_is_open_event;
                 IF v_sig.position_side = 'long' THEN
                     v_balance := v_balance + CASE WHEN v_is_open THEN -v_notional ELSE v_notional END;
                 ELSE
@@ -850,6 +851,7 @@ BEGIN
                     'quantity', v_quantity,
                     'price', v_pp,
                     'status', v_status,
+                    'position_event', v_sig.position_event,
                     'signal_kind', v_sig.signal_kind,
                     'formula', v_sig.formula,
                     'bar_dt', v_ind_dt

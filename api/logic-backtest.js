@@ -2,6 +2,36 @@
 
 const { writeTechLogEvent } = require('./lib/tech-log');
 
+/**
+ * Параллельность load_prices / sync индикаторов.
+ * По умолчанию 2 — меньше таймаутов T-Bank, чем при 4.
+ * Env: BACKTEST_PRICE_CONCURRENCY (1..8).
+ */
+const BACKTEST_PRICE_CONCURRENCY = Math.max(
+  1,
+  Math.min(8, Number(process.env.BACKTEST_PRICE_CONCURRENCY) || 2)
+);
+
+/**
+ * Ограниченный параллельный обход: не больше `concurrency` задач одновременно.
+ * Индекс следующего элемента берётся синхронно (безопасно в однопоточном Node).
+ */
+async function mapPool(items, concurrency, worker) {
+  if (!items.length) return;
+  let next = 0;
+  const n = Math.min(Math.max(1, concurrency), items.length);
+  await Promise.all(
+    Array.from({ length: n }, async () => {
+      for (;;) {
+        const i = next;
+        next += 1;
+        if (i >= items.length) return;
+        await worker(items[i], i);
+      }
+    })
+  );
+}
+
 async function backtestLog(pool, runId, logicId, operation, message, payload = null, securityId = null, tfId = null) {
   try {
     await pool.query(
@@ -114,13 +144,19 @@ async function fetchPriceLoadLog(pool, logicId, tfId, dateFrom, dateTo) {
   return rows;
 }
 
-async function countPricesInPeriod(pool, logicId, tfId, dateFrom, dateTo) {
+async function countPricesInPeriod(pool, logicId, tfId, dateFrom, dateTo, securityId = null) {
+  const params = [logicId, tfId, dateFrom, dateTo];
+  let secFilter = '';
+  if (securityId != null) {
+    params.push(securityId);
+    secFilter = ` AND p.security_id = $${params.length}`;
+  }
   const { rows } = await pool.query(
     `SELECT COUNT(*)::int AS cnt FROM prices p
      JOIN logic_securities ls ON ls.security_id = p.security_id
      WHERE ls.logic_id = $1 AND ls.is_active = TRUE
-       AND p.timeframe_id = $2 AND p.dt::date BETWEEN $3 AND $4`,
-    [logicId, tfId, dateFrom, dateTo]
+       AND p.timeframe_id = $2 AND p.dt::date BETWEEN $3 AND $4${secFilter}`,
+    params
   );
   return rows[0]?.cnt ?? 0;
 }
@@ -228,7 +264,7 @@ async function ensureSecurityData(
       return;
     }
     const okAfterLoad = await pricesCached(pool, secId, tfId, loadDateFrom, dateFrom, dateTo);
-    const inPeriod = await countPricesInPeriod(pool, logicId, tfId, dateFrom, dateTo);
+    const inPeriod = await countPricesInPeriod(pool, logicId, tfId, dateFrom, dateTo, secId);
     await backtestLog(
       pool,
       runId,
@@ -316,8 +352,52 @@ async function syncActiveSecurities(
     ? secRows
     : secRows.filter((r) => added.includes(r.security_id));
 
-  for (let i = 0; i < rowsToPrepare.length; i += 1) {
-    const { security_id: secId, name: secName } = rowsToPrepare[i];
+  if (rowsToPrepare.length > 0) {
+    await backtestLog(
+      pool,
+      runId,
+      logicId,
+      'backtest.prices.parallel',
+      `Параллельная подготовка: ${rowsToPrepare.length} бумаг, concurrency=${BACKTEST_PRICE_CONCURRENCY}`,
+      {
+        securities: rowsToPrepare.length,
+        concurrency: BACKTEST_PRICE_CONCURRENCY,
+        phase: phaseLabel,
+      }
+    );
+  }
+
+  let completed = 0;
+  let cancelled = false;
+  const inFlight = new Map();
+
+  const progressDetail = () => {
+    const total = secRows.length;
+    const active = [...inFlight.values()].filter(Boolean).slice(0, 4);
+    const activePart = active.length ? ` · грузятся: ${active.join(', ')}` : '';
+    return `Подготовка ${completed} / ${total}${activePart}`;
+  };
+
+  await mapPool(rowsToPrepare, BACKTEST_PRICE_CONCURRENCY, async (row) => {
+    if (cancelled) return;
+    if (await isCancelRequested(pool, runId)) {
+      cancelled = true;
+      return;
+    }
+
+    const { security_id: secId, name: secName } = row;
+    const label = secName || String(secId);
+    inFlight.set(secId, label);
+    if (isInitialLoad && secRows.length > 0) {
+      await updateRun(pool, runId, {
+        progress_pct: Math.min(
+          35,
+          Math.round((completed / secRows.length) * 35 * 100) / 100
+        ),
+        phase_detail: progressDetail(),
+      });
+    }
+
     try {
       await ensureSecurityData(
         pool,
@@ -333,12 +413,6 @@ async function syncActiveSecurities(
         pointCount,
         stats
       );
-      if (isInitialLoad && secRows.length > 0) {
-        await updateRun(pool, runId, {
-          progress_pct: Math.min(35, Math.round(((i + 1) / secRows.length) * 35 * 100) / 100),
-          phase_detail: `Подготовка ${i + 1} / ${secRows.length}: ${secName || secId}`,
-        });
-      }
     } catch (e) {
       stats.pricesErr += 1;
       await backtestLog(
@@ -351,8 +425,21 @@ async function syncActiveSecurities(
         secId,
         tfId
       );
+    } finally {
+      inFlight.delete(secId);
+      completed += 1;
     }
-  }
+
+    if (isInitialLoad && secRows.length > 0) {
+      await updateRun(pool, runId, {
+        progress_pct: Math.min(
+          35,
+          Math.round((completed / secRows.length) * 35 * 100) / 100
+        ),
+        phase_detail: progressDetail(),
+      });
+    }
+  });
 
   knownIds.clear();
   for (const id of currentIds) knownIds.add(id);
@@ -422,23 +509,27 @@ async function runBacktestAsync(pool, logicId, dateFrom, dateTo, runId) {
     const tfSec = Number(tfMetaRows[0]?.tf_sec ?? 900);
     const tfName = tfMetaRows[0]?.tf_name ?? '?';
 
+    // Период прогона как выбрал пользователь; HTTP/кэш — не дальше сегодня.
+    const loadDateTo = clampDateToToday(dateTo);
     const loadDateFrom = shiftDate(dateFrom, -30);
-    const endDt = `${dateTo} 23:59:59`;
+    const endDt = `${loadDateTo} 23:59:59`;
     const daysSpan =
-      Math.ceil((Date.parse(dateTo) - Date.parse(loadDateFrom)) / 86400000) + 1;
+      Math.ceil((Date.parse(loadDateTo) - Date.parse(loadDateFrom)) / 86400000) + 1;
     const pointCount = Math.max(500, Math.ceil(daysSpan * (86400 / tfSec)) + 200);
 
     await backtestLog(pool, runId, logicId, 'backtest.start', `Старт ${dateFrom} — ${dateTo}`, {
       date_from: dateFrom,
       date_to: dateTo,
+      load_date_to: loadDateTo,
       load_date_from: loadDateFrom,
+      price_concurrency: BACKTEST_PRICE_CONCURRENCY,
     });
 
     await updateRun(pool, runId, {
       status: 'loading_prices',
       progress_pct: 0,
       phase_message: 'Подготовка данных',
-      phase_detail: 'Чтение бумаг из logic_securities',
+      phase_detail: `Чтение бумаг (×${BACKTEST_PRICE_CONCURRENCY})`,
       test_balance: balance,
     });
 
@@ -449,13 +540,18 @@ async function runBacktestAsync(pool, logicId, dateFrom, dateTo, runId) {
       tfId,
       loadDateFrom,
       dateFrom,
-      dateTo,
+      loadDateTo,
       endDt,
       pointCount,
       knownSecIds,
       stats,
       'Стартовый состав бумаг'
     );
+
+    if (await isCancelRequested(pool, runId)) {
+      await finishCancelled(pool, runId, logicId, balance, 0, 0);
+      return;
+    }
 
     if (secTotal === 0) {
       await updateRun(pool, runId, {
@@ -615,7 +711,7 @@ async function runBacktestAsync(pool, logicId, dateFrom, dateTo, runId) {
           tfId,
           loadDateFrom,
           dateFrom,
-          dateTo,
+          loadDateTo,
           endDt,
           pointCount,
           knownSecIds,
@@ -806,7 +902,21 @@ module.exports = {
 };
 
 function shiftDate(isoDate, days) {
-  const d = new Date(isoDate);
+  const d = new Date(`${isoDate}T12:00:00`);
   d.setDate(d.getDate() + days);
-  return d.toISOString().slice(0, 10);
+  return localIsoDate(d);
+}
+
+/** YYYY-MM-DD по локальному календарю (без UTC-сдвига). */
+function localIsoDate(d = new Date()) {
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  return `${y}-${m}-${day}`;
+}
+
+/** load_prices / кэш: не запрашивать будущие дни у T-Bank. */
+function clampDateToToday(isoDate) {
+  const today = localIsoDate();
+  return isoDate > today ? today : isoDate;
 }

@@ -152,14 +152,21 @@ DECLARE
     v_max_date DATE;
     v_edge_slack INTEGER;
     v_min_bars INTEGER;
+    v_date_to DATE;
 BEGIN
     IF p_date_from IS NULL OR p_date_to IS NULL OR p_date_from > p_date_to THEN
         RETURN FALSE;
     END IF;
 
+    -- Будущие даты в date_to недостижимы для рынка — иначе вечный re-fetch T-Bank.
+    v_date_to := LEAST(p_date_to, CURRENT_DATE);
+    IF p_date_from > v_date_to THEN
+        RETURN FALSE;
+    END IF;
+
     SELECT t.sec INTO v_tf_sec FROM timeframes t WHERE t.id = p_timeframe_id;
     v_tf_sec := COALESCE(v_tf_sec, 86400);
-    v_span_days := GREATEST(1, (p_date_to - p_date_from) + 1);
+    v_span_days := GREATEST(1, (v_date_to - p_date_from) + 1);
     v_edge_slack := GREATEST(3, LEAST(14, v_span_days / 20));
 
     SELECT COUNT(*)::INTEGER, MIN(p.dt::date), MAX(p.dt::date)
@@ -167,7 +174,7 @@ BEGIN
     FROM prices p
     WHERE p.security_id = p_security_id
       AND p.timeframe_id = p_timeframe_id
-      AND p.dt::date BETWEEN p_date_from AND p_date_to;
+      AND p.dt::date BETWEEN p_date_from AND v_date_to;
 
     IF v_in_period = 0 OR v_min_date IS NULL THEN
         RETURN FALSE;
@@ -176,7 +183,7 @@ BEGIN
     IF v_min_date > p_date_from + v_edge_slack THEN
         RETURN FALSE;
     END IF;
-    IF v_max_date < p_date_to - v_edge_slack THEN
+    IF v_max_date < v_date_to - v_edge_slack THEN
         RETURN FALSE;
     END IF;
 
@@ -184,7 +191,7 @@ BEGIN
     FROM prices p
     WHERE p.security_id = p_security_id
       AND p.timeframe_id = p_timeframe_id
-      AND p.dt::date BETWEEN p_warmup_from AND p_date_to;
+      AND p.dt::date BETWEEN p_warmup_from AND v_date_to;
 
     IF v_warmup_count < GREATEST(p_min_warmup, 1) THEN
         RETURN FALSE;
@@ -204,7 +211,7 @@ END;
 $$;
 
 COMMENT ON FUNCTION backtest_prices_cached(INTEGER, INTEGER, DATE, DATE, DATE, INTEGER) IS
-'True если свечи покрывают период теста (даты начала/конца + мин. число баров) и прогрев; иначе load_prices';
+'True если свечи покрывают период теста до LEAST(date_to, сегодня); иначе load_prices. Будущий date_to не форсит HTTP.';
 
 CREATE OR REPLACE FUNCTION backtest_indicators_cached(
     p_security_id INTEGER,
@@ -414,6 +421,7 @@ CREATE OR REPLACE FUNCTION logic_backtest_insert_trade(
     p_is_shadow BOOLEAN,
     p_trade_reason TEXT,
     p_balance NUMERIC,
+    p_position_event TEXT DEFAULT NULL,
     OUT o_trade_id BIGINT,
     OUT o_new_balance NUMERIC
 )
@@ -424,20 +432,27 @@ DECLARE
     v_notional NUMERIC;
     v_trade_id BIGINT;
     v_balance NUMERIC := p_balance;
+    v_position_event TEXT;
 BEGIN
+    SELECT sd.name INTO v_side_name FROM sides sd WHERE sd.id = p_side_id;
+    v_position_event := COALESCE(
+        NULLIF(btrim(p_position_event), ''),
+        CASE WHEN v_side_name = 'Close' THEN 'close' ELSE 'open' END
+    );
+
     INSERT INTO logic_trades (
         logic_id, account_id, security_id, timeframe_id,
-        side_id, action_id, signal_kind, signal_formula,
+        side_id, action_id, position_event, signal_kind, signal_formula,
         quantity, price, bar_dt, is_simulated, is_fictitious,
         is_shadow, is_test, trade_reason, status
     )
     VALUES (
         p_logic_id, p_account_id, p_security_id, p_timeframe_id,
-        p_side_id, p_action_id, p_signal_kind, p_formula,
+        p_side_id, p_action_id, v_position_event, p_signal_kind, p_formula,
         p_quantity, p_price, p_bar_dt, TRUE, FALSE,
         p_is_shadow, TRUE, p_trade_reason, 'filled'
     )
-    ON CONFLICT (logic_id, security_id, signal_kind, bar_dt, is_test, is_shadow) DO NOTHING
+    ON CONFLICT (logic_id, security_id, position_event, signal_kind, bar_dt, is_test, is_shadow) DO NOTHING
     RETURNING id INTO v_trade_id;
 
     IF v_trade_id IS NULL THEN
@@ -700,7 +715,7 @@ BEGIN
             END IF;
 
             IF v_drawdown >= v_stop.value THEN
-                v_reason := format('stop_loss:portfolio (%.2f%%)', v_drawdown);
+                v_reason := format('stop_loss:portfolio (%s%%)', round(v_drawdown, 2));
                 FOR v_sec IN
                     SELECT DISTINCT lt.security_id
                     FROM logic_trades lt
@@ -732,7 +747,7 @@ BEGIN
                     CONTINUE;
                 END IF;
 
-                v_reason := format('stop_loss:%s (%.2f%%)', v_stop.scope_type, v_drawdown);
+                v_reason := format('stop_loss:%s (%s%%)', v_stop.scope_type, round(v_drawdown, 2));
                 SELECT *
                 INTO v_closed, p_balance
                 FROM logic_backtest_close_security(
@@ -760,7 +775,7 @@ BEGIN
                 ) / NULLIF(get_logic_param_numeric(p_logic_id, 'initial_balance', 0), 0) * 100.0;
             END IF;
             IF v_gain >= v_stop.value THEN
-                v_reason := format('take_profit:portfolio (%.2f%%)', v_gain);
+                v_reason := format('take_profit:portfolio (%s%%)', round(v_gain, 2));
                 FOR v_sec IN
                     SELECT DISTINCT lt.security_id
                     FROM logic_trades lt
@@ -784,7 +799,7 @@ BEGIN
                     p_logic_id, v_sec.security_id, p_tf_id, p_bar_dt, FALSE
                 );
                 IF v_gain >= v_stop.value THEN
-                    v_reason := format('take_profit:security (%.2f%%)', v_gain);
+                    v_reason := format('take_profit:security (%s%%)', round(v_gain, 2));
                     SELECT *
                     INTO v_closed, p_balance
                     FROM logic_backtest_close_security(
@@ -826,7 +841,7 @@ DECLARE
     v_is_shadow BOOLEAN;
     v_held_long NUMERIC;
     v_held_short NUMERIC;
-    v_is_trend BOOLEAN;
+    v_is_open_event BOOLEAN;
     v_quantity INTEGER;
     v_side_id INTEGER;
     v_action_id INTEGER;
@@ -877,11 +892,14 @@ BEGIN
                 THEN logic_long_position_qty(p_logic_id, v_sec.security_id, v_is_shadow, TRUE) ELSE 0 END;
             v_held_short := CASE WHEN v_sig.position_side = 'short'
                 THEN logic_short_position_qty(p_logic_id, v_sec.security_id, v_is_shadow, TRUE) ELSE 0 END;
-            v_is_trend := v_sig.signal_kind = 'trend';
-            v_reason := format('signal:%s/%s %s', v_sig.position_side, v_sig.signal_kind, v_sig.formula);
+            v_is_open_event := COALESCE(v_sig.position_event, 'open') = 'open';
+            v_reason := format(
+                'signal:%s/%s/%s %s',
+                v_sig.position_event, v_sig.position_side, v_sig.signal_kind, v_sig.formula
+            );
 
             IF v_sig.position_side = 'long' THEN
-                IF v_is_trend THEN
+                IF v_is_open_event THEN
                     IF v_held_long > 0 OR (NOT v_is_shadow AND v_open_positions >= v_max_positions) THEN
                         CONTINUE;
                     END IF;
@@ -902,7 +920,7 @@ BEGIN
                     v_action_id := v_action_long_id;
                 END IF;
             ELSE
-                IF v_is_trend THEN
+                IF v_is_open_event THEN
                     IF v_held_short > 0 OR (NOT v_is_shadow AND v_open_positions >= v_max_positions) THEN
                         CONTINUE;
                     END IF;
@@ -930,7 +948,7 @@ BEGIN
                 p_run_id, p_logic_id, p_account_id, v_sec.security_id, p_tf_id,
                 v_side_id, v_action_id, v_sig.signal_kind, v_sig.formula,
                 v_quantity, v_bar_row.close_price, v_bar_dt, v_is_shadow, v_reason,
-                p_balance
+                p_balance, v_sig.position_event
             );
 
             IF v_trade_id IS NOT NULL THEN
@@ -940,16 +958,17 @@ BEGIN
                     jsonb_build_object(
                         'trade_id', v_trade_id, 'bar_dt', v_bar_dt, 'quantity', v_quantity,
                         'price', v_bar_row.close_price, 'formula', v_sig.formula,
+                        'position_event', v_sig.position_event,
                         'pp', v_bar_row.close_price, 'ind_value', v_bar_row.ind_value
                     ),
                     v_sec.security_id, p_tf_id
                 );
             END IF;
 
-            IF v_trade_id IS NOT NULL AND v_is_trend AND NOT v_is_shadow
+            IF v_trade_id IS NOT NULL AND v_is_open_event AND NOT v_is_shadow
                AND v_side_id = v_side_open_id THEN
                 v_open_positions := v_open_positions + 1;
-            ELSIF v_trade_id IS NOT NULL AND NOT v_is_trend AND NOT v_is_shadow THEN
+            ELSIF v_trade_id IS NOT NULL AND NOT v_is_open_event AND NOT v_is_shadow THEN
                 v_open_positions := GREATEST(0, v_open_positions - 1);
             END IF;
         END LOOP;
