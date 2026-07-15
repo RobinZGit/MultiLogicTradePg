@@ -26,6 +26,7 @@ function replaceBetween(content, startMarker, endMarker, replacement, label) {
 }
 
 let sql02 = read('02_multilogictrade_functions_and_procedures.sql');
+const tradeTail = read('sql/logic_trade_runner.sql');
 
 const stopRunner = read('sql/logic_stop_runner.sql').trimEnd() + '\n\n';
 sql02 = replaceBetween(
@@ -34,6 +35,20 @@ sql02 = replaceBetween(
   'CREATE OR REPLACE FUNCTION logic_calc_open_quantity(',
   `-- @include sql/logic_stop_runner.sql (см. sql/logic_stop_runner.sql — дублируется ниже)\n${stopRunner}`,
   'logic_stop_runner'
+);
+
+const lotStart = tradeTail.indexOf('CREATE OR REPLACE FUNCTION logic_security_lot_size');
+const lotEnd = tradeTail.indexOf('CREATE OR REPLACE FUNCTION logic_upsert_param(');
+if (lotStart === -1 || lotEnd === -1) {
+  throw new Error('sync-02: logic_security_lot_size / logic_upsert_param not found in logic_trade_runner.sql');
+}
+const lotBlock = tradeTail.slice(lotStart, lotEnd).trimEnd() + '\n\n';
+sql02 = replaceBetween(
+  sql02,
+  'CREATE OR REPLACE FUNCTION logic_calc_open_quantity(',
+  'CREATE OR REPLACE FUNCTION logic_upsert_param(',
+  lotBlock,
+  'logic_security_lot_size + logic_calc_open_quantity'
 );
 
 const closeAll = read('sql/logic_close_all_positions.sql').trimEnd() + '\n\n';
@@ -45,14 +60,15 @@ sql02 = replaceBetween(
   'logic_close_all_positions'
 );
 
-const tradeTail = read('sql/logic_trade_runner.sql');
-// Включаем logic_refresh_market_data (skip HTTP при бэктесте) + process + run_trade_cycle
+// helpers (prices_have_closed_bar) + refresh + process + run_trade_cycle
+const haveBarStart = tradeTail.indexOf('CREATE OR REPLACE FUNCTION prices_have_closed_bar');
 const refreshStart = tradeTail.indexOf('CREATE OR REPLACE PROCEDURE logic_refresh_market_data(');
 const processStart = tradeTail.indexOf('CREATE OR REPLACE FUNCTION process_logic_trades');
-const tradeStart = refreshStart !== -1 ? refreshStart : processStart;
+const tradeStart =
+  haveBarStart !== -1 ? haveBarStart : refreshStart !== -1 ? refreshStart : processStart;
 const tradeEnd = tradeTail.indexOf('COMMENT ON FUNCTION run_trade_cycle()');
 if (tradeStart === -1 || tradeEnd === -1) {
-  throw new Error('sync-02: logic_refresh/process_logic_trades / run_trade_cycle not found in logic_trade_runner.sql');
+  throw new Error('sync-02: prices_have_closed_bar/logic_refresh/process_logic_trades / run_trade_cycle not found');
 }
 const ratingBlock = read('sql/logic_signal_and_rating.sql').trimEnd() + '\n\n';
 const tradeBlock =

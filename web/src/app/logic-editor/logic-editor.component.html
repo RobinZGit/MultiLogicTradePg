@@ -76,6 +76,18 @@
             </select>
           </label>
 
+          <label class="field">
+            <span class="label">Примечание</span>
+            <textarea
+              name="note"
+              rows="4"
+              maxlength="2000"
+              [(ngModel)]="note"
+              [disabled]="saving"
+              placeholder="Трендовая / контртрендовая / демо; источник (OsEngine, FINRESP…); кратко суть стратегии"
+            ></textarea>
+          </label>
+
           <label class="field field-check">
             <input
               type="checkbox"

@@ -3,9 +3,12 @@
 -- Вставляется в 02 перед process_logic_trades
 -- ============================================
 
+-- Renamed arg p_balance → p_notional: CREATE OR REPLACE cannot rename args
+DROP FUNCTION IF EXISTS logic_trade_calc_commission(INTEGER, NUMERIC);
+
 CREATE OR REPLACE FUNCTION logic_trade_calc_commission(
     p_logic_id INTEGER,
-    p_balance NUMERIC
+    p_notional NUMERIC
 )
 RETURNS NUMERIC
 LANGUAGE plpgsql STABLE AS $$
@@ -17,11 +20,8 @@ BEGIN
     IF v_pct IS NULL OR v_pct <= 0 THEN
         RETURN 0;
     END IF;
-    v_base := COALESCE(
-        NULLIF(p_balance, 0),
-        get_logic_param_numeric(p_logic_id, 'initial_balance', 0),
-        0
-    );
+    -- % от номинала сделки (цена × количество), не от депозита
+    v_base := COALESCE(p_notional, 0);
     IF v_base <= 0 THEN
         RETURN 0;
     END IF;
@@ -30,7 +30,7 @@ END;
 $$;
 
 COMMENT ON FUNCTION logic_trade_calc_commission(INTEGER, NUMERIC) IS
-'Комиссия фейкового счёта: % от текущего депозита (commission_pct)';
+'Комиссия фейкового счёта: commission_pct % от номинала сделки (price × quantity)';
 
 CREATE OR REPLACE FUNCTION logic_trade_open_remaining_qty(p_open_trade_id BIGINT)
 RETURNS NUMERIC
@@ -250,7 +250,10 @@ BEGIN
     v_side_name := v_trade.side_name;
 
     IF v_trade.is_simulated THEN
-        v_comm := logic_trade_calc_commission(v_trade.logic_id, p_balance);
+        v_comm := logic_trade_calc_commission(
+            v_trade.logic_id,
+            COALESCE(v_trade.price, 0) * COALESCE(v_trade.quantity, 0)
+        );
     ELSE
         v_comm := COALESCE(v_trade.commission, 0);
     END IF;

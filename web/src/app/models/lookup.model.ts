@@ -33,6 +33,7 @@ export interface LogicPayload {
   name: string;
   account_id: number;
   is_enabled: boolean;
+  note?: string | null;
 }
 
 export interface BrokerPayload {

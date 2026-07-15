@@ -12,6 +12,7 @@ import {
 import { Subscription, of } from 'rxjs';
 import { catchError, finalize } from 'rxjs/operators';
 import { PriceChartComponent } from '../price-chart/price-chart.component';
+import { EquityCurveChartComponent } from './equity-curve-chart.component';
 import { LogicBacktestRatingsComponent } from './logic-backtest-ratings.component';
 import {
   ChartEquityPoint,
@@ -24,6 +25,7 @@ import {
   PriceCandle,
 } from '../models/market.model';
 import { SecuritiesService } from '../services/securities.service';
+import { TechLogService } from '../services/tech-log.service';
 import { LogicTradeRow } from '../shared/logic-trade';
 import {
   buildEquityPoints,
@@ -58,11 +60,21 @@ function humanizeChartLoadError(err: unknown): string {
   return e?.error?.error || e?.message || 'Не удалось загрузить цены';
 }
 
+/** Дешёвый отпечаток списка сделок бумаги — early-return без build markers. */
+function paperTradesFingerprint(trades: LogicTradeRow[]): string {
+  if (trades.length === 0) return '0';
+  const first = trades[0];
+  const last = trades[trades.length - 1];
+  return `${trades.length}:${first.id}:${last.id}:${last.bar_dt}:${last.financial_result ?? ''}`;
+}
+
 interface PaperOverlays {
   markers: ChartTradeMarker[];
   stops: ChartStopMarker[];
   shaded: ChartShadedRange[];
   equity: ChartEquityPoint[];
+  equityLong: ChartEquityPoint[];
+  equityShort: ChartEquityPoint[];
 }
 
 interface PaperChartState {
@@ -77,6 +89,8 @@ interface PaperChartState {
   suppressIndicators: boolean;
   syncGen: number;
   lastRangeKey: string;
+  /** Индикаторы уже подгружали после первой порции свечей. */
+  indicatorsBootstrapped: boolean;
 }
 
 const EMPTY_SERIES: ChartIndicatorSeries[] = [];
@@ -91,13 +105,14 @@ const SERIES_COLORS = [
   '#4f46e5',
 ];
 const PRICE_SCALE_CODES = new Set(['SMA', 'EMA', 'WMA', 'PACC', 'SMAT3']);
-const MAX_CANDLES = 900;
-const MAX_LOAD_PAGES = 12;
+/** Первая порция на развороте — без длинной догрузки истории. */
+const INITIAL_CANDLES = 120;
+const MAX_CANDLES = 400;
 
 @Component({
   selector: 'app-logic-backtest-papers',
   standalone: true,
-  imports: [CommonModule, PriceChartComponent, LogicBacktestRatingsComponent],
+  imports: [CommonModule, PriceChartComponent, EquityCurveChartComponent, LogicBacktestRatingsComponent],
   templateUrl: './logic-backtest-papers.component.html',
   styleUrl: './logic-backtest-papers.component.css',
   changeDetection: ChangeDetectionStrategy.OnPush,
@@ -105,6 +120,7 @@ const MAX_LOAD_PAGES = 12;
 export class LogicBacktestPapersComponent implements OnChanges, OnDestroy {
   private readonly securitiesApi = inject(SecuritiesService);
   private readonly cdr = inject(ChangeDetectorRef);
+  private readonly techLog = inject(TechLogService);
 
   @Input() logicId: number | null = null;
   @Input() runId: number | null = null;
@@ -114,14 +130,22 @@ export class LogicBacktestPapersComponent implements OnChanges, OnDestroy {
   @Input() dateTo: string | null = null;
   @Input() timeframeId: number | null = null;
   @Input() signalIndicatorIds: number[] = [];
+  /** Начальный депозит логики — для % у PnL бумаги. */
+  @Input() initialBalance: number | null = null;
 
   expandedPapers = false;
+  /** Режим разворота: свечной график или эквити. */
+  chartMode: 'price' | 'equity' = 'price';
   expandedSecurityIds = new Set<number>();
+  /** Инкремент при готовности графика — чтобы OnPush/@if точно перерисовались. */
+  chartTick = 0;
 
   paperRows: BacktestPaperRow[] = [];
   private overlaysBySec = new Map<number, PaperOverlays>();
+  private overlayFingerprintBySec = new Map<number, string>();
   private charts = new Map<number, PaperChartState>();
   private rangeTimers = new Map<number, ReturnType<typeof setTimeout>>();
+  private chartLoadSubs = new Map<number, Subscription>();
   private subs = new Subscription();
   private uniqueIndicatorIds: number[] = [];
 
@@ -131,8 +155,10 @@ export class LogicBacktestPapersComponent implements OnChanges, OnDestroy {
         ...new Set(this.signalIndicatorIds.filter((id) => id != null).map(Number)),
       ];
     }
-    if (changes['trades'] || changes['dateFrom'] || changes['dateTo']) {
-      this.rebuildPaperCache();
+    const periodChanged =
+      !!changes['dateFrom'] || !!changes['dateTo'] || !!changes['runId'];
+    if (changes['trades'] || periodChanged) {
+      this.rebuildPaperCache({ reloadCharts: periodChanged });
     }
   }
 
@@ -146,7 +172,7 @@ export class LogicBacktestPapersComponent implements OnChanges, OnDestroy {
     event.stopPropagation();
     this.expandedPapers = !this.expandedPapers;
     if (this.expandedPapers && this.paperRows.length === 0) {
-      this.rebuildPaperCache();
+      this.rebuildPaperCache({ reloadCharts: false });
     }
   }
 
@@ -159,11 +185,76 @@ export class LogicBacktestPapersComponent implements OnChanges, OnDestroy {
     event.stopPropagation();
     if (this.expandedSecurityIds.has(securityId)) {
       this.expandedSecurityIds.delete(securityId);
+      this.cancelChartLoad(securityId);
+      const st = this.charts.get(securityId);
+      if (st) {
+        st.loading = false;
+        st.loadingOlder = false;
+      }
+      this.techLog.event(
+        this.techLog.logicThreadKey(this.logicId ?? 0, 'paper'),
+        'paper.collapse',
+        `Свернули бумагу sec=${securityId}`,
+        { logicId: this.logicId ?? undefined, securityId }
+      );
+      this.cdr.markForCheck();
       return;
     }
     this.expandedSecurityIds.add(securityId);
-    // Сразу показать контейнер, загрузку — следующим тиком.
-    this.ensureChartLoaded(securityId);
+    // Сбросить залипший loading от прошлого разворота — иначе ensureChartLoaded сразу return.
+    this.cancelChartLoad(securityId);
+    {
+      const st = this.chartState(securityId);
+      st.loading = false;
+      st.loadingOlder = false;
+      st.error = null;
+      st.status = 'Загрузка графика…';
+      if (st.candles.length === 0) {
+        st.indicatorsBootstrapped = false;
+        st.lastRangeKey = '';
+      }
+    }
+    this.techLog.event(
+      this.techLog.logicThreadKey(this.logicId ?? 0, 'paper'),
+      'paper.expand',
+      `Раскрыли бумагу sec=${securityId}`,
+      {
+        logicId: this.logicId ?? undefined,
+        securityId,
+        force: true,
+        payload: {
+          run_id: this.runId,
+          candles: this.charts.get(securityId)?.candles.length ?? 0,
+        },
+      }
+    );
+    this.chartTick++;
+    this.cdr.detectChanges();
+    setTimeout(() => this.ensureChartLoaded(securityId), 0);
+  }
+
+  /** Есть свечи — для @if (OnPush стабильнее, чем читать Map в шаблоне много раз). */
+  hasChartCandles(securityId: number): boolean {
+    return (this.charts.get(securityId)?.candles.length ?? 0) > 0;
+  }
+
+  isChartLoading(securityId: number): boolean {
+    const st = this.charts.get(securityId);
+    return !!st && st.loading && st.candles.length === 0;
+  }
+
+  private cancelChartLoad(securityId: number): void {
+    const prev = this.chartLoadSubs.get(securityId);
+    if (prev) {
+      prev.unsubscribe();
+      this.chartLoadSubs.delete(securityId);
+    }
+  }
+
+  private bumpChartView(): void {
+    this.chartTick++;
+    this.cdr.markForCheck();
+    this.cdr.detectChanges();
   }
 
   chartState(securityId: number): PaperChartState {
@@ -181,6 +272,7 @@ export class LogicBacktestPapersComponent implements OnChanges, OnDestroy {
         suppressIndicators: false,
         syncGen: 0,
         lastRangeKey: '',
+        indicatorsBootstrapped: false,
       };
       this.charts.set(securityId, st);
     }
@@ -196,10 +288,37 @@ export class LogicBacktestPapersComponent implements OnChanges, OnDestroy {
   overlays(securityId: number): PaperOverlays {
     let o = this.overlaysBySec.get(securityId);
     if (!o) {
-      o = { markers: [], stops: [], shaded: [], equity: [] };
+      o = {
+        markers: [],
+        stops: [],
+        shaded: [],
+        equity: [],
+        equityLong: [],
+        equityShort: [],
+      };
       this.overlaysBySec.set(securityId, o);
     }
     return o;
+  }
+
+  setChartMode(mode: 'price' | 'equity', event?: Event): void {
+    event?.preventDefault();
+    event?.stopPropagation();
+    this.chartMode = mode;
+    this.cdr.markForCheck();
+  }
+
+  paperPnlPct(pnl: number): number | null {
+    const initial = Number(this.initialBalance);
+    if (!Number.isFinite(initial) || initial <= 0) return null;
+    return (pnl / initial) * 100;
+  }
+
+  formatPnlPct(value: number | null | undefined): string {
+    if (value == null || !Number.isFinite(Number(value))) return '—';
+    const n = Number(value);
+    const sign = n > 0 ? '+' : n < 0 ? '−' : '';
+    return `${sign}${Math.abs(n).toFixed(2)}%`;
   }
 
   formatPnl(value: number): string {
@@ -222,7 +341,7 @@ export class LogicBacktestPapersComponent implements OnChanges, OnDestroy {
     // Timeout/сеть — тихо; не пишем на график и не режем hasMore.
     let softFail = false;
     const sub = this.securitiesApi
-      .getPrices(securityId, tfId, 120, before)
+      .getPrices(securityId, tfId, INITIAL_CANDLES, before)
       .pipe(
         catchError(() => {
           softFail = true;
@@ -249,9 +368,8 @@ export class LogicBacktestPapersComponent implements OnChanges, OnDestroy {
   }
 
   onVisibleRange(securityId: number, range: ChartVisibleRange): void {
-    // Индикаторы — фоном; маркеры/PnL/стопы рисуются из кэша сделок без HTTP.
+    // Только жест пользователя (pan); auto-emit при mount отключён.
     if (!range.userInitiated) {
-      this.loadIndicatorValues(securityId, range);
       return;
     }
     const st = this.chartState(securityId);
@@ -275,9 +393,8 @@ export class LogicBacktestPapersComponent implements OnChanges, OnDestroy {
     return any != null ? Number(any) : null;
   }
 
-  private rebuildPaperCache(): void {
+  private rebuildPaperCache(opts: { reloadCharts: boolean } = { reloadCharts: false }): void {
     this.paperRows = papersWithTrades(this.trades, this.dateFrom, this.dateTo);
-    this.overlaysBySec.clear();
     for (const paper of this.paperRows) {
       const secTrades = tradesForSecurity(
         this.trades,
@@ -285,38 +402,88 @@ export class LogicBacktestPapersComponent implements OnChanges, OnDestroy {
         this.dateFrom,
         this.dateTo
       );
-      this.overlaysBySec.set(paper.security_id, {
+      const fingerprint = paperTradesFingerprint(secTrades);
+      const prevFp = this.overlayFingerprintBySec.get(paper.security_id);
+      const prev = this.overlaysBySec.get(paper.security_id);
+      if (prev && prevFp === fingerprint && !opts.reloadCharts) {
+        continue;
+      }
+      const next = {
         markers: buildTradeMarkers(secTrades),
         stops: buildStopMarkers(secTrades),
         shaded: buildShadedDisabledRanges(secTrades),
         equity: buildEquityPoints(secTrades, this.dateFrom),
-      });
+        equityLong: buildEquityPoints(secTrades, this.dateFrom, 'long'),
+        equityShort: buildEquityPoints(secTrades, this.dateFrom, 'short'),
+      };
+      this.overlayFingerprintBySec.set(paper.security_id, fingerprint);
+      // Poll ~2с не должен подменять ссылки overlays → лишний redraw / ResizeObserver.
+      if (
+        prev &&
+        prev.markers.length === next.markers.length &&
+        prev.stops.length === next.stops.length &&
+        prev.shaded.length === next.shaded.length &&
+        prev.equity.length === next.equity.length &&
+        prev.equityLong.length === next.equityLong.length &&
+        prev.equityShort.length === next.equityShort.length &&
+        prevFp === fingerprint
+      ) {
+        continue;
+      }
+      this.overlaysBySec.set(paper.security_id, next);
     }
-    // Период/сделки сменились — перезагрузить раскрытые графики под новое окно
+    // Во время прогона poll обновляет trades каждые ~2с — график не сбрасываем,
+    // иначе UI «зависает», а тест выглядит остановленным.
     for (const securityId of this.expandedSecurityIds) {
       const st = this.charts.get(securityId);
       if (!st) continue;
-      st.candles = [];
-      st.indicatorSeries = EMPTY_SERIES;
-      st.lastRangeKey = '';
-      st.focusDt = null;
-      st.error = null;
-      st.loading = false;
-      this.ensureChartLoaded(securityId);
+      if (opts.reloadCharts) {
+        st.candles = [];
+        st.indicatorSeries = EMPTY_SERIES;
+        st.lastRangeKey = '';
+        st.focusDt = null;
+        st.error = null;
+        st.loading = false;
+        st.indicatorsBootstrapped = false;
+        this.ensureChartLoaded(securityId);
+        continue;
+      }
+      // Обновить статус-строку по новым маркерам без повторного HTTP
+      if (st.candles.length > 0 && !st.loading) {
+        const ov = this.overlays(securityId);
+        st.status = `${st.candles.length} свечей · сделок: ${ov.markers.length} · стопов: ${ov.stops.length}`;
+      }
     }
   }
 
   private ensureChartLoaded(securityId: number): void {
     const st = this.chartState(securityId);
     const tfId = this.resolveTimeframeId(securityId);
+    const t0 = performance.now();
+    this.techLog.event(
+      this.techLog.logicThreadKey(this.logicId ?? 0, 'paper'),
+      'chart.load.start',
+      `Старт загрузки графика sec=${securityId} tf=${tfId ?? 'null'}`,
+      {
+        logicId: this.logicId ?? undefined,
+        securityId,
+        force: true,
+        payload: { tfId, run_id: this.runId },
+      }
+    );
     if (!tfId) {
       st.error = 'Не задан таймфрейм логики (и нет timeframe_id в сделках)';
       st.status = null;
       st.loading = false;
-      this.cdr.detectChanges();
+      this.bumpChartView();
       return;
     }
-    if (st.candles.length > 0 || st.loading) return;
+    // Уже показали свечи — не перезапрашиваем.
+    if (st.candles.length > 0) {
+      st.loading = false;
+      this.bumpChartView();
+      return;
+    }
 
     const secTrades = tradesForSecurity(
       this.trades,
@@ -325,62 +492,98 @@ export class LogicBacktestPapersComponent implements OnChanges, OnDestroy {
       this.dateTo
     );
     const win = tradeDtWindow(secTrades);
-    // Грузим с конца периода теста / последней сделки, потом догружаем к началу.
-    const coverTo = this.periodCoverTo(win?.to ?? null);
+    // Якорь before — конец сделок, не date_to теста (иначе пустой ответ / лишний retry).
+    const coverTo = win?.to ?? this.periodCoverTo(null);
     const before = coverTo ? coverTo.replace(' ', 'T') : undefined;
-    // Фокус на ПЕРВОЙ сделке — иначе окно уезжает в хвост и маркеры «в конце»
     st.focusDt = win?.from ?? this.dateFrom ?? null;
     const coverFrom = this.periodCoverFrom(win?.from ?? null);
 
+    this.cancelChartLoad(securityId);
     st.loading = true;
     st.error = null;
     st.status = win
       ? `Загрузка свечей ${win.from.slice(0, 10)}…${win.to.slice(0, 10)}`
-      : `Загрузка свечей периода теста (tf=${tfId})…`;
-    this.cdr.detectChanges();
+      : `Загрузка свечей (tf=${tfId})…`;
+    this.bumpChartView();
 
     const sub = this.securitiesApi
-      .getPrices(securityId, tfId, 250, before)
+      .getPrices(securityId, tfId, INITIAL_CANDLES, before)
       .pipe(
         catchError((err) => {
           st.error = humanizeChartLoadError(err);
+          st.loading = false;
+          this.techLog.event(
+            this.techLog.logicThreadKey(this.logicId ?? 0, 'paper'),
+            'chart.load.error',
+            st.error || 'error',
+            {
+              logicId: this.logicId ?? undefined,
+              securityId,
+              force: true,
+              payload: { ms: Math.round(performance.now() - t0) },
+            }
+          );
+          this.bumpChartView();
           return of([] as PriceCandle[]);
         })
       )
       .subscribe({
         next: (rows) => {
+          this.techLog.event(
+            this.techLog.logicThreadKey(this.logicId ?? 0, 'paper'),
+            'chart.load.prices',
+            `Получено ${rows.length} свечей`,
+            {
+              logicId: this.logicId ?? undefined,
+              securityId,
+              force: true,
+              payload: {
+                n: rows.length,
+                ms: Math.round(performance.now() - t0),
+                before: before ?? null,
+              },
+            }
+          );
           if (rows.length === 0 && before) {
             st.status = 'Повторная загрузка свечей без фильтра даты…';
-            const retry = this.securitiesApi.getPrices(securityId, tfId, 250).subscribe({
-              next: (retryRows) =>
-                this.finishCandleLoad(securityId, st, retryRows, coverFrom, coverTo, win),
-              error: (err) => {
-                st.loading = false;
-                st.error = humanizeChartLoadError(err);
-                st.status = null;
-                this.cdr.detectChanges();
-              },
-            });
+            this.bumpChartView();
+            const retry = this.securitiesApi
+              .getPrices(securityId, tfId, INITIAL_CANDLES)
+              .subscribe({
+                next: (retryRows) =>
+                  this.finishCandleLoad(
+                    securityId,
+                    st,
+                    retryRows,
+                    coverFrom,
+                    coverTo,
+                    win,
+                    t0
+                  ),
+                error: (err) => {
+                  st.loading = false;
+                  st.error = humanizeChartLoadError(err);
+                  st.status = null;
+                  this.bumpChartView();
+                },
+              });
+            this.chartLoadSubs.set(securityId, retry);
             this.subs.add(retry);
             return;
           }
-          this.finishCandleLoad(securityId, st, rows, coverFrom, coverTo, win);
+          this.finishCandleLoad(securityId, st, rows, coverFrom, coverTo, win, t0);
         },
         error: () => {
           st.loading = false;
-          this.cdr.detectChanges();
+          this.bumpChartView();
         },
       });
+    this.chartLoadSubs.set(securityId, sub);
     this.subs.add(sub);
   }
 
-  /** Начало покрытия свечей: date_from теста (якорь PnL=0), иначе первая сделка. */
+  /** Начало покрытия свечей: первая сделка (не весь date_from теста — иначе десятки HTTP). */
   private periodCoverFrom(firstTradeDt: string | null): string | null {
-    if (this.dateFrom) {
-      const d = String(this.dateFrom).trim();
-      if (/^\d{4}-\d{2}-\d{2}$/.test(d)) return `${d} 00:00:00`;
-      return d;
-    }
     return firstTradeDt;
   }
 
@@ -394,81 +597,44 @@ export class LogicBacktestPapersComponent implements OnChanges, OnDestroy {
     return lastTradeDt;
   }
 
-  /** Догрузить историю до начала теста / первой сделки (PnL и маркеры в окне). */
+  /** Показать первую порцию свечей; длинную догрузку не запускаем (она подвешивала UI). */
   private finishCandleLoad(
     securityId: number,
     st: PaperChartState,
     rows: PriceCandle[],
     coverFrom: string | null,
     coverTo: string | null,
-    win: { from: string; to: string } | null
+    win: { from: string; to: string } | null,
+    t0: number
   ): void {
-    st.candles = rows;
-    st.hasMore = rows.length >= 200;
     if (rows.length === 0) {
       st.loading = false;
       st.error = st.error || 'В БД нет свечей для этой бумаги / таймфрейма';
       st.status = null;
-      this.cdr.detectChanges();
+      this.bumpChartView();
       return;
     }
 
-    const needFrom = coverFrom ? dtKey(coverFrom) : null;
-    const firstKey = dtKey(st.candles[0].dt);
-    if (!needFrom || firstKey <= needFrom || !st.hasMore) {
-      this.applyCandles(securityId, st, st.candles, coverFrom, coverTo, win);
-      return;
-    }
-
-    st.status = `Догрузка истории до ${needFrom.slice(0, 16)}…`;
-    this.loadOlderUntilCovered(securityId, st, needFrom, coverFrom, coverTo, win, 1);
-  }
-
-  private loadOlderUntilCovered(
-    securityId: number,
-    st: PaperChartState,
-    needFrom: string,
-    coverFrom: string | null,
-    coverTo: string | null,
-    win: { from: string; to: string } | null,
-    page: number
-  ): void {
-    const tfId = this.resolveTimeframeId(securityId);
-    if (!tfId || page > MAX_LOAD_PAGES || st.candles.length === 0) {
-      this.applyCandles(securityId, st, st.candles, coverFrom, coverTo, win);
-      return;
-    }
-    const before = st.candles[0].dt;
-    const sub = this.securitiesApi.getPrices(securityId, tfId, 250, before).subscribe({
-      next: (older) => {
-        if (older.length === 0) {
-          st.hasMore = false;
-          this.applyCandles(securityId, st, st.candles, coverFrom, coverTo, win);
-          return;
-        }
-        // Пока догружаем — не режем начало: иначе теряем сделки и PnL
-        st.candles = [...older, ...st.candles];
-        st.hasMore = older.length >= 200;
-        const firstKey = dtKey(st.candles[0].dt);
-        if (firstKey <= needFrom || !st.hasMore || page >= MAX_LOAD_PAGES) {
-          this.applyCandles(securityId, st, st.candles, coverFrom, coverTo, win);
-          return;
-        }
-        st.status = `Догрузка истории (${st.candles.length} свечей)…`;
-        this.cdr.detectChanges();
-        this.loadOlderUntilCovered(
-          securityId,
-          st,
-          needFrom,
-          coverFrom,
-          coverTo,
-          win,
-          page + 1
-        );
-      },
-      error: () => this.applyCandles(securityId, st, st.candles, coverFrom, coverTo, win),
+    this.applyCandles(securityId, st, rows, coverFrom, coverTo, win, {
+      loadIndicators: false,
     });
-    this.subs.add(sub);
+    this.techLog.event(
+      this.techLog.logicThreadKey(this.logicId ?? 0, 'paper'),
+      'chart.load.done',
+      `График готов: ${st.candles.length} свечей`,
+      {
+        logicId: this.logicId ?? undefined,
+        securityId,
+        force: true,
+        payload: {
+          candles: st.candles.length,
+          ms: Math.round(performance.now() - t0),
+          chartTick: this.chartTick,
+        },
+      }
+    );
+    // Индикаторы не грузим автоматически при развороте — только по жесту pan (userInitiated).
+    // Авто-GET + redraw + ResizeObserver подвешивали UI (нельзя свернуть бумагу).
   }
 
   private applyCandles(
@@ -477,7 +643,8 @@ export class LogicBacktestPapersComponent implements OnChanges, OnDestroy {
     rows: PriceCandle[],
     coverFrom: string | null,
     coverTo: string | null,
-    win: { from: string; to: string } | null
+    win: { from: string; to: string } | null,
+    opts: { loadIndicators: boolean } = { loadIndicators: false }
   ): void {
     const clipped = clipCandlesForBacktest(rows, {
       coverFrom,
@@ -487,8 +654,9 @@ export class LogicBacktestPapersComponent implements OnChanges, OnDestroy {
       maxCandles: MAX_CANDLES,
     });
     st.candles = clipped;
-    st.hasMore = rows.length >= 200 && clipped.length >= MAX_CANDLES;
+    st.hasMore = rows.length >= INITIAL_CANDLES - 5;
     st.loading = false;
+    st.loadingOlder = false;
     const ov = this.overlays(securityId);
     st.error = clipped.length === 0 ? 'В БД нет свечей для этой бумаги / таймфрейма' : null;
     st.status =
@@ -498,11 +666,15 @@ export class LogicBacktestPapersComponent implements OnChanges, OnDestroy {
     if (!st.focusDt && ov.markers.length > 0) {
       st.focusDt = ov.markers[0].dt;
     }
-    this.cdr.detectChanges();
-    if (clipped.length > 0) {
-      // Чуть шире видимого: чтобы индикаторы успели попасть в окно
-      const n = Math.min(clipped.length, 120);
-      const startIdx = Math.max(0, clipped.findIndex((c) => dtKey(c.dt) >= dtKey(st.focusDt || clipped[0].dt)) - 20);
+    this.charts.set(securityId, st);
+    this.bumpChartView();
+    if (opts.loadIndicators && clipped.length > 0 && !st.indicatorsBootstrapped) {
+      st.indicatorsBootstrapped = true;
+      const n = Math.min(clipped.length, 80);
+      const startIdx = Math.max(
+        0,
+        clipped.findIndex((c) => dtKey(c.dt) >= dtKey(st.focusDt || clipped[0].dt)) - 10
+      );
       const endIdx = Math.min(clipped.length - 1, startIdx + n - 1);
       this.loadIndicatorValues(securityId, {
         startDt: clipped[Math.max(0, startIdx)].dt,
@@ -534,13 +706,16 @@ export class LogicBacktestPapersComponent implements OnChanges, OnDestroy {
     }
 
     const syncGen = ++st.syncGen;
+    const approxLines = Math.max(2, this.uniqueIndicatorIds.length * 3);
+    const rowBudget = Math.min(4000, Math.max(400, (range.count || 120) * approxLines));
     const sub = this.securitiesApi
       .getIndicatorValues(
         securityId,
         tfId,
         this.uniqueIndicatorIds,
         range.startDt,
-        range.endDt
+        range.endDt,
+        rowBudget
       )
       .pipe(
         // Timeout при перемотке — тихо, без баннера на графике
@@ -554,7 +729,7 @@ export class LogicBacktestPapersComponent implements OnChanges, OnDestroy {
             st.lastRangeKey = rangeKey;
           }
           st.suppressIndicators = false;
-          this.cdr.detectChanges();
+          this.bumpChartView();
         },
       });
     this.subs.add(sub);

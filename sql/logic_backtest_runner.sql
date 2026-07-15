@@ -49,7 +49,7 @@ END;
 $$;
 
 COMMENT ON FUNCTION logic_backtest_log(BIGINT, INTEGER, TEXT, TEXT, JSONB, INTEGER, INTEGER) IS
-'Журнал backtest в app_tech_log (всегда, без APP_TECH_LOGGING)';
+'Журнал backtest в app_tech_log (milestone: start/progress/done/error; не на каждую сделку)';
 
 CREATE OR REPLACE FUNCTION logic_backtest_diagnose(
     p_run_id BIGINT,
@@ -852,6 +852,9 @@ DECLARE
     v_formulas TEXT;
     v_signal_kind TEXT;
     v_pp NUMERIC;
+    v_lot_size INTEGER;
+    v_inversion BOOLEAN;
+    v_eff_side TEXT;
 BEGIN
     SELECT id INTO v_side_open_id FROM sides WHERE name = 'Open' LIMIT 1;
     SELECT id INTO v_side_close_id FROM sides WHERE name = 'Close' LIMIT 1;
@@ -860,6 +863,7 @@ BEGIN
 
     v_position_size_pct := get_logic_param_numeric(p_logic_id, 'position_size_pct', 10);
     v_max_positions := GREATEST(1, get_logic_param_numeric(p_logic_id, 'max_open_positions', 5)::INTEGER);
+    v_inversion := get_logic_param_boolean(p_logic_id, 'inversion', FALSE);
     v_open_positions := logic_backtest_count_open_positions(p_logic_id, FALSE);
 
     FOR v_sec IN
@@ -867,6 +871,7 @@ BEGIN
         WHERE ls.logic_id = p_logic_id AND ls.is_active = TRUE
     LOOP
         v_is_shadow := logic_backtest_sec_shadow(p_run_id, v_sec.security_id);
+        v_lot_size := logic_security_lot_size(v_sec.security_id);
 
         FOR v_grp IN
             SELECT lis.position_event, lis.position_side
@@ -892,7 +897,7 @@ BEGIN
             LOOP
                 SELECT * INTO v_eval
                 FROM logic_signal_evaluate_at(
-                    v_sig.id, v_sec.security_id, p_tf_id, p_bar_dt
+                    v_sig.id, v_sec.security_id, p_tf_id, p_bar_dt, v_inversion
                 );
 
                 IF v_eval.close_price IS NULL THEN
@@ -919,25 +924,33 @@ BEGIN
                 CONTINUE;
             END IF;
 
-            v_held_long := CASE WHEN v_grp.position_side = 'long'
+            v_eff_side := lower(COALESCE(v_grp.position_side, 'long'));
+            IF v_inversion THEN
+                v_eff_side := CASE WHEN v_eff_side = 'long' THEN 'short' ELSE 'long' END;
+            END IF;
+
+            v_held_long := CASE WHEN v_eff_side = 'long'
                 THEN logic_long_position_qty(p_logic_id, v_sec.security_id, v_is_shadow, TRUE) ELSE 0 END;
-            v_held_short := CASE WHEN v_grp.position_side = 'short'
+            v_held_short := CASE WHEN v_eff_side = 'short'
                 THEN logic_short_position_qty(p_logic_id, v_sec.security_id, v_is_shadow, TRUE) ELSE 0 END;
             v_is_open_event := COALESCE(v_grp.position_event, 'open') = 'open';
             v_reason := format(
-                'signal:AND:%s/%s %s',
-                v_grp.position_event, v_grp.position_side, v_formulas
+                'signal:AND%s:%s/%s→%s %s',
+                CASE WHEN v_inversion THEN ':inv' ELSE '' END,
+                v_grp.position_event, v_grp.position_side, v_eff_side, v_formulas
             );
 
-            IF v_grp.position_side = 'long' THEN
+            IF v_eff_side = 'long' THEN
                 IF v_is_open_event THEN
                     IF v_held_long > 0 OR (NOT v_is_shadow AND v_open_positions >= v_max_positions) THEN
                         CONTINUE;
                     END IF;
-                    v_quantity := logic_calc_open_quantity(p_balance, v_position_size_pct, v_pp);
-                    IF v_quantity < 1 THEN
-                        IF p_balance >= v_pp THEN
-                            v_quantity := 1;
+                    v_quantity := logic_calc_open_quantity(
+                        p_balance, v_position_size_pct, v_pp, v_lot_size
+                    );
+                    IF v_quantity < v_lot_size THEN
+                        IF p_balance >= v_pp * v_lot_size THEN
+                            v_quantity := v_lot_size;
                         ELSE
                             CONTINUE;
                         END IF;
@@ -946,7 +959,7 @@ BEGIN
                     v_action_id := v_action_long_id;
                 ELSE
                     IF v_held_long <= 0 THEN CONTINUE; END IF;
-                    v_quantity := GREATEST(1, v_held_long::INTEGER);
+                    v_quantity := GREATEST(v_lot_size, v_held_long::INTEGER);
                     v_side_id := v_side_close_id;
                     v_action_id := v_action_long_id;
                 END IF;
@@ -955,10 +968,12 @@ BEGIN
                     IF v_held_short > 0 OR (NOT v_is_shadow AND v_open_positions >= v_max_positions) THEN
                         CONTINUE;
                     END IF;
-                    v_quantity := logic_calc_open_quantity(p_balance, v_position_size_pct, v_pp);
-                    IF v_quantity < 1 THEN
-                        IF p_balance >= v_pp THEN
-                            v_quantity := 1;
+                    v_quantity := logic_calc_open_quantity(
+                        p_balance, v_position_size_pct, v_pp, v_lot_size
+                    );
+                    IF v_quantity < v_lot_size THEN
+                        IF p_balance >= v_pp * v_lot_size THEN
+                            v_quantity := v_lot_size;
                         ELSE
                             CONTINUE;
                         END IF;
@@ -967,7 +982,7 @@ BEGIN
                     v_action_id := v_action_short_id;
                 ELSE
                     IF v_held_short <= 0 THEN CONTINUE; END IF;
-                    v_quantity := GREATEST(1, v_held_short::INTEGER);
+                    v_quantity := GREATEST(v_lot_size, v_held_short::INTEGER);
                     v_side_id := v_side_close_id;
                     v_action_id := v_action_short_id;
                 END IF;
@@ -981,20 +996,6 @@ BEGIN
                 v_quantity, v_pp, v_bar_dt, v_is_shadow, v_reason,
                 p_balance, v_grp.position_event
             );
-
-            IF v_trade_id IS NOT NULL THEN
-                PERFORM logic_backtest_log(
-                    p_run_id, p_logic_id, 'backtest.trade_created',
-                    format('Тест-сделка #%s qty=%s price=%s', v_trade_id, v_quantity, v_pp),
-                    jsonb_build_object(
-                        'trade_id', v_trade_id, 'bar_dt', v_bar_dt, 'quantity', v_quantity,
-                        'price', v_pp, 'formula', v_formulas,
-                        'position_event', v_grp.position_event,
-                        'position_side', v_grp.position_side
-                    ),
-                    v_sec.security_id, p_tf_id
-                );
-            END IF;
 
             IF v_trade_id IS NOT NULL AND v_is_open_event AND NOT v_is_shadow
                AND v_side_id = v_side_open_id THEN

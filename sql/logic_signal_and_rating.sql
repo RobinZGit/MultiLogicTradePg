@@ -19,6 +19,67 @@ DROP FUNCTION IF EXISTS logic_signal_rate_bar(INTEGER, INTEGER, TIMESTAMP, BOOLE
 DROP FUNCTION IF EXISTS logic_signal_move_success(TEXT, TEXT, NUMERIC, NUMERIC, NUMERIC);
 DROP FUNCTION IF EXISTS logic_signal_move_success(TEXT, TEXT, NUMERIC, NUMERIC, INTEGER, NUMERIC);
 DROP FUNCTION IF EXISTS logic_signal_annualized_move_pct(NUMERIC, NUMERIC, INTEGER);
+DROP FUNCTION IF EXISTS logic_signal_evaluate_at(INTEGER, INTEGER, INTEGER, TIMESTAMP);
+DROP FUNCTION IF EXISTS logic_signal_evaluate_at(INTEGER, INTEGER, INTEGER, TIMESTAMP, BOOLEAN);
+
+CREATE OR REPLACE FUNCTION get_logic_param_boolean(
+    p_logic_id INTEGER,
+    p_param_key TEXT,
+    p_default BOOLEAN DEFAULT FALSE
+)
+RETURNS BOOLEAN
+LANGUAGE plpgsql STABLE AS $$
+DECLARE
+    v_raw TEXT;
+BEGIN
+    v_raw := lower(btrim(COALESCE(get_logic_param_text(p_logic_id, p_param_key), '')));
+    IF v_raw = '' THEN
+        RETURN COALESCE(p_default, FALSE);
+    END IF;
+    IF v_raw IN ('true', '1', 'yes', 't', 'on', 'y') THEN
+        RETURN TRUE;
+    END IF;
+    IF v_raw IN ('false', '0', 'no', 'f', 'off', 'n') THEN
+        RETURN FALSE;
+    END IF;
+    RETURN COALESCE(p_default, FALSE);
+END;
+$$;
+
+COMMENT ON FUNCTION get_logic_param_boolean(INTEGER, TEXT, BOOLEAN) IS
+'Булев параметр logic_params (true/1/yes …); пусто → p_default';
+
+-- Инверсия сравнения: >=↔<=, >↔< (как ReverseSignals в FINRESP / OsEngine)
+CREATE OR REPLACE FUNCTION logic_invert_comparison_condition(p_condition TEXT)
+RETURNS TEXT
+LANGUAGE plpgsql IMMUTABLE AS $$
+DECLARE
+    v TEXT;
+BEGIN
+    v := btrim(COALESCE(p_condition, ''));
+    IF v = '' THEN
+        RETURN v;
+    END IF;
+    -- Сначала двухсимвольные операторы через маркеры
+    v := replace(v, '>=', E'\x01');
+    v := replace(v, '<=', E'\x02');
+    v := replace(v, '<>', E'\x03');
+    v := replace(v, '!=', E'\x04');
+    -- Односимвольные > и <
+    v := replace(v, '>', E'\x05');
+    v := replace(v, '<', '>');
+    v := replace(v, E'\x05', '<');
+    -- Восстановить двухсимвольные с инверсией
+    v := replace(v, E'\x01', '<=');
+    v := replace(v, E'\x02', '>=');
+    v := replace(v, E'\x03', '<>');
+    v := replace(v, E'\x04', '!=');
+    RETURN v;
+END;
+$$;
+
+COMMENT ON FUNCTION logic_invert_comparison_condition(TEXT) IS
+'Инверсия операторов сравнения в условии сигнала (≥↔≤, >↔<)';
 
 CREATE OR REPLACE FUNCTION logic_signal_annualized_move_pct(
     p_move_pct NUMERIC,
@@ -97,7 +158,8 @@ CREATE OR REPLACE FUNCTION logic_signal_evaluate_at(
     p_signal_id INTEGER,
     p_security_id INTEGER,
     p_tf_id INTEGER,
-    p_bar_dt TIMESTAMP
+    p_bar_dt TIMESTAMP,
+    p_invert BOOLEAN DEFAULT FALSE
 )
 RETURNS TABLE (
     ok BOOLEAN,
@@ -116,6 +178,7 @@ DECLARE
     v_parsed RECORD;
     v_series TEXT;
     v_bar RECORD;
+    v_condition TEXT;
 BEGIN
     ok := FALSE;
     SELECT lis.id, lis.formula, lis.position_event, lis.position_side, lis.signal_kind, lis.indicator_id
@@ -149,7 +212,11 @@ BEGIN
     close_price := v_bar.close_price;
     ind_value := v_bar.ind_value;
     bar_dt := v_bar.bar_dt;
-    ok := evaluate_signal_condition(v_parsed.condition, v_bar.close_price, v_bar.ind_value);
+    v_condition := v_parsed.condition;
+    IF COALESCE(p_invert, FALSE) THEN
+        v_condition := logic_invert_comparison_condition(v_condition);
+    END IF;
+    ok := evaluate_signal_condition(v_condition, v_bar.close_price, v_bar.ind_value);
     RETURN NEXT;
 END;
 $$;
@@ -410,3 +477,109 @@ $$;
 
 COMMENT ON FUNCTION logic_signal_rating_reset_live(INTEGER) IS
 'Сброс боевого рейтинга и истории перед предрасчётом при включении логики';
+
+-- Подготовка данных окна предрасчёта: цены + индикаторы сигналов логики
+CREATE OR REPLACE PROCEDURE logic_rating_precalc_ensure_data(
+    p_logic_id INTEGER,
+    p_timeframe_id INTEGER,
+    p_lookback_days INTEGER
+)
+LANGUAGE plpgsql AS $$
+DECLARE
+    v_sec RECORD;
+    v_sig RECORD;
+    v_tf_sec INTEGER;
+    v_date_from DATE;
+    v_date_to DATE;
+    v_point_count INTEGER;
+    v_end_dt TIMESTAMP;
+    v_days INTEGER;
+    v_err TEXT;
+BEGIN
+    v_days := GREATEST(1, LEAST(90, COALESCE(p_lookback_days, 7)));
+    SELECT t.sec INTO v_tf_sec FROM timeframes t WHERE t.id = p_timeframe_id;
+    IF v_tf_sec IS NULL OR v_tf_sec <= 0 THEN
+        RAISE EXCEPTION 'logic_rating_precalc_ensure_data: неизвестный timeframe_id %', p_timeframe_id;
+    END IF;
+
+    v_date_to := CURRENT_DATE;
+    -- M1/M2: у T-Bank обычно только текущий день
+    IF COALESCE(v_tf_sec, 0) <= 120 THEN
+        v_date_from := v_date_to;
+    ELSE
+        v_date_from := v_date_to - v_days;
+    END IF;
+
+    v_point_count := GREATEST(
+        logic_trade_sync_point_count(v_tf_sec),
+        (CEIL(v_days * 86400.0 / v_tf_sec)::INTEGER) + 80
+    );
+    v_end_dt := logic_last_closed_bar_dt(v_tf_sec, LOCALTIMESTAMP);
+
+    FOR v_sec IN
+        SELECT ls.security_id
+        FROM logic_securities ls
+        WHERE ls.logic_id = p_logic_id AND ls.is_active = TRUE
+        ORDER BY ls.display_order, ls.security_id
+    LOOP
+        BEGIN
+            CALL load_prices(v_sec.security_id, p_timeframe_id, v_date_from, v_date_to);
+        EXCEPTION
+            WHEN undefined_function THEN
+                NULL;
+            WHEN OTHERS THEN
+                v_err := SQLERRM;
+                PERFORM logic_trade_log(
+                    p_logic_id,
+                    'rating.precalc.prices.error',
+                    format('Предрасчёт: ошибка цен sec=%s: %s', v_sec.security_id, v_err),
+                    jsonb_build_object(
+                        'security_id', v_sec.security_id,
+                        'date_from', v_date_from,
+                        'date_to', v_date_to,
+                        'error', v_err
+                    ),
+                    v_sec.security_id,
+                    p_timeframe_id
+                );
+        END;
+
+        FOR v_sig IN
+            SELECT DISTINCT lis.indicator_id
+            FROM logic_indicator_signals lis
+            WHERE lis.logic_id = p_logic_id AND lis.is_active = TRUE
+        LOOP
+            BEGIN
+                CALL ensure_security_indicator_series(v_sec.security_id, v_sig.indicator_id);
+                CALL logic_apply_indicator_params_from_signals(p_logic_id, v_sec.security_id);
+                CALL sync_security_indicator_series_for_indicator(
+                    v_sec.security_id,
+                    v_sig.indicator_id,
+                    p_timeframe_id,
+                    v_end_dt,
+                    v_point_count,
+                    FALSE
+                );
+            EXCEPTION WHEN OTHERS THEN
+                v_err := SQLERRM;
+                PERFORM logic_trade_log(
+                    p_logic_id,
+                    'rating.precalc.indicator.error',
+                    format('Предрасчёт: ошибка индикатора sec=%s ind=%s: %s',
+                           v_sec.security_id, v_sig.indicator_id, v_err),
+                    jsonb_build_object(
+                        'security_id', v_sec.security_id,
+                        'indicator_id', v_sig.indicator_id,
+                        'error', v_err
+                    ),
+                    v_sec.security_id,
+                    p_timeframe_id
+                );
+            END;
+        END LOOP;
+    END LOOP;
+END;
+$$;
+
+COMMENT ON PROCEDURE logic_rating_precalc_ensure_data(INTEGER, INTEGER, INTEGER) IS
+'Перед боевым предрасчётом рейтинга: load_prices на lookback + sync индикаторов сигналов логики';

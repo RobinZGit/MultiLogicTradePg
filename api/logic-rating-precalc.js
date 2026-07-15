@@ -102,6 +102,25 @@ async function queryWithRetry(pool, sql, params, opts = {}) {
   throw lastErr;
 }
 
+async function loadBarsForPrecalc(pool, logicId, tfId, lookback) {
+  const { rows: barRows } = await pool.query(
+    `
+    SELECT DISTINCT p.dt AS bar_dt
+    FROM prices p
+    JOIN logic_securities ls
+      ON ls.security_id = p.security_id
+     AND ls.logic_id = $1
+     AND ls.is_active = TRUE
+    WHERE p.timeframe_id = $2
+      AND p.dt >= (CURRENT_TIMESTAMP - ($3::text || ' days')::interval)
+      AND p.dt < CURRENT_TIMESTAMP
+    ORDER BY p.dt
+    `,
+    [logicId, tfId, lookback]
+  );
+  return barRows.map((r) => r.bar_dt);
+}
+
 async function runRatingPrecalc(pool, logicId) {
   patchJob(logicId, {
     status: 'running',
@@ -124,11 +143,6 @@ async function runRatingPrecalc(pool, logicId) {
     return;
   }
 
-  patchJob(logicId, {
-    phase_message: 'Сброс боевого рейтинга',
-    progress_pct: 2,
-  });
-
   const lookback = await readLookbackDays(pool, logicId);
 
   const { rows: tfRows } = await pool.query(
@@ -150,29 +164,36 @@ async function runRatingPrecalc(pool, logicId) {
 
   patchJob(logicId, {
     lookback_days: lookback,
-    phase_message: `Предрасчёт за ${lookback} дн.`,
+    phase_message: `Загрузка цен/индикаторов за ${lookback} дн.`,
     progress_pct: 3,
   });
 
-  await queryWithRetry(pool, `SELECT logic_signal_rating_reset_live($1)`, [logicId]);
-
-  const { rows: barRows } = await pool.query(
-    `
-    SELECT DISTINCT p.dt AS bar_dt
-    FROM prices p
-    JOIN logic_securities ls
-      ON ls.security_id = p.security_id
-     AND ls.logic_id = $1
-     AND ls.is_active = TRUE
-    WHERE p.timeframe_id = $2
-      AND p.dt >= (CURRENT_TIMESTAMP - ($3::text || ' days')::interval)
-      AND p.dt < CURRENT_TIMESTAMP
-    ORDER BY p.dt
-    `,
-    [logicId, tfId, lookback]
+  // Сначала данные, потом сброс: иначе после 00 enable обнуляет rating при пустых ценах
+  await queryWithRetry(
+    pool,
+    `CALL logic_rating_precalc_ensure_data($1, $2, $3)`,
+    [logicId, tfId, lookback],
+    { attempts: 3 }
   );
 
-  const bars = barRows.map((r) => r.bar_dt);
+  let bars = await loadBarsForPrecalc(pool, logicId, tfId, lookback);
+
+  // Повтор после гонки с другим loader'ом / медленным HTTP
+  if (bars.length === 0) {
+    patchJob(logicId, {
+      phase_message: 'Нет свечей — повторная загрузка…',
+      progress_pct: 4,
+    });
+    await sleep(2500);
+    await queryWithRetry(
+      pool,
+      `CALL logic_rating_precalc_ensure_data($1, $2, $3)`,
+      [logicId, tfId, lookback],
+      { attempts: 3 }
+    );
+    bars = await loadBarsForPrecalc(pool, logicId, tfId, lookback);
+  }
+
   const total = bars.length;
   patchJob(logicId, {
     bars_total: total,
@@ -180,20 +201,22 @@ async function runRatingPrecalc(pool, logicId) {
     progress_pct: total === 0 ? 100 : 5,
     phase_message:
       total === 0
-        ? 'Нет свечей в окне предрасчёта'
+        ? 'Нет свечей в окне предрасчёта (после загрузки)'
         : `Свечи: 0 / ${total}`,
   });
 
   if (total === 0) {
+    // Не вызываем reset — иначе UI остаётся с нулями после wipe
     patchJob(logicId, {
-      status: 'done',
+      status: 'failed',
+      error: 'no_bars_after_load',
       finished_at: new Date().toISOString(),
     });
     try {
       await writeTechLogEvent(pool, {
         threadKey: `logic:${logicId}:rating-precalc`,
         operation: 'logic.rating_precalc.empty',
-        message: 'Предрасчёт боевых рейтингов: нет свечей',
+        message: 'Предрасчёт боевых рейтингов: нет свечей после загрузки',
         source: 'api',
         logicId,
         payload: { lookback_days: lookback },
@@ -203,6 +226,12 @@ async function runRatingPrecalc(pool, logicId) {
     }
     return;
   }
+
+  patchJob(logicId, {
+    phase_message: 'Сброс боевого рейтинга',
+    progress_pct: 6,
+  });
+  await queryWithRetry(pool, `SELECT logic_signal_rating_reset_live($1)`, [logicId]);
 
   for (let i = 0; i < bars.length; i += 1) {
     // Пауза, если на эту логику снова запустили тест
@@ -214,7 +243,7 @@ async function runRatingPrecalc(pool, logicId) {
       if (!ok) {
         patchJob(logicId, {
           status: 'failed',
-          progress_pct: Math.min(99, 5 + Math.round(((i + 1) / total) * 94)),
+          progress_pct: Math.min(99, 6 + Math.round(((i + 1) / total) * 93)),
           phase_message: 'Прервано: длинный бэктест',
           bars_done: i,
           error: 'backtest resumed during precalc',
@@ -232,7 +261,7 @@ async function runRatingPrecalc(pool, logicId) {
 
     if (i === bars.length - 1 || i % 15 === 0) {
       const done = i + 1;
-      const pct = Math.min(99, 5 + Math.round((done / total) * 94));
+      const pct = Math.min(99, 6 + Math.round((done / total) * 93));
       patchJob(logicId, {
         bars_done: done,
         progress_pct: pct,

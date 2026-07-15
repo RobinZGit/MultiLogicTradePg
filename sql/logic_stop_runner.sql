@@ -598,6 +598,9 @@ DECLARE
     v_track_before NUMERIC;
     v_track_after NUMERIC;
     v_closed INTEGER;
+    v_skip_http BOOLEAN := FALSE;
+    v_date_from DATE;
+    v_date_to DATE;
 BEGIN
     SELECT l.id, l.is_enabled
     INTO v_logic
@@ -654,26 +657,52 @@ BEGIN
     ORDER BY ls.display_order, ls.id
     LIMIT 1;
 
+    -- Не грузим все 34 бумаги через HTTP на каждом баре: это блокирует пул и UI
+    -- (раскрытие бумаги / график). Только позиции / pause + skip если свеча уже есть.
+    SELECT EXISTS (
+        SELECT 1
+        FROM logic_backtest_runs r
+        WHERE r.status IN ('pending', 'loading_prices', 'loading_indicators', 'running')
+    ) INTO v_skip_http;
+
+    v_date_to := GREATEST(v_closed_bar_dt::date, CURRENT_DATE);
+    v_date_from := logic_trade_load_date_from(
+        v_tf_sec, logic_trade_sync_point_count(v_tf_sec), v_closed_bar_dt
+    );
+
     FOR v_sec IN
-        SELECT ls.security_id
-        FROM logic_securities ls
-        WHERE ls.logic_id = p_logic_id AND ls.is_active = TRUE
+        SELECT DISTINCT q.security_id
+        FROM (
+            SELECT lt.security_id
+            FROM logic_trades lt
+            WHERE lt.logic_id = p_logic_id
+              AND NOT lt.is_test
+              AND NOT lt.is_shadow
+              AND lt.status IN ('filled', 'submitted')
+            UNION
+            SELECT ls.security_id
+            FROM logic_securities ls
+            WHERE ls.logic_id = p_logic_id
+              AND ls.is_active = TRUE
+              AND ls.real_trading_paused = TRUE
+        ) q
     LOOP
-        BEGIN
-            CALL load_prices(
-                v_sec.security_id,
-                v_tf_id,
-                logic_trade_load_date_from(
-                    v_tf_sec,
-                    logic_trade_sync_point_count(v_tf_sec),
-                    v_closed_bar_dt
-                ),
-                GREATEST(v_closed_bar_dt::date, CURRENT_DATE)
-            );
-        EXCEPTION
-            WHEN OTHERS THEN
-                NULL;
-        END;
+        IF NOT v_skip_http
+           AND NOT prices_have_closed_bar(v_sec.security_id, v_tf_id, v_closed_bar_dt) THEN
+            BEGIN
+                CALL load_prices(
+                    v_sec.security_id,
+                    v_tf_id,
+                    prices_topup_date_from(
+                        v_sec.security_id, v_tf_id, v_closed_bar_dt, v_date_from
+                    ),
+                    v_date_to
+                );
+            EXCEPTION
+                WHEN OTHERS THEN
+                    NULL;
+            END;
+        END IF;
 
         IF logic_check_security_resume(p_logic_id, v_sec.security_id, v_tf_id) THEN
             v_actions := v_actions + 1;

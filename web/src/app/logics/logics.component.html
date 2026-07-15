@@ -163,16 +163,21 @@
 
               <td>
                 <span class="logic-name-cell">
-                  <span>{{ row.name }}</span>
-                  @if (isBacktestRunning(row.id)) {
-                    <span
-                      class="logic-test-progress"
-                      [title]="backtestProgressTitle(row.id)"
-                      [attr.aria-label]="'Тестирование ' + backtestProgressPct(row.id) + '%'"
-                    >
-                      <span class="logic-test-progress-ring" aria-hidden="true">↻</span>
-                      <span class="logic-test-progress-pct">{{ backtestProgressPct(row.id) }}</span>
-                    </span>
+                  <span class="logic-name-main">
+                    <span class="logic-name-text">{{ row.name }}</span>
+                    @if (isBacktestRunning(row.id)) {
+                      <span
+                        class="logic-test-progress"
+                        [title]="backtestProgressTitle(row.id)"
+                        [attr.aria-label]="'Тестирование ' + backtestProgressPct(row.id) + '%'"
+                      >
+                        <span class="logic-test-progress-ring" aria-hidden="true">↻</span>
+                        <span class="logic-test-progress-pct">{{ backtestProgressPct(row.id) }}</span>
+                      </span>
+                    }
+                  </span>
+                  @if (row.note) {
+                    <span class="logic-note-inline" [title]="row.note">{{ row.note }}</span>
                   }
                 </span>
               </td>
@@ -204,6 +209,9 @@
                     [title]="combatFinancialResultTitle(row.id)"
                   >
                     {{ formatPnl(combatFinancialResult(row.id)) }}
+                    @if (combatFinancialResultPct(row.id, row.initial_balance) != null) {
+                      <span class="pnl-deposit-pct">({{ formatPnlPct(combatFinancialResultPct(row.id, row.initial_balance)) }})</span>
+                    }
                   </span>
                 } @else {
                   <span class="logic-test-pnl-empty" title="Боевых сделок ещё не было">—</span>
@@ -219,6 +227,9 @@
                     [title]="testFinancialResultTitle(row.id)"
                   >
                     {{ formatPnl(testFinancialResult(row.id)) }}
+                    @if (testFinancialResultPct(row.id, row.initial_balance) != null) {
+                      <span class="pnl-deposit-pct">({{ formatPnlPct(testFinancialResultPct(row.id, row.initial_balance)) }})</span>
+                    }
                   </span>
                 } @else {
                   <span class="logic-test-pnl-empty" title="Тестирования ещё не было">—</span>
@@ -510,7 +521,7 @@
 
                             <tr>
 
-                              <td>% комиссии от депозита</td>
+                              <td>% комиссии от сделки</td>
 
                               <td>
 
@@ -526,7 +537,7 @@
                               </td>
 
                               <td class="params-hint">
-                                Фейковый счёт: комиссия = текущий депозит × % / 100 на каждую сделку
+                                Фейковый счёт: комиссия = цена × количество × % / 100 на каждую сделку
                               </td>
 
                             </tr>
@@ -567,6 +578,18 @@
                             <tr class="params-actions-row">
 
                               <td colspan="3">
+
+                                <label class="params-reset" (click)="$event.stopPropagation()">
+
+                                  <input
+                                    type="checkbox"
+                                    [ngModel]="getParamsDraft(row.id).inversion"
+                                    (ngModelChange)="onParamsInversionChange(row.id, $event)"
+                                  />
+
+                                  Инверсия (условия наоборот, Long↔Short)
+
+                                </label>
 
                                 <label class="params-reset" (click)="$event.stopPropagation()">
 
@@ -1438,6 +1461,8 @@
 
                               <th>Название</th>
 
+                              <th>Лот</th>
+
                               <th>Тип</th>
 
                               <th>Биржа</th>
@@ -1461,6 +1486,8 @@
                                     <span class="sec-paused-badge" title="Реальная торговля приостановлена (SL с возобновлением); идут теневые сделки">теневой режим</span>
                                   }
                                 </td>
+
+                                <td class="col-lot">{{ sec.lot_size ?? 1 }}</td>
 
                                 <td>{{ securityKindLabel(sec) }}</td>
 
@@ -1537,6 +1564,7 @@
                         [signalIndicatorIds]="signalIndicatorIdsFor(row.id)"
                         (toggleBlock)="toggleTestTradesBlock(row.id)"
                         (startBacktest)="startBacktestRun(row.id, $event)"
+                        (periodDialogOpen)="onPeriodDialogOpen($event)"
                         (cancelBacktest)="cancelBacktestRun(row.id)"
                         (requestLots)="requestTradeLots($event)"
                       />

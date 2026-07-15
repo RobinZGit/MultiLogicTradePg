@@ -26,7 +26,7 @@ if errorlevel 1 (
 if "%PGPASSWORD%"=="" set "PGPASSWORD=111"
 
 REM --- Снять старые процессы (можно запускать bat сколько угодно раз) ---
-echo  [1/4] Освобождение портов 3000 и 4200...
+echo  [1/5] Освобождение портов 3000 и 4200...
 call :FreePorts
 if errorlevel 1 (
   echo  [ПРЕДУПРЕЖДЕНИЕ] Порт всё ещё занят. Повторная попытка...
@@ -35,26 +35,37 @@ if errorlevel 1 (
 echo.
 
 if not exist "%API%\node_modules\" (
-  echo  [2/4] npm install в api...
+  echo  [2/5] npm install в api...
   pushd "%API%"
   call npm install
   if errorlevel 1 goto :fail
   popd
 ) else (
-  echo  [2/4] api — OK
+  echo  [2/5] api — OK
 )
 
 if not exist "%WEB%\node_modules\" (
-  echo  [3/4] npm install в web...
+  echo  [3/5] npm install в web...
   pushd "%WEB%"
   call npm install
   if errorlevel 1 goto :fail
   popd
 ) else (
-  echo  [3/4] web — OK
+  echo  [3/5] web — OK
 )
 
-echo  [4/4] Запуск в ЭТОМ окне...
+echo  [4/5] Очистка кэша Angular (чтобы UI точно подхватил свежий код)...
+pushd "%WEB%"
+if exist ".angular\cache" (
+  rmdir /s /q ".angular\cache" 2>nul
+  echo       удален .angular\cache
+) else (
+  echo       .angular\cache отсутствует
+)
+call npx --yes ng cache clean >nul 2>&1
+popd
+
+echo  [5/5] Запуск в ЭТОМ окне...
 echo.
 echo  API:     http://localhost:3000  (фон)
 echo  Angular: http://localhost:4200  (ниже, дождитесь сборки)
@@ -69,10 +80,12 @@ popd
 
 ping 127.0.0.1 -n 3 >nul
 
-start /b "" cmd /c "ping 127.0.0.1 -n 21 >nul && start http://localhost:4200"
+REM Cache-bust: query-параметр, чтобы браузер не взял старый бандл из HTTP-кэша.
+set "CACHE_BUST=%RANDOM%"
+start /b "" cmd /c "ping 127.0.0.1 -n 28 >nul && start http://localhost:4200/?v=%CACHE_BUST%"
 
 pushd "%WEB%"
-call npx ng serve --port 4200 --host localhost --open=false
+call npx ng serve --port 4200 --host localhost --open=false --configuration=development
 set "NG_EXIT=!ERRORLEVEL!"
 popd
 

@@ -1,4 +1,5 @@
 import {
+  ChangeDetectionStrategy,
   Component,
   EventEmitter,
   HostBinding,
@@ -82,6 +83,8 @@ export interface BacktestRunStatus {
 
   styleUrl: './logic-positions-panel.component.css',
 
+  changeDetection: ChangeDetectionStrategy.OnPush,
+
 })
 
 export class LogicPositionsPanelComponent implements OnChanges {
@@ -127,6 +130,15 @@ export class LogicPositionsPanelComponent implements OnChanges {
   @Output() toggleBlock = new EventEmitter<void>();
 
   @Output() requestLots = new EventEmitter<number>();
+
+  /** Родитель ставит паузу тяжёлого poll, пока открыт диалог периода. */
+  @Output() periodDialogOpen = new EventEmitter<boolean>();
+
+  /** Кэш списков — не filter/sort на каждый CD. */
+  cachedOpenTrades: LogicTradeRow[] = [];
+  cachedCloseTrades: LogicTradeRow[] = [];
+  cachedTotalPnl = 0;
+  cachedTotalCommission = 0;
 
 
 
@@ -180,6 +192,33 @@ export class LogicPositionsPanelComponent implements OnChanges {
     if (changes['backtestRun'] && !this.isBacktestRunning) {
       this.cancelling = false;
     }
+    if (changes['trades'] || changes['logicRow']) {
+      this.rebuildTradeCaches();
+    }
+  }
+
+  private rebuildTradeCaches(): void {
+    const open = this.trades
+      .filter((t) => this.isOpenPositionTrade(t))
+      .sort((a, b) => new Date(b.executed_at).getTime() - new Date(a.executed_at).getTime());
+    const close = this.trades
+      .filter((t) => t.side_name === 'Close' && (t.status === 'filled' || t.status === 'submitted'))
+      .sort((a, b) => new Date(b.executed_at).getTime() - new Date(a.executed_at).getTime());
+    let pnl = 0;
+    let commission = 0;
+    for (const t of this.trades) {
+      if (t.is_shadow) continue;
+      if (t.financial_result != null && Number.isFinite(Number(t.financial_result))) {
+        pnl += Number(t.financial_result);
+      }
+      if (t.commission != null && Number.isFinite(Number(t.commission))) {
+        commission += Number(t.commission);
+      }
+    }
+    this.cachedOpenTrades = open;
+    this.cachedCloseTrades = close;
+    this.cachedTotalPnl = pnl;
+    this.cachedTotalCommission = commission;
   }
 
 
@@ -291,68 +330,24 @@ export class LogicPositionsPanelComponent implements OnChanges {
 
 
   openPositionTrades(): LogicTradeRow[] {
-
-    return this.trades
-
-      .filter((t) => this.isOpenPositionTrade(t))
-
-      .sort((a, b) => new Date(b.executed_at).getTime() - new Date(a.executed_at).getTime());
-
+    return this.cachedOpenTrades;
   }
-
-
 
   closePositionTrades(): LogicTradeRow[] {
-
-    return this.trades
-
-      .filter((t) => t.side_name === 'Close' && (t.status === 'filled' || t.status === 'submitted'))
-
-      .sort((a, b) => new Date(b.executed_at).getTime() - new Date(a.executed_at).getTime());
-
+    return this.cachedCloseTrades;
   }
 
-
-
   totalFinancialResult(): number {
-
-    return this.trades
-
-      .filter((t) => !t.is_shadow)
-
-      .reduce(
-
-        (sum, t) =>
-
-          t.financial_result != null && Number.isFinite(Number(t.financial_result))
-
-            ? sum + Number(t.financial_result)
-
-            : sum,
-
-        0
-
-      );
-
+    return this.cachedTotalPnl;
   }
 
   /** Сумма комиссий по сделкам панели (бой или тест — те же trades). */
   totalCommission(): number {
-    return this.trades
-      .filter((t) => !t.is_shadow)
-      .reduce(
-        (sum, t) =>
-          t.commission != null && Number.isFinite(Number(t.commission))
-            ? sum + Number(t.commission)
-            : sum,
-        0
-      );
+    return this.cachedTotalCommission;
   }
 
   hasOpenPositions(): boolean {
-
-    return this.openPositionTrades().length > 0;
-
+    return this.cachedOpenTrades.length > 0;
   }
 
 
@@ -545,6 +540,8 @@ export class LogicPositionsPanelComponent implements OnChanges {
 
     this.showPeriodDialog = true;
 
+    this.periodDialogOpen.emit(true);
+
   }
 
 
@@ -553,6 +550,8 @@ export class LogicPositionsPanelComponent implements OnChanges {
 
     this.showPeriodDialog = false;
 
+    this.periodDialogOpen.emit(false);
+
   }
 
 
@@ -560,6 +559,8 @@ export class LogicPositionsPanelComponent implements OnChanges {
   confirmRunDialog(): void {
 
     this.showPeriodDialog = false;
+
+    this.periodDialogOpen.emit(false);
 
     this.startBacktest.emit({ date_from: this.periodFrom, date_to: this.periodTo });
 

@@ -92,6 +92,11 @@ export class PriceChartComponent implements AfterViewInit, OnChanges, OnDestroy 
   private pinchActive = false;
   private pinchStartDist = 0;
   private pinchStartZoom = 1;
+  /** Последний размер тела графика — чтобы ResizeObserver не крутил бесконечный redraw. */
+  private lastBodyW = -1;
+  private lastBodyH = -1;
+  private ignoreResizeUntil = 0;
+  private resizeDebounce: ReturnType<typeof setTimeout> | null = null;
 
   /** Масштаб подписей осей, легенды и даты в полноэкранном режиме */
   private get labelScale(): number {
@@ -128,7 +133,18 @@ export class PriceChartComponent implements AfterViewInit, OnChanges, OnDestroy 
   ngAfterViewInit(): void {
     const body = this.chartBodyRef?.nativeElement;
     if (!body) return;
-    this.resizeObserver = new ResizeObserver(() => this.scheduleRedraw());
+    this.resizeObserver = new ResizeObserver(() => {
+      if (performance.now() < this.ignoreResizeUntil) return;
+      const w = body.clientWidth;
+      const h = body.clientHeight;
+      if (w === this.lastBodyW && h === this.lastBodyH) return;
+      if (this.resizeDebounce) clearTimeout(this.resizeDebounce);
+      // Debounce: иначе flex/scrollbar даёт петлю resize→redraw→resize и блокирует UI.
+      this.resizeDebounce = setTimeout(() => {
+        this.resizeDebounce = null;
+        this.scheduleRedraw();
+      }, 80);
+    });
     this.resizeObserver.observe(body);
     this.scheduleRedraw();
   }
@@ -145,9 +161,7 @@ export class PriceChartComponent implements AfterViewInit, OnChanges, OnDestroy 
       this.prevCandlesLen = this.candles.length;
       this.loadOlderPending = false;
       this.clampViewStart();
-      if (this.candles.length > 0) {
-        this.scheduleEmitVisibleRange();
-      }
+      // visibleRange emit только по жесту пользователя — иначе лишние HTTP/CD.
     }
     if (
       (changes['focusDt'] || changes['candles']) &&
@@ -156,8 +170,19 @@ export class PriceChartComponent implements AfterViewInit, OnChanges, OnDestroy 
     ) {
       this.scrollToFocusDt(this.focusDt);
     }
-    // Не планировать redraw, если изменились только ссылки без смысла
-    // (родительский poll пересоздавал массивы оверлеев и вешал UI).
+    // Poll родителя часто приносит новые ссылки на overlays — не redraw, если длина та же.
+    const overlaysRefOnly =
+      !changes['candles'] &&
+      !changes['indicatorSeries'] &&
+      !changes['loading'] &&
+      !changes['loadingOlder'] &&
+      !changes['error'] &&
+      !changes['focusDt'] &&
+      !changes['title'] &&
+      this.overlayArraysSameLength(changes);
+    if (overlaysRefOnly) {
+      return;
+    }
     const meaningful =
       changes['candles'] ||
       changes['indicatorSeries'] ||
@@ -172,13 +197,26 @@ export class PriceChartComponent implements AfterViewInit, OnChanges, OnDestroy 
       changes['title'];
     if (meaningful) {
       queueMicrotask(() => this.scheduleRedraw());
-      // Повтор после layout: во вложенных панелях первый кадр часто width=0.
       if (changes['candles'] && this.candles.length > 0) {
         requestAnimationFrame(() => {
           requestAnimationFrame(() => this.scheduleRedraw());
         });
       }
     }
+  }
+
+  private overlayArraysSameLength(changes: SimpleChanges): boolean {
+    const keys = ['tradeMarkers', 'stopMarkers', 'shadedRanges', 'equityPoints'] as const;
+    let saw = false;
+    for (const k of keys) {
+      const ch = changes[k];
+      if (!ch || ch.firstChange) continue;
+      saw = true;
+      const prev = ch.previousValue as unknown[] | null | undefined;
+      const cur = ch.currentValue as unknown[] | null | undefined;
+      if ((prev?.length ?? -1) !== (cur?.length ?? -2)) return false;
+    }
+    return saw;
   }
 
   /** Сдвинуть окно так, чтобы dt была в нужной части видимой области. */
@@ -198,6 +236,10 @@ export class PriceChartComponent implements AfterViewInit, OnChanges, OnDestroy 
 
   ngOnDestroy(): void {
     this.resizeObserver?.disconnect();
+    if (this.resizeDebounce) {
+      clearTimeout(this.resizeDebounce);
+      this.resizeDebounce = null;
+    }
     if (this.redrawRafId != null) {
       cancelAnimationFrame(this.redrawRafId);
     }
@@ -568,6 +610,13 @@ export class PriceChartComponent implements AfterViewInit, OnChanges, OnDestroy 
 
     const cssW = body.clientWidth;
     const cssH = body.clientHeight;
+    if (cssW <= 0 || cssH <= 0) return;
+
+    // Пока меняем canvas — игнор ResizeObserver (иначе петля и зависание UI).
+    this.ignoreResizeUntil = performance.now() + 120;
+    this.lastBodyW = cssW;
+    this.lastBodyH = cssH;
+
     const dpr = window.devicePixelRatio || 1;
     canvas.width = Math.floor(cssW * dpr);
     canvas.height = Math.floor(cssH * dpr);
@@ -803,7 +852,7 @@ export class PriceChartComponent implements AfterViewInit, OnChanges, OnDestroy 
     }
     ctx.fillText(footer, pad.left, cssH - Math.round(pad.bottom * 0.25));
 
-    if (this.loading) {
+    if (this.loading && this.candles.length === 0) {
       ctx.fillStyle = 'rgba(255,255,255,0.7)';
       ctx.fillRect(0, 0, cssW, cssH);
       ctx.fillStyle = '#374151';
@@ -828,18 +877,52 @@ export class PriceChartComponent implements AfterViewInit, OnChanges, OnDestroy 
     }
   }
 
-  private indexForDt(visible: PriceCandle[], dt: string): number {
+  /**
+   * Индекс в полном this.candles.
+   * Не искать только в visible: иначе сделки «правее» окна прилипают к последней свече кадра.
+   */
+  private indexInAllCandles(dt: string): number {
+    if (this.candles.length === 0) return -1;
     const key = PriceChartComponent.dtKey(dt);
-    for (let i = 0; i < visible.length; i++) {
-      if (PriceChartComponent.dtKey(visible[i].dt) === key) return i;
+    for (let i = 0; i < this.candles.length; i++) {
+      if (PriceChartComponent.dtKey(this.candles[i].dt) === key) return i;
     }
-    // ближайшая свеча не позже маркера
     let best = -1;
-    for (let i = 0; i < visible.length; i++) {
-      if (PriceChartComponent.dtKey(visible[i].dt) <= key) best = i;
+    for (let i = 0; i < this.candles.length; i++) {
+      if (PriceChartComponent.dtKey(this.candles[i].dt) <= key) best = i;
       else break;
     }
     return best;
+  }
+
+  /**
+   * Индекс внутри visible[] только если сделка реально в этом окне.
+   * Вне окна → -1 (не рисовать на краю).
+   */
+  private indexInVisible(visible: PriceCandle[], dt: string): number {
+    if (visible.length === 0) return -1;
+    const fullIdx = this.indexInAllCandles(dt);
+    if (fullIdx < 0) return -1;
+    const first = this.viewStart;
+    const last = this.viewStart + visible.length - 1;
+    if (fullIdx < first || fullIdx > last) return -1;
+    return fullIdx - this.viewStart;
+  }
+
+  /** Для shade: индекс в visible с clamp к краям окна (полоса может начинаться за кадром). */
+  private indexForDt(visible: PriceCandle[], dt: string): number {
+    if (visible.length === 0) return -1;
+    const fullIdx = this.indexInAllCandles(dt);
+    if (fullIdx < 0) {
+      const key = PriceChartComponent.dtKey(dt);
+      if (key < PriceChartComponent.dtKey(visible[0].dt)) return 0;
+      return visible.length - 1;
+    }
+    const first = this.viewStart;
+    const last = this.viewStart + visible.length - 1;
+    if (fullIdx < first) return 0;
+    if (fullIdx > last) return visible.length - 1;
+    return fullIdx - this.viewStart;
   }
 
   private drawShadedRanges(
@@ -1071,7 +1154,7 @@ export class PriceChartComponent implements AfterViewInit, OnChanges, OnDestroy 
     if (!this.stopMarkers.length) return;
     const labelSize = this.px(10);
     for (const m of this.stopMarkers) {
-      const i = this.indexForDt(visible, m.dt);
+      const i = this.indexInVisible(visible, m.dt);
       if (i < 0) continue;
       const x = left + i * candleWidth + candleWidth / 2;
       const y = yScale(Number(m.price));
@@ -1110,10 +1193,16 @@ export class PriceChartComponent implements AfterViewInit, OnChanges, OnDestroy 
     priceBottom: number
   ): void {
     if (!this.tradeMarkers.length) return;
+    // Несколько сделок на одном баре (open+close) — чуть развести по X, не «одна линия».
+    const slotByKey = new Map<string, number>();
     for (const m of this.tradeMarkers) {
-      const i = this.indexForDt(visible, m.dt);
+      const i = this.indexInVisible(visible, m.dt);
       if (i < 0) continue;
-      const x = left + i * candleWidth + candleWidth / 2;
+      const key = PriceChartComponent.dtKey(m.dt);
+      const slot = slotByKey.get(key) ?? 0;
+      slotByKey.set(key, slot + 1);
+      const stagger = (slot - 0.5) * Math.max(3, candleWidth * 0.35);
+      const x = left + i * candleWidth + candleWidth / 2 + stagger;
       const y = yScale(Number(m.price));
       const isLong = m.side === 'long';
       const isOpen = m.kind === 'open';
@@ -1129,7 +1218,7 @@ export class PriceChartComponent implements AfterViewInit, OnChanges, OnDestroy 
       // Вертикальная полоса входа/выхода
       ctx.strokeStyle = color;
       ctx.globalAlpha = m.isShadow ? 0.22 : 0.4;
-      ctx.lineWidth = Math.max(2, candleWidth * 0.5);
+      ctx.lineWidth = Math.max(2, candleWidth * 0.45);
       ctx.setLineDash([]);
       ctx.beginPath();
       ctx.moveTo(x, priceTop);

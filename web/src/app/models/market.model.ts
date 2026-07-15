@@ -9,6 +9,7 @@ export interface TimeframeRow {
 export interface SecurityRow {
   id: number;
   name: string;
+  lot_size?: number;
   security_type: string;
   prefix: string;
   instrument_market: string;

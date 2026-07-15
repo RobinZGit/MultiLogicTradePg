@@ -50,6 +50,41 @@
   font-weight: 600;
 }
 
+.papers-mode-toggle {
+  display: inline-flex;
+  gap: 0.25rem;
+  flex-shrink: 0;
+}
+
+.btn-chart-mode {
+  font: inherit;
+  font-size: 0.75rem;
+  padding: 0.15rem 0.55rem;
+  border: 1px solid #cbd5e1;
+  border-radius: 999px;
+  background: #fff;
+  color: #64748b;
+  cursor: pointer;
+}
+
+.btn-chart-mode.active {
+  border-color: #2563eb;
+  background: #eff6ff;
+  color: #1d4ed8;
+  font-weight: 600;
+}
+
+.paper-equity-host {
+  margin-top: 0.35rem;
+}
+
+.pnl-deposit-pct {
+  margin-left: 0.25rem;
+  font-weight: 600;
+  font-size: 0.85em;
+  opacity: 0.9;
+}
+
 .signals-title {
   white-space: nowrap;
   font-weight: 600;

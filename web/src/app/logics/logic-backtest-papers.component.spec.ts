@@ -1,7 +1,8 @@
-import { ComponentFixture, TestBed } from '@angular/core/testing';
+import { ComponentFixture, TestBed, fakeAsync, tick } from '@angular/core/testing';
 import { of } from 'rxjs';
 import { LogicBacktestPapersComponent } from './logic-backtest-papers.component';
 import { SecuritiesService } from '../services/securities.service';
+import { TechLogService } from '../services/tech-log.service';
 import { LogicTradeRow } from '../shared/logic-trade';
 
 describe('LogicBacktestPapersComponent', () => {
@@ -63,8 +64,27 @@ describe('LogicBacktestPapersComponent', () => {
 
     await TestBed.configureTestingModule({
       imports: [LogicBacktestPapersComponent],
-      providers: [{ provide: SecuritiesService, useValue: api }],
+      providers: [
+        { provide: SecuritiesService, useValue: api },
+        {
+          provide: TechLogService,
+          useValue: jasmine.createSpyObj('TechLogService', [
+            'event',
+            'logicThreadKey',
+            'loadEnabled',
+            'setEnabled',
+            'start',
+            'end',
+            'flushNow',
+          ]),
+        },
+      ],
     }).compileComponents();
+
+    const techLog = TestBed.inject(TechLogService) as jasmine.SpyObj<TechLogService>;
+    techLog.enabled = true;
+    techLog.logicThreadKey.and.returnValue('logic:1:paper');
+    techLog.flushNow.and.stub();
 
     fixture = TestBed.createComponent(LogicBacktestPapersComponent);
     component = fixture.componentInstance;
@@ -95,19 +115,51 @@ describe('LogicBacktestPapersComponent', () => {
     expect(component.paperRows[0].security_id).toBe(7);
   });
 
-  it('loads prices only after paper expand (lazy, no UI block on list)', () => {
+  it('loads prices only after paper expand (lazy, no UI block on list)', fakeAsync(() => {
     expect(api.getPrices).not.toHaveBeenCalled();
     component.togglePaper(new Event('click'), 7);
+    expect(api.getPrices).not.toHaveBeenCalled();
+    expect(component.isPaperExpanded(7)).toBeTrue();
+    tick(0);
     expect(api.getPrices).toHaveBeenCalled();
     expect(api.syncIndicatorSeries).not.toHaveBeenCalled();
-    expect(component.isPaperExpanded(7)).toBeTrue();
-  });
+    tick(500); // deferred indicator bootstrap
+  }));
 
-  it('falls back to trade timeframe_id when input timeframeId is null', () => {
+  it('does not reload chart HTTP when trades poll updates during expand', fakeAsync(() => {
+    component.togglePaper(new Event('click'), 7);
+    tick(0);
+    const callsAfterExpand = api.getPrices.calls.count();
+    expect(callsAfterExpand).toBeGreaterThan(0);
+    component.trades = [
+      sampleTrade,
+      {
+        ...sampleTrade,
+        id: 2,
+        bar_dt: '2026-04-10 11:00:00',
+        financial_result: 10,
+      },
+    ];
+    component.ngOnChanges({
+      trades: {
+        currentValue: component.trades,
+        previousValue: [sampleTrade],
+        firstChange: false,
+        isFirstChange: () => false,
+      },
+    });
+    expect(api.getPrices.calls.count()).toBe(callsAfterExpand);
+    expect(component.overlays(7).markers.length).toBeGreaterThan(0);
+    tick(500);
+  }));
+
+  it('falls back to trade timeframe_id when input timeframeId is null', fakeAsync(() => {
     component.timeframeId = null;
     component.togglePaper(new Event('click'), 7);
-    expect(api.getPrices).toHaveBeenCalledWith(7, 6, 200, jasmine.any(String));
-  });
+    tick(0);
+    expect(api.getPrices).toHaveBeenCalledWith(7, 6, 120, jasmine.any(String));
+    tick(500);
+  }));
 
   it('chartIndicatorsForDisplay returns EMPTY while suppressIndicators', () => {
     const st = component.chartState(7);
@@ -126,7 +178,7 @@ describe('LogicBacktestPapersComponent', () => {
     expect(component.chartIndicatorsForDisplay(7)).toEqual([]);
   });
 
-  it('onVisibleRange auto emit does not suppress', () => {
+  it('onVisibleRange auto emit does not fetch indicators', () => {
     const st = component.chartState(7);
     st.candles = [
       {
@@ -145,8 +197,7 @@ describe('LogicBacktestPapersComponent', () => {
       viewStart: 0,
       userInitiated: false,
     });
-    expect(st.suppressIndicators).toBeFalse();
-    expect(api.getIndicatorValues).toHaveBeenCalled();
+    expect(api.getIndicatorValues).not.toHaveBeenCalled();
     expect(api.syncIndicatorSeries).not.toHaveBeenCalled();
   });
 

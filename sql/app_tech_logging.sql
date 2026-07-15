@@ -101,6 +101,18 @@ CREATE OR REPLACE FUNCTION logic_trade_log(
 RETURNS VOID
 LANGUAGE plpgsql AS $$
 BEGIN
+    -- Шум на каждой бумаге/сигнале блокирует UI (раскрытие графика) при включённом tech log
+    IF p_operation IN (
+        'trade.signal_skip',
+        'trade.signal_hit',
+        'trade.not_ready',
+        'trade.prices.loaded',
+        'trade.indicator.synced',
+        'trade.bar_skip'
+    ) THEN
+        RETURN;
+    END IF;
+
     PERFORM app_tech_log_event(
         'logic:' || COALESCE(p_logic_id::TEXT, '0') || ':trade',
         p_operation,
@@ -116,4 +128,4 @@ END;
 $$;
 
 COMMENT ON FUNCTION logic_trade_log(INTEGER, TEXT, TEXT, JSONB, INTEGER, INTEGER) IS
-'События trade runner по конкретной логике';
+'События trade runner по конкретной логике (без спама skip/loaded на каждый бар)';

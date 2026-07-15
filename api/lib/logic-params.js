@@ -12,6 +12,7 @@ const PARAM_KEYS = {
   STOP_LOSS_TIMEFRAME: 'stop_loss_timeframe',
   BASE_ANNUAL_RATE_PCT: 'base_annual_rate_pct',
   RATING_LOOKBACK_DAYS: 'rating_lookback_days',
+  INVERSION: 'inversion',
 };
 
 const DEFAULTS = {
@@ -25,6 +26,7 @@ const DEFAULTS = {
   [PARAM_KEYS.STOP_LOSS_TIMEFRAME]: { value: 'M5', type: 'text' },
   [PARAM_KEYS.BASE_ANNUAL_RATE_PCT]: { value: '20', type: 'number' },
   [PARAM_KEYS.RATING_LOOKBACK_DAYS]: { value: '7', type: 'integer' },
+  [PARAM_KEYS.INVERSION]: { value: 'false', type: 'boolean' },
 };
 
 function parseParamValue(paramKey, raw, valueType) {
@@ -97,6 +99,7 @@ function rowsToTradingParams(rows) {
       map[PARAM_KEYS.RATING_LOOKBACK_DAYS] != null
         ? Number(map[PARAM_KEYS.RATING_LOOKBACK_DAYS])
         : 7,
+    inversion: map[PARAM_KEYS.INVERSION] === true,
   };
 }
 
@@ -279,6 +282,16 @@ async function saveTradingParams(pool, logicId, payload) {
       PARAM_KEYS.RATING_LOOKBACK_DAYS,
       v,
       'integer'
+    );
+  }
+
+  if (payload.inversion !== undefined) {
+    await upsertParam(
+      pool,
+      logicId,
+      PARAM_KEYS.INVERSION,
+      payload.inversion ? 'true' : 'false',
+      'boolean'
     );
   }
 

@@ -90,6 +90,13 @@
   font-size: 0.9rem;
 }
 
+.pnl-deposit-pct {
+  margin-left: 0.2rem;
+  font-weight: 600;
+  font-size: 0.85em;
+  opacity: 0.88;
+}
+
 .logic-test-pnl-empty {
   color: #94a3b8;
 }
@@ -233,9 +240,33 @@ tbody tr.logic-main-row:hover {
 }
 
 .logic-name-cell {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 0.2rem;
+  max-width: 22rem;
+}
+
+.logic-name-main {
   display: inline-flex;
   align-items: center;
   gap: 0.45rem;
+}
+
+.logic-name-text {
+  font-weight: 600;
+}
+
+.logic-note-inline {
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  font-size: 0.72rem;
+  line-height: 1.35;
+  color: #64748b;
+  font-weight: 400;
+  max-width: 100%;
 }
 
 .logic-test-progress {

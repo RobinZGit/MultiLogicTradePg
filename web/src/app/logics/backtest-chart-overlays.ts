@@ -202,26 +202,27 @@ export function buildShadedDisabledRanges(trades: LogicTradeRow[]): ChartShadedR
 /**
  * Кумулятивный PnL по закрытиям (!shadow).
  * Ноль — с начала истории теста (`periodStartDt`), не с первой сделки.
+ * @param sideFilter — 'long' | 'short' | null (все)
  */
 export function buildEquityPoints(
   trades: LogicTradeRow[],
-  periodStartDt?: string | null
+  periodStartDt?: string | null,
+  sideFilter?: 'long' | 'short' | null
 ): ChartEquityPoint[] {
   const sorted = [...trades].sort((a, b) =>
     dtKey(a.bar_dt || a.executed_at).localeCompare(dtKey(b.bar_dt || b.executed_at))
   );
-  const closes = sorted.filter(
-    (t) =>
-      t.side_name === 'Close' &&
-      !t.is_shadow &&
-      t.financial_result != null &&
-      Number.isFinite(Number(t.financial_result))
-  );
+  const closes = sorted.filter((t) => {
+    if (t.side_name !== 'Close' || t.is_shadow) return false;
+    if (t.financial_result == null || !Number.isFinite(Number(t.financial_result))) return false;
+    if (sideFilter === 'long' && t.action_name !== 'Long') return false;
+    if (sideFilter === 'short' && t.action_name !== 'Short') return false;
+    return true;
+  });
   if (closes.length === 0) return [];
 
   const periodKey = periodStartDt ? dtKey(periodStartDt) : '';
   const firstTradeDt = sorted[0]?.bar_dt || sorted[0]?.executed_at || closes[0].bar_dt;
-  // Якорь нуля: date_from теста, иначе первая сделка (fallback)
   const zeroDt =
     periodKey && (!firstTradeDt || periodKey <= dtKey(firstTradeDt))
       ? periodStartDt!
@@ -232,7 +233,6 @@ export function buildEquityPoints(
   for (const t of closes) {
     cum += Number(t.financial_result);
     const dt = t.bar_dt || t.executed_at;
-    // Не дублировать точку 0 на том же dt, если первое закрытие = якорь
     if (points.length === 1 && dtKey(points[0].dt) === dtKey(dt) && points[0].value === 0) {
       points[0] = { dt, value: cum };
     } else {

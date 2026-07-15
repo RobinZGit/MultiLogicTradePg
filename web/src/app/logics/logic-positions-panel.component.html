@@ -41,16 +41,10 @@
             [class.trade-pnl-neg]="displayFinancialResult() < 0"
           >
             {{ formatPnl(displayFinancialResult()) }}
+            @if (returnPct() != null) {
+              <span class="pnl-deposit-pct">({{ formatPct(returnPct()) }})</span>
+            }
           </span>
-          <span
-            class="trade-pnl positions-total-pct"
-            [class.trade-pnl-pos]="(returnPct() ?? 0) > 0"
-            [class.trade-pnl-neg]="(returnPct() ?? 0) < 0"
-            title="От начального остатка (депозита)"
-          >
-            {{ formatPct(returnPct()) }}
-          </span>
-          <span class="positions-total-pct-hint">от нач.</span>
           <span
             class="trade-pnl positions-total-pct"
             [class.trade-pnl-pos]="(annualPct() ?? 0) > 0"
@@ -392,15 +386,14 @@
         [reloadToken]="
           (backtestRun?.id ?? '') +
           ':' +
-          (backtestRun?.status ?? '') +
-          ':' +
-          (backtestRun?.processed_bars ?? 0)
+          (backtestRun?.status ?? '')
         "
         [trades]="trades"
         [dateFrom]="backtestRun?.date_from ?? null"
         [dateTo]="backtestRun?.date_to ?? null"
         [timeframeId]="timeframeId"
         [signalIndicatorIds]="signalIndicatorIds"
+        [initialBalance]="logicRow.initial_balance"
       />
     }
 

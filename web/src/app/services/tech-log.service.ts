@@ -176,9 +176,11 @@ export class TechLogService {
       logicId?: number;
       syncGen?: number;
       payload?: Record<string, unknown>;
+      /** Писать даже до loadEnabled (критичные UI-события). */
+      force?: boolean;
     }
   ): void {
-    if (!this.enabled) {
+    if (!this.enabled && !opts?.force) {
       return;
     }
     this.enqueue({
@@ -196,6 +198,9 @@ export class TechLogService {
       message,
       payload: opts?.payload ?? null,
     });
+    if (opts?.force) {
+      this.flush(true);
+    }
   }
 
   fetchRecent(opts?: {
@@ -213,6 +218,11 @@ export class TechLogService {
     return this.http.get<{ rows: TechLogRow[] }>(
       `${this.appConfig.apiUrl}/tech-log${q ? `?${q}` : ''}`
     );
+  }
+
+  /** Сразу отправить очередь (раскрытие бумаги / критичный UI). */
+  flushNow(): void {
+    this.flush(true);
   }
 
   private enqueue(entry: TechLogWriteEntry): void {

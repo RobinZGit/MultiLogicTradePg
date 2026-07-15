@@ -1738,24 +1738,22 @@ export class SecuritiesPanelComponent implements OnInit {
       error: null,
     });
 
-    const loadSpan = older
-      ? this.techLog.start(
-          this.techLog.newTraceId(securityId),
-          this.techLog.threadKey(
-            securityId,
-            this.indicatorSyncGen.get(securityId) ?? undefined,
-            'loadOlder'
-          ),
-          'chart.loadOlder',
-          {
-            securityId,
-            timeframeId: this.timeframeId,
-            syncGen: this.indicatorSyncGen.get(securityId),
-            message: before ?? 'initial',
-            payload: { before: before ?? null },
-          }
-        )
-      : '';
+    const loadSpan = this.techLog.start(
+      this.techLog.newTraceId(securityId),
+      this.techLog.threadKey(
+        securityId,
+        this.indicatorSyncGen.get(securityId) ?? undefined,
+        older ? 'loadOlder' : 'loadChart'
+      ),
+      older ? 'chart.loadOlder' : 'chart.load',
+      {
+        securityId,
+        timeframeId: this.timeframeId,
+        syncGen: this.indicatorSyncGen.get(securityId),
+        message: older ? before ?? 'older' : 'expand/initial',
+        payload: { before: before ?? null, older },
+      }
+    );
 
     this.securities
       .getPrices(securityId, this.timeframeId, 120, before)
@@ -1774,7 +1772,7 @@ export class SecuritiesPanelComponent implements OnInit {
                 : null,
           });
           this.techLog.end(loadSpan, {
-            message: 'loadOlder done',
+            message: older ? 'loadOlder done' : 'loadChart done',
             payload: { added: rows.length, total: dedup.length },
           });
           const expandGate = this.expandIndicatorGate.get(securityId);

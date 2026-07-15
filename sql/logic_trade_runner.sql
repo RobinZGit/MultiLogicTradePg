@@ -349,15 +349,30 @@ $$;
 -- logic_long_position_qty / logic_short_position_qty / logic_count_open_positions
 -- определены в sql/logic_stop_runner.sql (поддержка is_shadow)
 
+CREATE OR REPLACE FUNCTION logic_security_lot_size(p_security_id INTEGER)
+RETURNS INTEGER
+LANGUAGE sql STABLE AS $$
+    SELECT GREATEST(1, COALESCE(
+        (SELECT lot_size FROM securities WHERE id = p_security_id),
+        1
+    ));
+$$;
+
+COMMENT ON FUNCTION logic_security_lot_size(INTEGER) IS
+'Лотность бумаги (штук в лоте); минимум 1';
+
 CREATE OR REPLACE FUNCTION logic_calc_open_quantity(
     p_balance NUMERIC,
     p_position_size_pct NUMERIC,
-    p_price NUMERIC
+    p_price NUMERIC,
+    p_lot_size INTEGER DEFAULT 1
 )
 RETURNS INTEGER
 LANGUAGE plpgsql IMMUTABLE AS $$
 DECLARE
     v_amount NUMERIC;
+    v_raw INTEGER;
+    v_lot INTEGER;
     v_qty INTEGER;
 BEGIN
     IF p_balance IS NULL OR p_balance <= 0 THEN
@@ -369,14 +384,20 @@ BEGIN
     IF p_position_size_pct IS NULL OR p_position_size_pct <= 0 THEN
         RETURN 0;
     END IF;
+    v_lot := GREATEST(1, COALESCE(p_lot_size, 1));
     v_amount := p_balance * (p_position_size_pct / 100.0);
-    v_qty := floor(v_amount / p_price)::INTEGER;
-    IF v_qty >= 1 THEN
+    v_raw := floor(v_amount / p_price)::INTEGER;
+    -- Округление вниз до целого числа лотов
+    v_qty := (v_raw / v_lot) * v_lot;
+    IF v_qty >= v_lot THEN
         RETURN v_qty;
     END IF;
     RETURN 0;
 END;
 $$;
+
+COMMENT ON FUNCTION logic_calc_open_quantity(NUMERIC, NUMERIC, NUMERIC, INTEGER) IS
+'Лот открытия: % депозита / цена, округление вниз до lot_size бумаги';
 
 CREATE OR REPLACE FUNCTION logic_upsert_param(
     p_logic_id INTEGER,
@@ -467,6 +488,76 @@ $$;
 COMMENT ON FUNCTION logic_trade_sync_point_count(INTEGER) IS
 'Число свечей для sync индикаторов в runner: больше на M1/M2/M5';
 
+-- Есть ли уже закрытая свеча в prices (без повторного HTTP).
+CREATE OR REPLACE FUNCTION prices_have_closed_bar(
+    p_security_id INTEGER,
+    p_timeframe_id INTEGER,
+    p_closed_bar_dt TIMESTAMP
+)
+RETURNS BOOLEAN
+LANGUAGE sql STABLE AS $$
+    SELECT EXISTS (
+        SELECT 1
+        FROM prices p
+        WHERE p.security_id = p_security_id
+          AND p.timeframe_id = p_timeframe_id
+          AND p.dt = p_closed_bar_dt
+    );
+$$;
+
+COMMENT ON FUNCTION prices_have_closed_bar(INTEGER, INTEGER, TIMESTAMP) IS
+'True если в prices уже есть свеча ровно на closed bar — load_prices можно пропустить';
+
+-- Если история уже есть — догружаем только день закрытого бара (1 HTTP), не весь lookback.
+CREATE OR REPLACE FUNCTION prices_topup_date_from(
+    p_security_id INTEGER,
+    p_timeframe_id INTEGER,
+    p_closed_bar_dt TIMESTAMP,
+    p_fallback_from DATE
+)
+RETURNS DATE
+LANGUAGE plpgsql STABLE AS $$
+BEGIN
+    IF EXISTS (
+        SELECT 1
+        FROM prices p
+        WHERE p.security_id = p_security_id
+          AND p.timeframe_id = p_timeframe_id
+          AND p.dt >= (p_closed_bar_dt - INTERVAL '5 days')
+        LIMIT 1
+    ) THEN
+        RETURN p_closed_bar_dt::date;
+    END IF;
+    RETURN p_fallback_from;
+END;
+$$;
+
+COMMENT ON FUNCTION prices_topup_date_from(INTEGER, INTEGER, TIMESTAMP, DATE) IS
+'date_from для load_prices: день closed bar, если в БД уже есть недавние свечи';
+
+CREATE OR REPLACE FUNCTION indicator_has_closed_bar(
+    p_security_id INTEGER,
+    p_timeframe_id INTEGER,
+    p_indicator_id INTEGER,
+    p_closed_bar_dt TIMESTAMP
+)
+RETURNS BOOLEAN
+LANGUAGE sql STABLE AS $$
+    SELECT EXISTS (
+        SELECT 1
+        FROM indicator_values iv
+        WHERE iv.security_id = p_security_id
+          AND iv.timeframe_id = p_timeframe_id
+          AND iv.indicator_id = p_indicator_id
+          AND iv.dt = p_closed_bar_dt
+        LIMIT 1
+    );
+$$;
+
+COMMENT ON FUNCTION indicator_has_closed_bar(INTEGER, INTEGER, INTEGER, TIMESTAMP) IS
+'True если индикатор уже посчитан на closed bar';
+
+-- Early exit: все бумаги уже имеют closed-свечу — не трогаем HTTP/sync.
 CREATE OR REPLACE PROCEDURE logic_refresh_market_data(
     p_logic_id INTEGER,
     p_timeframe_id INTEGER,
@@ -482,6 +573,7 @@ DECLARE
     v_tf_sec INTEGER;
     v_err TEXT;
     v_skip_http BOOLEAN := FALSE;
+    v_missing_prices INTEGER;
 BEGIN
     SELECT t.sec INTO v_tf_sec FROM timeframes t WHERE t.id = p_timeframe_id;
 
@@ -489,12 +581,66 @@ BEGIN
     v_date_to := GREATEST(p_closed_bar_dt::date, CURRENT_DATE);
     v_date_from := logic_trade_load_date_from(v_tf_sec, v_point_count, p_closed_bar_dt);
 
-    -- Пока идёт любой бэктест — не дергаем HTTP load_prices (меньше блокировок цен/пула)
     SELECT EXISTS (
         SELECT 1
         FROM logic_backtest_runs r
         WHERE r.status IN ('pending', 'loading_prices', 'loading_indicators', 'running')
     ) INTO v_skip_http;
+
+    SELECT COUNT(*)::INTEGER INTO v_missing_prices
+    FROM logic_securities ls
+    WHERE ls.logic_id = p_logic_id
+      AND ls.is_active = TRUE
+      AND NOT prices_have_closed_bar(ls.security_id, p_timeframe_id, p_closed_bar_dt);
+
+    -- Быстрый путь: цены на closed bar есть у всех — только недостающие индикаторы, без HTTP.
+    IF v_missing_prices = 0 THEN
+        FOR v_sec IN
+            SELECT ls.security_id
+            FROM logic_securities ls
+            WHERE ls.logic_id = p_logic_id AND ls.is_active = TRUE
+        LOOP
+            FOR v_sig IN
+                SELECT DISTINCT lis.indicator_id
+                FROM logic_indicator_signals lis
+                WHERE lis.logic_id = p_logic_id AND lis.is_active = TRUE
+            LOOP
+                IF indicator_has_closed_bar(
+                    v_sec.security_id, p_timeframe_id, v_sig.indicator_id, p_closed_bar_dt
+                ) THEN
+                    CONTINUE;
+                END IF;
+                BEGIN
+                    CALL ensure_security_indicator_series(v_sec.security_id, v_sig.indicator_id);
+                    CALL logic_apply_indicator_params_from_signals(p_logic_id, v_sec.security_id);
+                    CALL sync_security_indicator_series_for_indicator(
+                        v_sec.security_id,
+                        v_sig.indicator_id,
+                        p_timeframe_id,
+                        p_closed_bar_dt,
+                        v_point_count,
+                        TRUE
+                    );
+                EXCEPTION
+                    WHEN OTHERS THEN
+                        v_err := SQLERRM;
+                        PERFORM logic_trade_log(
+                            p_logic_id,
+                            'trade.indicator.error',
+                            format('Ошибка расчёта индикатора id=%s sec=%s: %s', v_sig.indicator_id, v_sec.security_id, v_err),
+                            jsonb_build_object(
+                                'security_id', v_sec.security_id,
+                                'indicator_id', v_sig.indicator_id,
+                                'error', v_err
+                            ),
+                            v_sec.security_id,
+                            p_timeframe_id
+                        );
+                END;
+            END LOOP;
+        END LOOP;
+        RETURN;
+    END IF;
 
     IF v_skip_http THEN
         PERFORM logic_trade_log(
@@ -512,21 +658,17 @@ BEGIN
         FROM logic_securities ls
         WHERE ls.logic_id = p_logic_id AND ls.is_active = TRUE
     LOOP
-        IF NOT v_skip_http THEN
+        -- Повторный HTTP на уже имеющуюся closed-свечу блокирует API / раскрытие бумаги
+        IF NOT v_skip_http
+           AND NOT prices_have_closed_bar(v_sec.security_id, p_timeframe_id, p_closed_bar_dt) THEN
             BEGIN
-                CALL load_prices(v_sec.security_id, p_timeframe_id, v_date_from, v_date_to);
-                PERFORM logic_trade_log(
-                    p_logic_id,
-                    'trade.prices.loaded',
-                    format('Цены подгружены sec=%s (%s .. %s)', v_sec.security_id, v_date_from, v_date_to),
-                    jsonb_build_object(
-                        'security_id', v_sec.security_id,
-                        'date_from', v_date_from,
-                        'date_to', v_date_to,
-                        'timeframe_id', p_timeframe_id
-                    ),
+                CALL load_prices(
                     v_sec.security_id,
-                    p_timeframe_id
+                    p_timeframe_id,
+                    prices_topup_date_from(
+                        v_sec.security_id, p_timeframe_id, p_closed_bar_dt, v_date_from
+                    ),
+                    v_date_to
                 );
             EXCEPTION
                 WHEN undefined_function THEN
@@ -556,6 +698,11 @@ BEGIN
             FROM logic_indicator_signals lis
             WHERE lis.logic_id = p_logic_id AND lis.is_active = TRUE
         LOOP
+            IF indicator_has_closed_bar(
+                v_sec.security_id, p_timeframe_id, v_sig.indicator_id, p_closed_bar_dt
+            ) THEN
+                CONTINUE;
+            END IF;
             BEGIN
                 CALL ensure_security_indicator_series(v_sec.security_id, v_sig.indicator_id);
                 CALL logic_apply_indicator_params_from_signals(p_logic_id, v_sec.security_id);
@@ -566,19 +713,6 @@ BEGIN
                     p_closed_bar_dt,
                     v_point_count,
                     TRUE
-                );
-                PERFORM logic_trade_log(
-                    p_logic_id,
-                    'trade.indicator.synced',
-                    format('Индикатор id=%s пересчитан sec=%s', v_sig.indicator_id, v_sec.security_id),
-                    jsonb_build_object(
-                        'security_id', v_sec.security_id,
-                        'indicator_id', v_sig.indicator_id,
-                        'closed_bar', p_closed_bar_dt,
-                        'point_count', v_point_count
-                    ),
-                    v_sec.security_id,
-                    p_timeframe_id
                 );
             EXCEPTION
                 WHEN OTHERS THEN
@@ -649,6 +783,9 @@ DECLARE
     v_formulas TEXT;
     v_signal_kind TEXT;
     v_ind_dt TIMESTAMP;
+    v_lot_size INTEGER;
+    v_inversion BOOLEAN;
+    v_eff_side TEXT;
 BEGIN
     SELECT l.id, l.account_id, a.account_type
     INTO v_logic
@@ -710,6 +847,7 @@ BEGIN
 
     v_position_size_pct := get_logic_param_numeric(p_logic_id, 'position_size_pct', 10);
     v_max_positions := GREATEST(1, get_logic_param_numeric(p_logic_id, 'max_open_positions', 5)::INTEGER);
+    v_inversion := get_logic_param_boolean(p_logic_id, 'inversion', FALSE);
     v_balance := logic_ensure_balance(p_logic_id);
     v_open_positions := logic_count_open_positions(p_logic_id);
 
@@ -744,6 +882,7 @@ BEGIN
         WHERE ls.logic_id = p_logic_id AND ls.is_active = TRUE
     LOOP
         v_is_shadow := v_sec.real_trading_paused;
+        v_lot_size := logic_security_lot_size(v_sec.security_id);
 
         FOR v_grp IN
             SELECT lis.position_event, lis.position_side
@@ -769,7 +908,7 @@ BEGIN
             LOOP
                 SELECT * INTO v_eval
                 FROM logic_signal_evaluate_at(
-                    v_sig.id, v_sec.security_id, v_tf_id, v_closed_bar_dt
+                    v_sig.id, v_sec.security_id, v_tf_id, v_closed_bar_dt, v_inversion
                 );
 
                 IF v_eval.close_price IS NULL THEN
@@ -855,29 +994,36 @@ BEGIN
                 CONTINUE;
             END IF;
 
+            v_eff_side := lower(COALESCE(v_grp.position_side, 'long'));
+            IF v_inversion THEN
+                v_eff_side := CASE WHEN v_eff_side = 'long' THEN 'short' ELSE 'long' END;
+            END IF;
+
             v_held_long := CASE
-                WHEN v_grp.position_side = 'long'
+                WHEN v_eff_side = 'long'
                 THEN logic_long_position_qty(p_logic_id, v_sec.security_id, v_is_shadow)
                 ELSE 0
             END;
             v_held_short := CASE
-                WHEN v_grp.position_side = 'short'
+                WHEN v_eff_side = 'short'
                 THEN logic_short_position_qty(p_logic_id, v_sec.security_id, v_is_shadow)
                 ELSE 0
             END;
             v_is_open_event := COALESCE(v_grp.position_event, 'open') = 'open';
 
-            IF v_grp.position_side = 'long' THEN
+            IF v_eff_side = 'long' THEN
                 IF v_is_open_event THEN
                     IF v_held_long > 0 OR (NOT v_is_shadow AND v_open_positions >= v_max_positions) THEN
                         CONTINUE;
                     END IF;
-                    v_quantity := logic_calc_open_quantity(v_balance, v_position_size_pct, v_pp);
-                    IF v_quantity < 1 THEN
+                    v_quantity := logic_calc_open_quantity(
+                        v_balance, v_position_size_pct, v_pp, v_lot_size
+                    );
+                    IF v_quantity < v_lot_size THEN
                         IF v_logic.account_type = 'fake' THEN
                             CONTINUE;
                         END IF;
-                        v_quantity := 1;
+                        v_quantity := v_lot_size;
                     END IF;
                     v_side_id := v_side_open_id;
                     v_action_id := v_action_long_id;
@@ -895,12 +1041,14 @@ BEGIN
                 IF v_held_short > 0 OR (NOT v_is_shadow AND v_open_positions >= v_max_positions) THEN
                     CONTINUE;
                 END IF;
-                v_quantity := logic_calc_open_quantity(v_balance, v_position_size_pct, v_pp);
-                IF v_quantity < 1 THEN
+                v_quantity := logic_calc_open_quantity(
+                    v_balance, v_position_size_pct, v_pp, v_lot_size
+                );
+                IF v_quantity < v_lot_size THEN
                     IF v_logic.account_type = 'fake' THEN
                         CONTINUE;
                     END IF;
-                    v_quantity := 1;
+                    v_quantity := v_lot_size;
                 END IF;
                 v_side_id := v_side_open_id;
                 v_action_id := v_action_short_id;

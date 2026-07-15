@@ -4,6 +4,7 @@ export interface LogicRow {
   account_id: number;
   broker_id: number;
   is_enabled: boolean;
+  note?: string | null;
   timeframe?: string;
   position_size_pct: number;
   max_open_positions: number;
@@ -14,6 +15,8 @@ export interface LogicRow {
   stop_loss_timeframe?: string;
   base_annual_rate_pct?: number;
   rating_lookback_days?: number;
+  /** Инверсия логики: условия наоборот и Long↔Short. */
+  inversion?: boolean;
   account_code: string;
   account_name: string;
   account_type: 'real' | 'fake';
@@ -33,6 +36,7 @@ export interface LogicTradingParamsPayload {
   stop_loss_timeframe?: string;
   base_annual_rate_pct?: number;
   rating_lookback_days?: number;
+  inversion?: boolean;
 }
 
 export interface LogicTradingParamsResponse {
@@ -46,6 +50,7 @@ export interface LogicTradingParamsResponse {
   stop_loss_timeframe: string;
   base_annual_rate_pct: number;
   rating_lookback_days: number;
+  inversion: boolean;
 }
 
 export interface LogicParamRow {
@@ -103,6 +108,7 @@ export interface LogicSecurityRow {
   is_active: boolean;
   created_at?: string;
   security_name: string;
+  lot_size?: number;
   security_type: string;
   prefix: string | null;
   instrument_market: string | null;

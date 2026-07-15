@@ -1,6 +1,7 @@
 -- ============================================
 -- MultiLogicTrade — шаг 1: таблицы и справочники
--- Версия: v43c (идемпотентный запуск)
+-- Версия: v44 (идемпотентный запуск)
+-- v44: logics.note — примечание; +5 контртрендовых OsEngine; подписи типа стратегии у seed
 -- v43c: logic_trades.run_id — привязка тестовых сделок к прогону (изоляция финреза)
 -- v43: комиссия default 0.03; L1–L4 из MultiLogicTradeA; LINREG/ADX/CCI calc
 -- v42: rating_lookback_days — окно предрасчёта боевого рейтинга сигналов при enable
@@ -157,9 +158,15 @@ COMMENT ON TABLE exchanges IS 'Таблица торговых площадок'
 CREATE TABLE IF NOT EXISTS securities (
     id SERIAL PRIMARY KEY,
     name VARCHAR(200) NOT NULL,
-    security_type_id INTEGER REFERENCES security_types(id)
+    security_type_id INTEGER REFERENCES security_types(id),
+    lot_size INTEGER NOT NULL DEFAULT 1 CHECK (lot_size >= 1)
 );
 
+ALTER TABLE securities ADD COLUMN IF NOT EXISTS lot_size INTEGER NOT NULL DEFAULT 1;
+ALTER TABLE securities DROP CONSTRAINT IF EXISTS securities_lot_size_check;
+ALTER TABLE securities ADD CONSTRAINT securities_lot_size_check CHECK (lot_size >= 1);
+
+COMMENT ON COLUMN securities.lot_size IS 'Лотность: минимальный шаг объёма сделки в штуках (MOEX TQBR)';
 CREATE UNIQUE INDEX IF NOT EXISTS idx_securities_name_unique ON securities(name);
 
 COMMENT ON TABLE securities IS 'Таблица ценных бумаг';
@@ -339,6 +346,24 @@ ON CONFLICT (security_id, exchange_id) DO UPDATE SET
     instrument_market = EXCLUDED.instrument_market,
     tbank_figi = COALESCE(EXCLUDED.tbank_figi, security_prefixes.tbank_figi),
     note = EXCLUDED.note;
+
+-- Лотность акций MOEX (штук в лоте TQBR; фьючерсы — 1 контракт)
+UPDATE securities s
+SET lot_size = v.lot
+FROM security_prefixes sp
+JOIN exchanges e ON e.id = sp.exchange_id
+JOIN (VALUES
+    ('SBER', 10), ('SBERP', 10), ('GAZP', 10), ('LKOH', 10),
+    ('ROSN', 10), ('NVTK', 10), ('GMKN', 10), ('TATN', 10), ('TATNP', 10),
+    ('PLZL', 10), ('ALRS', 10), ('CHMF', 10), ('NLMK', 10), ('MAGN', 10),
+    ('MTLR', 10), ('MTLRP', 10), ('MGNT', 10), ('MTSS', 10), ('RUAL', 10),
+    ('HYDR', 10), ('PHOR', 10), ('MOEX', 10), ('TRNFP', 10), ('UPRO', 10),
+    ('SNGS', 1), ('SNGSP', 1), ('VTBR', 1), ('IRAO', 1), ('FEES', 1),
+    ('RTKM', 1), ('YDEX', 1), ('AFLT', 1), ('FLOT', 1), ('AFKS', 1)
+) AS v(prefix, lot) ON sp.prefix = v.prefix
+WHERE s.id = sp.security_id
+  AND e.name = 'MOEX'
+  AND sp.instrument_market = 'stock';
 
 -- ============================================
 -- Таблица: timeframes (таймфреймы)
@@ -934,8 +959,11 @@ CREATE TABLE IF NOT EXISTS logics (
     id SERIAL PRIMARY KEY,
     name VARCHAR(100) NOT NULL UNIQUE,
     account_id INTEGER NOT NULL REFERENCES accounts(id) ON DELETE RESTRICT,
-    is_enabled BOOLEAN NOT NULL DEFAULT TRUE
+    is_enabled BOOLEAN NOT NULL DEFAULT TRUE,
+    note TEXT
 );
+
+ALTER TABLE logics ADD COLUMN IF NOT EXISTS note TEXT;
 
 CREATE INDEX IF NOT EXISTS idx_logics_account_id ON logics(account_id);
 
@@ -943,6 +971,7 @@ COMMENT ON TABLE logics IS 'Торговые логики: одна строка
 COMMENT ON COLUMN logics.name IS 'Уникальное имя логики';
 COMMENT ON COLUMN logics.account_id IS 'Счёт (accounts), на котором выполняется эта торговля';
 COMMENT ON COLUMN logics.is_enabled IS 'Логика включена (активна) или выключена';
+COMMENT ON COLUMN logics.note IS 'Примечание: тип стратегии, источник (OsEngine и т.д.), комментарий в свободной форме';
 
 -- Пример: SMA Price Cross Demo (фейковый счёт T-Bank); параметры — в logic_params ниже
 INSERT INTO logics (name, account_id, is_enabled)
@@ -978,8 +1007,8 @@ INSERT INTO logic_param_defs (param_key, name_ru, value_type, default_value, des
      'Стартовый депозит бумажной торговли / эталон для расчёта лота', 3),
     ('current_balance', 'Текущий остаток', 'money', '',
      'Обновляется trade runner после симулированных сделок', 4),
-    ('commission_pct', '% комиссии от депозита', 'number', '0.03',
-     'Фейковый счёт: комиссия = текущий депозит × % / 100 (на каждую сделку)', 5),
+    ('commission_pct', '% комиссии от сделки', 'number', '0.03',
+     'Фейковый счёт: комиссия = цена × количество × % / 100 (на каждую сделку)', 5),
     ('cost_method', 'Метод расчёта PnL', 'text', 'FIFO',
      'FIFO — по очереди покупок; AVERAGE — по средней цене остатка', 6),
     ('stop_loss_timeframe', 'Таймфрейм стоп-лосса', 'text', 'M5',
@@ -988,6 +1017,8 @@ INSERT INTO logic_param_defs (param_key, name_ru, value_type, default_value, des
      'Порог для рейтинга сигнала: ход цены на следующей свече в годовых ≥ этой ставки', 8),
     ('rating_lookback_days', 'Дней предрасчёта рейтинга', 'integer', '7',
      'При включении боя: предрасчёт боевых рейтингов сигналов по свечам за N дней (фон)', 9),
+    ('inversion', 'Инверсия', 'boolean', 'false',
+     'Инверсия логики: условия наоборот (≥↔≤, >↔<) и сделки в противоположную сторону (Long↔Short)', 10),
     ('last_stop_bar_dt', 'Последняя свеча стоп-лосса', 'text', '',
      'Служебный: open time закрытой свечи TF стоп-лосса', 97),
     ('last_trade_check_at', 'Последняя проверка сигналов', 'text', '',
@@ -997,6 +1028,7 @@ INSERT INTO logic_param_defs (param_key, name_ru, value_type, default_value, des
 ON CONFLICT (param_key) DO UPDATE SET
     name_ru = EXCLUDED.name_ru,
     value_type = EXCLUDED.value_type,
+    default_value = EXCLUDED.default_value,
     description = EXCLUDED.description,
     display_order = EXCLUDED.display_order;
 
@@ -1831,6 +1863,253 @@ WHERE l.name IN (
     'L1 — лонг, тренд', 'L2 — лонг, боковик', 'L3 — шорт, тренд', 'L4 — шорт, боковик'
 );
 
+-- =====================================================================
+-- v44: ещё 5 контртрендовых стратегий (OsEngine-style)
+-- FAKE, выключены, все акции, SL 1% resume / TP 3%.
+-- =====================================================================
+
+INSERT INTO logics (name, account_id, is_enabled, note)
+SELECT v.name, a.id, FALSE, v.note
+FROM accounts a
+JOIN brokers b ON b.id = a.broker_id
+CROSS JOIN (VALUES
+    (
+        'CCI Countertrade',
+        'Контртрендовая. По мотивам OsEngine CciTrade: long при CCI ≤ −100, short при CCI ≥ +100; выход к нулевой зоне.'
+    ),
+    (
+        'LinReg Fade',
+        'Контртрендовая. OsEngine-style fade по каналу LinReg: отскок от нижней/верхней границы к середине канала.'
+    ),
+    (
+        'ADX Range RSI',
+        'Контртрендовая (боковик). Слабый тренд ADX < 25 + перепроданность/перекупленность RSI — OsEngine range-trading.'
+    ),
+    (
+        'MACD Hist Fade',
+        'Контртрендовая. OsEngine MacdRevers (упрощ.): вход против импульса гистограммы MACD, выход при смене знака HISTOGRAM.'
+    ),
+    (
+        'ATR Spike Reversal',
+        'Контртрендовая. Всплеск волатильности ATR GROWTH5 ≥ 3 + экстремум RSI — откат после импульса (OsEngine-style fade).'
+    )
+) AS v(name, note)
+WHERE b.code = 'T-BANK' AND a.account_code = 'FAKE-EFF-001'
+ON CONFLICT (name) DO UPDATE SET note = EXCLUDED.note;
+
+INSERT INTO logic_params (logic_id, param_key, param_value, value_type)
+SELECT l.id, v.param_key, v.param_value, v.value_type
+FROM logics l
+CROSS JOIN (VALUES
+    ('timeframe', 'M15', 'text'),
+    ('position_size_pct', '10', 'number'),
+    ('max_open_positions', '3', 'integer'),
+    ('initial_balance', '1000000', 'money'),
+    ('current_balance', '1000000', 'money'),
+    ('commission_pct', '0.03', 'number'),
+    ('cost_method', 'FIFO', 'text'),
+    ('stop_loss_timeframe', 'M5', 'text'),
+    ('base_annual_rate_pct', '20', 'number'),
+    ('rating_lookback_days', '7', 'integer')
+) AS v(param_key, param_value, value_type)
+WHERE l.name IN (
+    'CCI Countertrade', 'LinReg Fade', 'ADX Range RSI', 'MACD Hist Fade', 'ATR Spike Reversal'
+)
+ON CONFLICT (logic_id, param_key) DO UPDATE SET
+    param_value = EXCLUDED.param_value,
+    updated_at = CURRENT_TIMESTAMP;
+
+INSERT INTO logic_params (logic_id, param_key, param_value, value_type)
+SELECT l.id, d.param_key, d.default_value, d.value_type
+FROM logics l
+CROSS JOIN logic_param_defs d
+WHERE l.name IN (
+    'CCI Countertrade', 'LinReg Fade', 'ADX Range RSI', 'MACD Hist Fade', 'ATR Spike Reversal'
+)
+ON CONFLICT (logic_id, param_key) DO NOTHING;
+
+DELETE FROM logic_indicator_signals lis
+USING logics l
+WHERE lis.logic_id = l.id
+  AND l.name IN (
+    'CCI Countertrade', 'LinReg Fade', 'ADX Range RSI', 'MACD Hist Fade', 'ATR Spike Reversal'
+  );
+
+INSERT INTO logic_indicator_signals (
+    logic_id, indicator_id, position_event, position_side, signal_kind, formula, display_order
+)
+SELECT l.id, i.id, v.position_event, v.position_side, v.signal_kind, v.formula, v.display_order
+FROM logics l
+CROSS JOIN (VALUES
+    ('CCI', 'open',  'long',  'counter', '@CCI(period=20,series=VALUE) VALUE <= -100', 0),
+    ('CCI', 'close', 'long',  'trend',   '@CCI(period=20,series=VALUE) VALUE >= 0', 1),
+    ('CCI', 'open',  'short', 'counter', '@CCI(period=20,series=VALUE) VALUE >= 100', 2),
+    ('CCI', 'close', 'short', 'trend',   '@CCI(period=20,series=VALUE) VALUE <= 0', 3)
+) AS v(ind_code, position_event, position_side, signal_kind, formula, display_order)
+JOIN indicators i ON i.code = v.ind_code
+WHERE l.name = 'CCI Countertrade';
+
+INSERT INTO logic_indicator_signals (
+    logic_id, indicator_id, position_event, position_side, signal_kind, formula, display_order
+)
+SELECT l.id, i.id, v.position_event, v.position_side, v.signal_kind, v.formula, v.display_order
+FROM logics l
+CROSS JOIN (VALUES
+    ('LINREG', 'open',  'long',  'counter', '@LINREG(period=20,std_dev=2,series=LOWER) pp <= VALUE', 0),
+    ('LINREG', 'close', 'long',  'trend',   '@LINREG(period=20,std_dev=2,series=MIDDLE) pp >= VALUE', 1),
+    ('LINREG', 'open',  'short', 'counter', '@LINREG(period=20,std_dev=2,series=UPPER) pp >= VALUE', 2),
+    ('LINREG', 'close', 'short', 'trend',   '@LINREG(period=20,std_dev=2,series=MIDDLE) pp <= VALUE', 3)
+) AS v(ind_code, position_event, position_side, signal_kind, formula, display_order)
+JOIN indicators i ON i.code = v.ind_code
+WHERE l.name = 'LinReg Fade';
+
+INSERT INTO logic_indicator_signals (
+    logic_id, indicator_id, position_event, position_side, signal_kind, formula, display_order
+)
+SELECT l.id, i.id, v.position_event, v.position_side, v.signal_kind, v.formula, display_order
+FROM logics l
+CROSS JOIN (VALUES
+    ('ADX', 'open',  'long',  'counter', '@ADX(period=14,series=ADX) VALUE < 25', 0),
+    ('RSI', 'open',  'long',  'counter', '@RSI(period=14,series=VALUE) VALUE < 30', 1),
+    ('RSI', 'close', 'long',  'trend',   '@RSI(period=14,series=VALUE) VALUE > 50', 2),
+    ('ADX', 'open',  'short', 'counter', '@ADX(period=14,series=ADX) VALUE < 25', 3),
+    ('RSI', 'open',  'short', 'counter', '@RSI(period=14,series=VALUE) VALUE > 70', 4),
+    ('RSI', 'close', 'short', 'trend',   '@RSI(period=14,series=VALUE) VALUE < 50', 5)
+) AS v(ind_code, position_event, position_side, signal_kind, formula, display_order)
+JOIN indicators i ON i.code = v.ind_code
+WHERE l.name = 'ADX Range RSI';
+
+INSERT INTO logic_indicator_signals (
+    logic_id, indicator_id, position_event, position_side, signal_kind, formula, display_order
+)
+SELECT l.id, i.id, v.position_event, v.position_side, v.signal_kind, v.formula, v.display_order
+FROM logics l
+CROSS JOIN (VALUES
+    ('MACD', 'open',  'long',  'counter', '@MACD(fast_period=12,slow_period=26,signal_period=9,series=HISTOGRAM) VALUE < 0', 0),
+    ('MACD', 'close', 'long',  'trend',   '@MACD(fast_period=12,slow_period=26,signal_period=9,series=HISTOGRAM) VALUE > 0', 1),
+    ('MACD', 'open',  'short', 'counter', '@MACD(fast_period=12,slow_period=26,signal_period=9,series=HISTOGRAM) VALUE > 0', 2),
+    ('MACD', 'close', 'short', 'trend',   '@MACD(fast_period=12,slow_period=26,signal_period=9,series=HISTOGRAM) VALUE < 0', 3)
+) AS v(ind_code, position_event, position_side, signal_kind, formula, display_order)
+JOIN indicators i ON i.code = v.ind_code
+WHERE l.name = 'MACD Hist Fade';
+
+INSERT INTO logic_indicator_signals (
+    logic_id, indicator_id, position_event, position_side, signal_kind, formula, display_order
+)
+SELECT l.id, i.id, v.position_event, v.position_side, v.signal_kind, v.formula, v.display_order
+FROM logics l
+CROSS JOIN (VALUES
+    ('ATR', 'open',  'long',  'counter', '@ATR(period=14,series=GROWTH5) VALUE >= 3', 0),
+    ('RSI', 'open',  'long',  'counter', '@RSI(period=14,series=VALUE) VALUE < 35', 1),
+    ('RSI', 'close', 'long',  'trend',   '@RSI(period=14,series=VALUE) VALUE > 55', 2),
+    ('ATR', 'open',  'short', 'counter', '@ATR(period=14,series=GROWTH5) VALUE >= 3', 3),
+    ('RSI', 'open',  'short', 'counter', '@RSI(period=14,series=VALUE) VALUE > 65', 4),
+    ('RSI', 'close', 'short', 'trend',   '@RSI(period=14,series=VALUE) VALUE < 45', 5)
+) AS v(ind_code, position_event, position_side, signal_kind, formula, display_order)
+JOIN indicators i ON i.code = v.ind_code
+WHERE l.name = 'ATR Spike Reversal';
+
+INSERT INTO logic_securities (logic_id, security_id, display_order)
+SELECT l.id, q.security_id, ROW_NUMBER() OVER (PARTITION BY l.id ORDER BY q.sort_key) - 1
+FROM logics l
+CROSS JOIN LATERAL (
+    SELECT DISTINCT ON (s.id)
+        s.id AS security_id,
+        COALESCE(sp.prefix, s.name) AS sort_key
+    FROM securities s
+    JOIN security_prefixes sp ON sp.security_id = s.id AND sp.instrument_market = 'stock'
+    ORDER BY s.id, sp.prefix
+) q
+WHERE l.name IN (
+    'CCI Countertrade', 'LinReg Fade', 'ADX Range RSI', 'MACD Hist Fade', 'ATR Spike Reversal'
+)
+ON CONFLICT (logic_id, security_id) DO UPDATE SET is_active = TRUE;
+
+DELETE FROM logic_stops ls
+USING logics l
+WHERE ls.logic_id = l.id
+  AND l.name IN (
+    'CCI Countertrade', 'LinReg Fade', 'ADX Range RSI', 'MACD Hist Fade', 'ATR Spike Reversal'
+  );
+
+INSERT INTO logic_stops (logic_id, rule_kind, scope_type, value, value_unit, display_order, is_active)
+SELECT l.id, v.rule_kind, v.scope_type, v.value, v.value_unit, v.display_order, TRUE
+FROM logics l
+CROSS JOIN (VALUES
+    ('stop_loss',   'security_resume', 1.0, 'percent', 0),
+    ('take_profit', 'security',        3.0, 'percent', 1)
+) AS v(rule_kind, scope_type, value, value_unit, display_order)
+WHERE l.name IN (
+    'CCI Countertrade', 'LinReg Fade', 'ADX Range RSI', 'MACD Hist Fade', 'ATR Spike Reversal'
+);
+
+-- Примечания ко всем seed-логикам (тип стратегии + источник)
+UPDATE logics l
+SET note = v.note
+FROM (VALUES
+    (
+        'SMA Price Cross Demo',
+        'Демо-логика проекта. Трендовая по пересечению цены и SMA: long выше средней, short ниже. Для проверки UI и runner, не из OsEngine.'
+    ),
+    (
+        'RSI Mean Reversion',
+        'Контртрендовая (mean reversion). OsEngine RsiTrade: покупка в перепроданности RSI<30, продажа в перекупленности RSI>70.'
+    ),
+    (
+        'Bollinger Bounce',
+        'Контртрендовая. OsEngine StrategyBollinger: отскок от нижней/верхней полосы BB к середине канала.'
+    ),
+    (
+        'Bollinger Breakout',
+        'Трендовая. OsEngine BollingerRevers / пробой: вход по выходу за полосу, выход у середины BB.'
+    ),
+    (
+        'MACD Zero Line',
+        'Трендовая. OsEngine MacdTrend (упрощ.): long при MACD>0, short при MACD<0.'
+    ),
+    (
+        'Stochastic Levels',
+        'Контртрендовая. OsEngine Stochastic fade: long при %K<20, short при %K>80.'
+    ),
+    (
+        'EMA Price Cross',
+        'Трендовая. OsEngine SmaTrendSample на EMA: цена выше EMA — long, ниже — short.'
+    ),
+    (
+        'Dual MA Trend',
+        'Трендовая. OsEngine SmaWithAShift: цена выше SMA(20) и EMA(50) — long, ниже обеих — short.'
+    ),
+    (
+        'SMA Stoch Pullback',
+        'Смешанная: тренд + контртренд. OsEngine SmaStochastic — фильтр тренда по SMA, вход на откате Stoch.'
+    ),
+    (
+        'BB Stoch Bounce',
+        'Контртрендовая (комбо). OsEngine StrategyBollingerAndStochastic: экстремум одновременно по BB и Stoch.'
+    ),
+    (
+        'SMAT3 Trend',
+        'Трендовая. Сглаженное тройное SMA (SMAT3): long выше линии, short ниже — тренд по сглаженной средней.'
+    ),
+    (
+        'L1 — лонг, тренд',
+        'Трендовая комплексная. Адаптация MultiLogicTradeA FINRESP L1 (SMA, LinReg, ATR, ADX, CCI, MACD). Не OsEngine.'
+    ),
+    (
+        'L2 — лонг, боковик',
+        'Контртрендовая / боковик. FINRESP L2 — long в диапазоне, слабый ADX и откат к нижней границе LinReg.'
+    ),
+    (
+        'L3 — шорт, тренд',
+        'Трендовая шорт. FINRESP L3 — зеркало L1 для short по тем же фильтрам.'
+    ),
+    (
+        'L4 — шорт, боковик',
+        'Контртрендовая / боковик. FINRESP L4 — short в диапазоне.'
+    )
+) AS v(name, note)
+WHERE l.name = v.name;
+
 -- Сделки по торговой логике (исполнение по сигналам индикаторов)
 CREATE TABLE IF NOT EXISTS logic_trades (
     id BIGSERIAL PRIMARY KEY,
@@ -2237,6 +2516,7 @@ COMMENT ON COLUMN indicator_values.value IS 'Числовое значение �
 
 -- logics (дополнение)
 COMMENT ON COLUMN logics.id IS 'Surrogate PK; все дочерние таблицы ссылаются logic_id → logics.id';
+COMMENT ON COLUMN logics.note IS 'Примечание: тип стратегии, источник, комментарий в свободной форме';
 
 -- logic_param_defs
 COMMENT ON COLUMN logic_param_defs.param_key IS 'Уникальный ключ параметра логики (timeframe, commission_pct …)';

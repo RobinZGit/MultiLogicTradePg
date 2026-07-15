@@ -130,12 +130,14 @@ export class SecuritiesService {
     timeframeId: number,
     indicatorIds: number[],
     after?: string,
-    before?: string
+    before?: string,
+    limit = 1500
   ): Observable<IndicatorValueRow[]> {
     let params = new HttpParams()
       .set('security_id', String(securityId))
       .set('timeframe_id', String(timeframeId))
-      .set('indicator_ids', indicatorIds.join(','));
+      .set('indicator_ids', indicatorIds.join(','))
+      .set('limit', String(Math.min(Math.max(1, limit), 4000)));
     if (after) params = params.set('after', after);
     if (before) params = params.set('before', before);
     return this.http.get<IndicatorValueRow[]>(

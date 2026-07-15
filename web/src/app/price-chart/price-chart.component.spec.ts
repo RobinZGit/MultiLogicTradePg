@@ -158,36 +158,29 @@ describe('PriceChartComponent', () => {
     expect(vs2).toBeGreaterThanOrEqual(0);
   });
 
-  it('backtest overlays do not block pan (tradeMarkers/equity)', () => {
+  it('trade marker outside visible window is not pinned to last candle', () => {
     component.candles = [
       { dt: '2026-01-01T10:00:00', open_price: 1, high_price: 1, low_price: 1, close_price: 1, volume: 1 },
       { dt: '2026-01-01T10:15:00', open_price: 2, high_price: 2, low_price: 2, close_price: 2, volume: 1 },
+      { dt: '2026-01-01T10:30:00', open_price: 3, high_price: 3, low_price: 3, close_price: 3, volume: 1 },
+      { dt: '2026-01-01T10:45:00', open_price: 4, high_price: 4, low_price: 4, close_price: 4, volume: 1 },
     ];
-    component.loading = false;
-    component.loadingOlder = false;
-    component.tradeMarkers = [
-      { dt: '2026-01-01T10:00:00', price: 1, kind: 'open', side: 'long' },
-    ];
-    component.equityPoints = [
-      { dt: '2026-01-01T10:00:00', value: 0 },
-      { dt: '2026-01-01T10:15:00', value: 12 },
-    ];
-    component.shadedRanges = [
-      { startDt: '2026-01-01T10:00:00', endDt: '2026-01-01T10:15:00', label: 'выкл.' },
-    ];
-    component.ngOnChanges({
-      tradeMarkers: {
-        currentValue: component.tradeMarkers,
-        previousValue: [],
-        firstChange: true,
-        isFirstChange: () => true,
-      },
-    });
-    const down = new PointerEvent('pointerdown', { clientX: 40, pointerId: 1 });
-    Object.defineProperty(down, 'target', {
-      value: { setPointerCapture: () => {}, releasePointerCapture: () => {} },
-    });
-    component.onPointerDown(down);
-    expect((component as unknown as { dragging: boolean }).dragging).toBeTrue();
+    // Окно только на первых двух свечах
+    (component as unknown as { viewStart: number }).viewStart = 0;
+    spyOn(component as unknown as { viewCount: () => number }, 'viewCount').and.returnValue(2);
+    const visible = component.candles.slice(0, 2);
+    const idx = (
+      component as unknown as {
+        indexInVisible: (v: typeof visible, dt: string) => number;
+      }
+    ).indexInVisible(visible, '2026-01-01T10:45:00');
+    // Сделка на 10:45 вне окна → не рисовать (раньше прилипало к последней visible)
+    expect(idx).toBe(-1);
+    const idxIn = (
+      component as unknown as {
+        indexInVisible: (v: typeof visible, dt: string) => number;
+      }
+    ).indexInVisible(visible, '2026-01-01T10:15:00');
+    expect(idxIn).toBe(1);
   });
 });

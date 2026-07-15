@@ -37,6 +37,7 @@ export class LogicEditorComponent implements OnChanges {
   filteredAccounts: AccountRow[] = [];
 
   name = '';
+  note = '';
   brokerId: number | null = null;
   accountId: number | null = null;
   isEnabled = true;
@@ -98,6 +99,7 @@ export class LogicEditorComponent implements OnChanges {
       name: trimmed,
       account_id: this.accountId,
       is_enabled: this.isEnabled,
+      note: this.note.trim() || null,
     };
 
     this.saving = true;
@@ -136,11 +138,13 @@ export class LogicEditorComponent implements OnChanges {
 
     if (this.mode === 'edit' && this.logic) {
       this.name = this.logic.name;
+      this.note = this.logic.note ?? '';
       this.brokerId = this.logic.broker_id;
       this.accountId = this.logic.account_id;
       this.isEnabled = this.logic.is_enabled;
     } else {
       this.name = '';
+      this.note = '';
       this.brokerId = null;
       this.accountId = null;
       this.isEnabled = true;

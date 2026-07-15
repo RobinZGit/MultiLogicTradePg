@@ -519,6 +519,12 @@ app.get('/api/indicator-values', async (req, res) => {
     .filter((n) => Number.isInteger(n) && n > 0);
   const before = req.query.before ? String(req.query.before) : null;
   const after = req.query.after ? String(req.query.after) : null;
+  const limitRaw = Number(req.query.limit);
+  // Без лимита UI разворота бумаги забивался 7+ МБ JSON и «висел».
+  const limit =
+    Number.isInteger(limitRaw) && limitRaw > 0
+      ? Math.min(limitRaw, 4000)
+      : 1500;
   if (!securityId || !timeframeId || indicatorIds.length === 0) {
     res.status(400).json({
       error: 'Укажите security_id, timeframe_id и indicator_ids (через запятую)',
@@ -536,26 +542,62 @@ app.get('/api/indicator-values', async (req, res) => {
       params.push(after);
       rangeClause += ` AND iv.dt >= $${params.length}::timestamp`;
     }
+    // Если окно не задано — только хвост истории (не вся таблица).
+    if (!before && !after) {
+      params.push(limit);
+      const { rows } = await pool.query(
+        `
+        SELECT * FROM (
+          SELECT
+            iv.indicator_id,
+            i.code AS indicator_code,
+            ivt.code AS line_code,
+            ivt.name AS line_name,
+            ivt.is_threshold,
+            ivt.display_order,
+            iv.dt,
+            iv.value
+          FROM indicator_values iv
+          JOIN indicators i ON i.id = iv.indicator_id
+          JOIN indicator_value_types ivt ON ivt.id = iv.indicator_value_type_id
+          WHERE iv.security_id = $1
+            AND iv.timeframe_id = $2
+            AND iv.indicator_id = ANY($3::int[])
+          ORDER BY iv.dt DESC, iv.indicator_id, ivt.display_order, ivt.id
+          LIMIT $4
+        ) t
+        ORDER BY t.dt, t.indicator_id, t.display_order
+        `,
+        params
+      );
+      res.json(rows);
+      return;
+    }
+    params.push(limit);
     const { rows } = await pool.query(
       `
-      SELECT
-        iv.indicator_id,
-        i.code AS indicator_code,
-        ivt.code AS line_code,
-        ivt.name AS line_name,
-        ivt.is_threshold,
-        ivt.display_order,
-        iv.dt,
-        iv.value
-      FROM indicator_values iv
-      JOIN indicators i ON i.id = iv.indicator_id
-      JOIN indicator_value_types ivt ON ivt.id = iv.indicator_value_type_id
-      WHERE iv.security_id = $1
-        AND iv.timeframe_id = $2
-        AND iv.indicator_id = ANY($3::int[])
-        ${rangeClause}
-      ORDER BY iv.dt, iv.indicator_id, ivt.display_order, ivt.id
-    `,
+      SELECT * FROM (
+        SELECT
+          iv.indicator_id,
+          i.code AS indicator_code,
+          ivt.code AS line_code,
+          ivt.name AS line_name,
+          ivt.is_threshold,
+          ivt.display_order,
+          iv.dt,
+          iv.value
+        FROM indicator_values iv
+        JOIN indicators i ON i.id = iv.indicator_id
+        JOIN indicator_value_types ivt ON ivt.id = iv.indicator_value_type_id
+        WHERE iv.security_id = $1
+          AND iv.timeframe_id = $2
+          AND iv.indicator_id = ANY($3::int[])
+          ${rangeClause}
+        ORDER BY iv.dt DESC, iv.indicator_id, ivt.display_order, ivt.id
+        LIMIT $${params.length}
+      ) t
+      ORDER BY t.dt, t.indicator_id, t.display_order
+      `,
       params
     );
     res.json(rows);
@@ -599,6 +641,7 @@ app.get('/api/securities', async (req, res) => {
       SELECT
         s.id,
         s.name,
+        s.lot_size,
         st.name AS security_type,
         sp.prefix,
         sp.instrument_market,
@@ -698,7 +741,9 @@ app.get('/api/prices', async (req, res) => {
     }
     const { rows } = await pool.query(
       `
-      SELECT p.dt, p.open_price, p.high_price, p.low_price, p.close_price, p.volume,
+      SELECT
+        to_char(p.dt, 'YYYY-MM-DD HH24:MI:SS') AS dt,
+        p.open_price, p.high_price, p.low_price, p.close_price, p.volume,
              p.contract_prefix,
              sp.prefix AS group_prefix
       FROM prices p
@@ -852,6 +897,7 @@ app.get('/api/logics', async (_req, res) => {
         l.name,
         l.account_id,
         l.is_enabled,
+        l.note,
         a.account_code,
         a.name AS account_name,
         a.account_type,
@@ -1280,11 +1326,11 @@ app.post('/api/logics', async (req, res) => {
   try {
     const { rows } = await pool.query(
       `
-      INSERT INTO logics (name, account_id, is_enabled)
-      VALUES ($1, $2, $3)
-      RETURNING id, name, account_id, is_enabled
+      INSERT INTO logics (name, account_id, is_enabled, note)
+      VALUES ($1, $2, $3, $4)
+      RETURNING id, name, account_id, is_enabled, note
       `,
-      [parsed.name, parsed.account_id, parsed.is_enabled]
+      [parsed.name, parsed.account_id, parsed.is_enabled, parsed.note]
     );
     const row = rows[0];
     await ensureDefaultParams(pool, row.id);
@@ -1330,11 +1376,11 @@ app.put('/api/logics/:id', async (req, res) => {
     const { rows } = await client.query(
       `
       UPDATE logics
-      SET name = $1, account_id = $2, is_enabled = $3
-      WHERE id = $4
-      RETURNING id, name, account_id, is_enabled
+      SET name = $1, account_id = $2, is_enabled = $3, note = $4
+      WHERE id = $5
+      RETURNING id, name, account_id, is_enabled, note
       `,
-      [parsed.name, parsed.account_id, parsed.is_enabled, id]
+      [parsed.name, parsed.account_id, parsed.is_enabled, parsed.note, id]
     );
     await client.query('COMMIT');
     res.json(rows[0]);
@@ -1932,6 +1978,7 @@ const LOGIC_SECURITY_SELECT = `
     ls.stop_resume_baseline::float8 AS stop_resume_baseline,
     ls.stop_resume_triggered_at,
     s.name AS security_name,
+    s.lot_size,
     st.name AS security_type,
     sp.prefix,
     sp.instrument_market,
@@ -2068,8 +2115,8 @@ const LOGIC_TRADE_SELECT = `
     lt.signal_formula,
     lt.quantity,
     lt.price,
-    lt.bar_dt,
-    lt.executed_at,
+    to_char(lt.bar_dt, 'YYYY-MM-DD HH24:MI:SS') AS bar_dt,
+    to_char(lt.executed_at, 'YYYY-MM-DD HH24:MI:SS') AS executed_at,
     lt.is_simulated,
     lt.is_fictitious,
     lt.is_shadow,
@@ -2107,7 +2154,6 @@ app.get('/api/logic-trades', async (req, res) => {
     res.status(400).json({ error: 'logic_id required' });
     return;
   }
-  const limit = Math.min(Math.max(Number(req.query.limit) || 100, 1), 500);
   const isTestRaw = req.query.is_test;
   const isTest =
     isTestRaw === '1' || isTestRaw === 'true'
@@ -2115,6 +2161,13 @@ app.get('/api/logic-trades', async (req, res) => {
       : isTestRaw === '0' || isTestRaw === 'false'
         ? false
         : null;
+  const limitRaw = Number(req.query.limit);
+  const defaultLimit = isTest === true ? 5000 : 100;
+  const limitCap = isTest === true ? 20000 : 500;
+  const limit = Math.min(
+    Math.max(Number.isFinite(limitRaw) && limitRaw > 0 ? limitRaw : defaultLimit, 1),
+    limitCap
+  );
   try {
     const params = [logicId];
     let where = 'WHERE lt.logic_id = $1';
@@ -2808,6 +2861,11 @@ function parseLogicTradingParams(body) {
     hasField = true;
   }
 
+  if (body?.inversion !== undefined) {
+    out.inversion = Boolean(body.inversion);
+    hasField = true;
+  }
+
   if (!hasField) {
     return { error: 'Укажите параметры торговли' };
   }
@@ -2819,6 +2877,8 @@ function parseLogicBody(body) {
   const account_id = Number(body?.account_id);
   const is_enabled =
     body?.is_enabled === undefined ? true : Boolean(body.is_enabled);
+  const note =
+    body?.note == null || body.note === '' ? null : String(body.note).trim();
 
   if (!name) {
     return { error: 'Укажите имя логики' };
@@ -2826,10 +2886,13 @@ function parseLogicBody(body) {
   if (name.length > 100) {
     return { error: 'Имя логики не длиннее 100 символов' };
   }
+  if (note != null && note.length > 2000) {
+    return { error: 'Примечание не длиннее 2000 символов' };
+  }
   if (!Number.isInteger(account_id) || account_id <= 0) {
     return { error: 'Выберите счёт' };
   }
-  return { name, account_id, is_enabled };
+  return { name, account_id, is_enabled, note };
 }
 
 function parseId(value) {
