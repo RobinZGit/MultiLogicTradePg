@@ -1,0 +1,182 @@
+/** Текст справки MultiLogic Trade (панель «?» / книга рядом с шестерёнкой). */
+
+export interface HelpSection {
+  id: string;
+  title: string;
+  body: string;
+  /** Раздел загружает markdown из assets (живой контекст проекта). */
+  kind?: 'static' | 'project-context';
+}
+
+/** Файлы контекста в assets/project-context/ (копия docs/ через sync:context). */
+export const PROJECT_CONTEXT_DOCS: { id: string; title: string; asset: string }[] = [
+  {
+    id: 'project-context',
+    title: 'Контекст проекта',
+    asset: 'assets/project-context/PROJECT_CONTEXT.md',
+  },
+  {
+    id: 'local-setup',
+    title: 'Локальная установка (контекст)',
+    asset: 'assets/project-context/LOCAL_SETUP.md',
+  },
+];
+
+/** Разбить markdown на главы по заголовкам ## */
+export function splitMarkdownChapters(
+  markdown: string
+): { id: string; title: string; body: string }[] {
+  const text = (markdown || '').replace(/^\uFEFF/, '').trim();
+  if (!text) {
+    return [{ id: 'empty', title: 'Пусто', body: 'Файл контекста не найден. Запустите npm run sync:context.' }];
+  }
+
+  const lines = text.split(/\r?\n/);
+  const chapters: { id: string; title: string; body: string }[] = [];
+  let currentTitle = 'Введение';
+  let buf: string[] = [];
+
+  const flush = () => {
+    const body = buf.join('\n').trim();
+    if (!body && chapters.length === 0) {
+      return;
+    }
+    const slug = currentTitle
+      .toLowerCase()
+      .replace(/[^\p{L}\p{N}]+/gu, '-')
+      .replace(/^-|-$/g, '')
+      .slice(0, 48);
+    chapters.push({
+      id: slug || `ch-${chapters.length}`,
+      title: currentTitle,
+      body: body || '(пусто)',
+    });
+  };
+
+  for (const line of lines) {
+    const m = /^(#{1,2})\s+(.+?)\s*$/.exec(line);
+    if (m && (m[1] === '#' || m[1] === '##')) {
+      // H1 — название документа; H2 — глава
+      if (m[1] === '#' && chapters.length === 0 && buf.length === 0) {
+        currentTitle = m[2].trim();
+        continue;
+      }
+      if (m[1] === '##' || (m[1] === '#' && (buf.length > 0 || chapters.length > 0))) {
+        flush();
+        currentTitle = m[2].trim();
+        buf = [];
+        continue;
+      }
+    }
+    buf.push(line);
+  }
+  flush();
+
+  if (chapters.length === 0) {
+    return [{ id: 'full', title: 'Документ', body: text }];
+  }
+  return chapters;
+}
+
+export const APP_HELP_SECTIONS: HelpSection[] = [
+  {
+    id: 'overview',
+    title: 'О системе',
+    body: `MultiLogic Trade — торговая оболочка над PostgreSQL: цены, индикаторы и правила сделок считаются в базе; Angular показывает формы и графики, Express API вызывает SQL.
+
+Биржа: MOEX (акции и фьючерсы). Цены: T-Bank API и/или MOEX ISS (нужен токен T-Bank для коротких таймфреймов).
+
+В шапке:
+• Логирование — пишет события в app_tech_log (trade runner, сигналы, ошибки).
+• Книга (эта справка) — описание экранов и понятий; отдельная глава «Контекст проекта» — живой docs/PROJECT_CONTEXT.md (решения, история, запросы).
+• Шестерёнка — структура БД (таблицы / функции / процедуры / диаграмма FK). При работающем API читает живую PostgreSQL; если БД недоступна — из SQL-скриптов репозитория (schema-offline.json).`,
+  },
+  {
+    id: 'project-context',
+    title: 'Контекст проекта',
+    kind: 'project-context',
+    body: '',
+  },
+  {
+    id: 'local-setup',
+    title: 'Локальная установка (контекст)',
+    kind: 'project-context',
+    body: '',
+  },
+  {
+    id: 'tabs',
+    title: 'Вкладки',
+    body: `1) Торговые операции — логики, сигналы, стопы, бумаги, позиции и тестирование.
+2) Бумаги и индикаторы — загрузка цен, назначение индикаторов на бумагу, график.
+3) Справочники — биржи, брокеры, счета, бумаги, индикаторы, таймфреймы.`,
+  },
+  {
+    id: 'logics',
+    title: 'Логики (торговые операции)',
+    body: `Строка логики: включение (бой), имя, финрез боя/теста, карандаш (редактор), «+» (копия), корзина (удаление).
+
+Копирование: создаёт выключенную копию с именем «… copy» (параметры, сигналы, стопы, бумаги; без сделок). После OK список прокручивается к новой развёрнутой строке.
+
+Раскрытие строки — блоки:
+• Параметры — таймфрейм, % позиции, лимит позиций, балансы, комиссия, FIFO/AVERAGE, базовая ставка рейтинга, lookback, инверсия, прогрев (warmup_pretest), денежный фонд (cash_fund_code / cash_fund_threshold: на каждой закрытой свече TF, если equity > порога — BUY TMON/LQDT/SBMM на min(кэш, избыток−уже_в_фонде); фонд не продаём; тест и бой; fake — sim), сброс баланса.
+В тесте колонка «Бар» — время свечи сигнала, не момент прогона теста.
+• Сигналы — open/close × long/short; AND внутри группы (все условия группы должны сработать). Формула вида @SMA(period=20) VALUE > pp. Рейтинг боя — сумма по бумагам.
+• Стоп-лосс / тейк-профит — по бумаге, портфелю, security_resume (по бумаге и стороне long/short → shadow только этой стороны), security_inversion, portfolio_resume (пауза портфеля → shadow до восстановления; warmup не применяется); portfolio_ltp_renew — взведение на всплеске, продажа при откате от пика ≥ TP%, latch против чопа (% или ATR).
+• Ценные бумаги — портфель логики; лотность учитывается при открытии.
+• Позиции — боевые сделки; Тестирование — бэктест с эквити и рейтингами на бумаге; кнопки Экспорт / Отчёт (HTML: Profit Factor, просадка, Sharpe…) / Запуск·Стоп.
+
+Инверсия: меняет условия сигналов и стороны сделок. Локальная инверсия по бумаге — через стоп security_inversion.
+Прогрев: при включении боя со стопами resume/inversion сначала прогон теста за lookback, затем перенос пауз/инверсий в live.`,
+  },
+  {
+    id: 'indicators',
+    title: 'Бумаги и индикаторы',
+    body: `Перетащите индикатор на бумагу — создаются серии и фоновый пересчёт.
+График: zoom/pan, полноэкранный режим, линия нуля для осцилляторов.
+Формулы индикаторов (кнопка «И.» в редакторе): pp, sma()/ema(), свёртка *, @CODE.
+Загрузка цен: T-Bank (токен в диалоге) или MOEX; у фьючерсов — rollover по контрактам / вечные группы.`,
+  },
+  {
+    id: 'schema',
+    title: 'Структура БД и комментарии',
+    body: `Шестерёнка (иконка БД) открывает дерево таблиц, функций и процедур.
+
+Откуда берётся структура:
+• Есть связь с PostgreSQL (API /api/schema) — таблицы, колонки, индексы, FK и все прикладные функции/процедуры public читаются из каталога БД. Кнопка SQL — pg_get_functiondef. COMMENT ON видно под именем.
+• Нет связи (Pages / API выключен) — тот же вид из schema-offline.json, собранного из скриптов 01 и 02 (npm run generate:schema). Берутся CREATE TABLE + ALTER ADD COLUMN IF NOT EXISTS и все CREATE OR REPLACE FUNCTION/PROCEDURE из 02; при дублях в файле остаётся последнее определение (как OR REPLACE).
+
+Идемпотентность скриптов (upgrade без потери данных):
+• 01 — CREATE TABLE IF NOT EXISTS; новые колонки — ALTER … ADD COLUMN IF NOT EXISTS; seed логик — INSERT IF NOT EXISTS / ON CONFLICT DO NOTHING (копии и правки пользователя не стираются).
+• 02 — CREATE OR REPLACE для функций/процедур; модули sql/*.sql подставляются в 02 (sync-sql-modules-to-02).
+
+Комментарии: COMMENT ON в 01/02 и sql/routine_comments_missing.sql → obj_description после наката 02.`,
+  },
+  {
+    id: 'api',
+    title: 'API и сервисы (для понимания)',
+    body: `Express (api/server.js) — HTTP к PostgreSQL. Основные группы:
+• /api/logics — логики, копирование, параметры, сигналы, стопы, бумаги, сделки, бэктест, pnl.
+• /api/securities, /api/prices, /api/security-indicator-series — бумаги, цены, серии индикаторов.
+• /api/indicators — справочник индикаторов.
+• /api/settings/tbank-token, /api/settings/tech-logging, /api/settings/cleanup — токен, журнал, очистка диска.
+• /api/maintenance/cleanup — ручной запуск cleanup_trading_disk_space().
+• /api/schema — структура БД для шестерёнки.
+• Trade runner — фоновый цикл сделок при открытом UI (heartbeat).
+
+В Angular сервисы (web/src/app/services/*.ts) — тонкие обёртки над этими URL; в коде у публичных методов есть краткие JSDoc-комментарии.`,
+  },
+  {
+    id: 'install',
+    title: 'Установка Windows',
+    body: `Setup.exe ставит Node, PostgreSQL (пароль часто 111), npm ci для api/web, ярлыки.
+
+Повторная установка:
+• Да — удалить старое + пересоздать БД (данные стираются).
+• Нет — поверх: файлы/npm обновляются; база НЕ удаляется, схема через 01/02 (цены, сделки, логики сохраняются); функции/процедуры пересоздаются.
+
+Post-install даёт группе Users права на запись .angular\\cache в Program Files.
+Протокол: INSTALL_PROTOCOL.txt (там же DbMode).
+
+Подробный LOCAL_SETUP.md — в главе «Локальная установка (контекст)» слева в этой справке.`,
+  },
+];

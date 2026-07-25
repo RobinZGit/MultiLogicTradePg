@@ -8,11 +8,29 @@ alwaysApply: true
 
 ## Правило (Sergey)
 
-1. **Любое изменение схемы** — сразу в исходные скрипты создания (`00`–`02`), не отдельными одноразовыми миграциями.
-2. **Новые поля** — добавлять **в `CREATE TABLE`**, а для уже существующих БД — **`ALTER TABLE … ADD COLUMN IF NOT EXISTS` сразу после `CREATE TABLE`**, до индексов на эту колонку.
-3. **После правок SQL** — **прогнать проверку** (`npm run verify:sql` или `.\scripts\verify_sql_scripts.ps1`).
-4. **Перед сборкой и деплоем** — скрипты **обязаны проходить проверку** без ошибок; в них должны быть **все** изменения БД до последнего коммита.
-5. **Не оставлять** локальную БД и репозиторий в расхождении.
+1. **Любое изменение схемы** — сразу в исходные скрипты создания (`00`–`02`), не отдельными одноразовыми миграциями (нет Flyway/отдельных migrate-*.sql).
+2. **Таблицы в `01`:** `CREATE TABLE IF NOT EXISTS` = **полная** актуальная схема. Сразу после CREATE — для **каждой** колонки (кроме PK `id SERIAL`) блок  
+   `ALTER TABLE … ADD COLUMN IF NOT EXISTS …`  
+   с комментарием, что ALTER нужен для **upgrade** существующих БД (`CREATE IF NOT EXISTS` таблицу не меняет). ALTER идемпотентен и не должен падать при повторном прогоне.  
+   Поддержка: `node scripts/ensure-01-column-alters.mjs` (пересобирает блоки ALTER после CREATE; не парсит SQL-комментарии внутри CREATE как колонки; удаляет mid-file дубликаты ADD COLUMN).
+3. **Новые поля** — сначала в `CREATE TABLE`, затем тот же `ALTER … ADD COLUMN IF NOT EXISTS` (или снова `ensure-01-column-alters.mjs`), до индексов на эту колонку. Не оставлять отдельные mid-file `ADD COLUMN` для колонок, уже описанных в CREATE.
+4. **Удаление колонок** — только явным `ALTER TABLE … DROP COLUMN IF EXISTS` в `01` (не «дропать всё, чего нет в CREATE»).
+5. **Индексы** — `CREATE INDEX IF NOT EXISTS`. Если определение индекса меняется — явный `DROP INDEX IF EXISTS` + создание заново в `01` (не массовый DROP всех индексов при upgrade).
+6. **После правок SQL** — **прогнать проверку** (`npm run verify:sql` или `.\scripts\verify_sql_scripts.ps1`).
+7. **Перед сборкой и деплоем** — скрипты **обязаны проходить проверку** без ошибок; в них должны быть **все** изменения БД до последнего коммита.
+8. **Не оставлять** локальную БД и репозиторий в расхождении.
+9. **Если SQL входит в installers** — после любых изменений `00`–`03` / `sql/*` / installer scripts обязательно пересобрать **оба**: `installer/windows/dist/MultiLogicTradePgSetup.exe` и `installer/linux/dist/MultiLogicTradePg-linux.tar.gz` (см. `.cursor/rules/installer-freshness.mdc`).
+
+## Wipe vs upgrade (Windows installer)
+
+| DbMode | Когда | База |
+|--------|--------|------|
+| `wipe` | Диалог **Да** (удалить старую установку) | `DROP DATABASE` + CREATE + `01`→`02` |
+| `upgrade` | Диалог **Нет** (поверх) | **Без** DROP; `sql/drop_public_routines.sql` → `01`→`02` (данные таблиц сохраняются) |
+| `create` | Первая установка | CREATE DB если нет; затем `01`→`02` |
+
+**Upgrade локально без installer:** не запускать `00`. Только:
+`psql … -f sql/drop_public_routines.sql` (опционально) → `01` → `02`.
 
 ## Проверка перед сборкой / выкладкой
 
@@ -47,7 +65,15 @@ npm run verify:sql
 cd web && npm run build
 ```
 
-**Обновить рабочую БД после изменений схемы:**
+**Обновить рабочую БД с сохранением данных (как installer «Нет»):**
+```bat
+set PGPASSWORD=111
+"C:\Program Files\PostgreSQL\15\bin\psql.exe" -U postgres -d multilogictrade -f sql/drop_public_routines.sql
+"C:\Program Files\PostgreSQL\15\bin\psql.exe" -U postgres -d multilogictrade -f 01_multilogictrade_tables_and_data.sql
+"C:\Program Files\PostgreSQL\15\bin\psql.exe" -U postgres -d multilogictrade -f 02_multilogictrade_functions_and_procedures.sql
+```
+
+**Полный сброс (как installer «Да» / `00`):**
 ```bat
 set PGPASSWORD=111
 "C:\Program Files\PostgreSQL\15\bin\psql.exe" -U postgres -d postgres -f 00_create_database.sql
@@ -55,19 +81,21 @@ set PGPASSWORD=111
 "C:\Program Files\PostgreSQL\15\bin\psql.exe" -U postgres -d multilogictrade -f 02_multilogictrade_functions_and_procedures.sql
 ```
 
-Или: `.\scripts\run_multilogictrade.ps1 -Steps 0,1,2`
+Или: `.\scripts\run_multilogictrade.ps1 -Steps 0,1,2` (полный сброс).
 
 ## Что не делать
 
 - Не добавлять поля только в `api/migrate-*.js` или только в Angular/API без SQL.
 - Не создавать индексы на колонку **до** `ALTER … ADD COLUMN IF NOT EXISTS` (иначе `01` падает на старой БД).
 - Не коммитить изменения API/UI, зависящие от новых колонок, без правок в `01`/`02` и без `verify:sql`.
+- Не использовать `00` для upgrade поверх рабочих данных.
 - HTTP-блок в `02` начинается с маркера `-- @optional-http-block`; для CI используется `--core-only`.
 
 ## Связанные файлы
 
-- Скрипты: `00_create_database.sql`, `01_*.sql`, `02_*.sql`
+- Скрипты: `00_create_database.sql`, `01_*.sql`, `02_*.sql`, `sql/drop_public_routines.sql`
 - Проверка: `scripts/verify-sql.mjs`, `scripts/verify_sql_scripts.ps1`
 - Запуск UI: `web/MultiLogic_Trade_Progress_Start.bat`
 - CI: `.github/workflows/pages.yml`
 - Контекст: `docs/PROJECT_CONTEXT.md` — **обновлять при каждой выкладке** (см. `.cursor/rules/project-context.mdc`)
+- Installers: `installer/windows/dist/MultiLogicTradePgSetup.exe` и `installer/linux/dist/MultiLogicTradePg-linux.tar.gz` — **пересобирать оба** при изменениях SQL/API/UI/scripts/installer (см. `.cursor/rules/installer-freshness.mdc`)

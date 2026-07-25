@@ -26,17 +26,75 @@
 
     </div>
 
-    <p class="subtitle">
+    <div class="subtitle-row">
 
-      Таблица <code>logics</code> — одна строка = одна торговля.
+      <p class="subtitle">
 
-      <span class="poll-hint">Обновление каждые {{ pollIntervalMs / 1000 }} с</span>
+        Таблица <code>logics</code> — одна строка = одна торговля.
 
-    </p>
+        <span class="poll-hint">Обновление каждые {{ pollIntervalMs / 1000 }} с</span>
+
+      </p>
+
+      <div class="logic-io-actions">
+
+        <button
+          type="button"
+          class="btn-io"
+          title="Экспорт отмеченных логик (настройки и бумаги, без тестов)"
+          [disabled]="exportImportBusy || selectedExportIds.size === 0"
+          (click)="exportSelectedLogics()"
+        >
+          Экспорт
+        </button>
+
+        <button
+          type="button"
+          class="btn-io"
+          title="Импорт логик из JSON (бумаги как в файле, тесты пустые)"
+          [disabled]="exportImportBusy"
+          (click)="triggerImportLogics()"
+        >
+          Импорт
+        </button>
+
+        <input
+          #logicImportFile
+          type="file"
+          accept="application/json,.json"
+          class="logic-import-input"
+          (change)="onImportFileSelected($event)"
+        />
+
+      </div>
+
+    </div>
 
   </header>
 
 
+
+  @if (hasActiveProcesses()) {
+    <section class="process-strip" aria-label="Активные процессы">
+      <div class="process-strip-head">
+        <strong>Процессы</strong>
+        <span>PostgreSQL / тесты / расчёты Angular</span>
+      </div>
+      @if (processError) {
+        <span class="process-chip process-error" [title]="processError">ошибка: {{ processError }}</span>
+      }
+      @for (p of activeProcesses(); track p.type + ':' + p.label + ':' + p.status) {
+        <span class="process-chip" [class.process-chip-warn]="p.type === 'postgres'" [title]="processTitle(p)">
+          <span class="process-dot"></span>
+          <span class="process-label">{{ p.label }}</span>
+          <span class="process-status">{{ p.status }}</span>
+          @if (p.progress_pct != null) {
+            <span class="process-progress">{{ p.progress_pct | number:'1.0-0' }}%</span>
+          }
+        </span>
+      }
+    </section>
+  }
 
   @if (loading && logics.length === 0) {
 
@@ -75,19 +133,19 @@
 
             <th class="col-check">Вкл.</th>
 
-            <th>ID</th>
+            <th class="col-id">ID</th>
 
-            <th>Логика</th>
+            <th class="col-logic">Логика</th>
 
-            <th>account_id</th>
+            <th class="col-account-id">acc_id</th>
 
-            <th>Счёт</th>
+            <th class="col-account">Счёт</th>
 
-            <th>Тип счёта</th>
+            <th class="col-account-type">Тип</th>
 
-            <th>Брокер</th>
+            <th class="col-broker">Брокер</th>
 
-            <th>Счёт активен</th>
+            <th class="col-active">Актив.</th>
 
             <th
               class="col-combat-pnl"
@@ -98,6 +156,16 @@
               class="col-test-pnl"
               title="Сумма фин. результата тестовых сделок (онлайн, не хранится отдельно)"
             >Финрез теста</th>
+
+            <th class="col-export" title="Отметить для экспорта">
+              <label class="export-check-all" (click)="$event.stopPropagation()">
+                <input
+                  type="checkbox"
+                  [checked]="allExportSelected()"
+                  (change)="toggleAllExport($any($event.target).checked)"
+                />
+              </label>
+            </th>
 
             <th class="col-actions"></th>
 
@@ -113,6 +181,9 @@
 
               class="logic-main-row"
 
+              [attr.data-logic-id]="row.id"
+              [attr.data-bt-tick]="backtestUiTick()"
+
               [class.row-enabled]="row.is_enabled"
 
               [class.row-disabled]="!row.is_enabled"
@@ -120,6 +191,8 @@
               [class.row-expanded]="isLogicExpanded(row.id)"
 
               [class.row-testing]="isBacktestRunning(row.id)"
+              [class.row-inversion]="row.inversion"
+              [class.row-portfolio-paused]="row.portfolio_trading_paused"
 
               (click)="toggleLogicExpand(row, $event)"
 
@@ -159,20 +232,31 @@
 
               </td>
 
-              <td>{{ row.id }}</td>
+              <td class="col-id">{{ row.id }}</td>
 
-              <td>
+              <td class="col-logic">
                 <span class="logic-name-cell">
                   <span class="logic-name-main">
-                    <span class="logic-name-text">{{ row.name }}</span>
+                    <span class="logic-name-text">{{ displayLogicName(row) }}</span>
+                    @if (row.portfolio_trading_paused) {
+                      <span
+                        class="sec-paused-badge"
+                        title="Портфель на паузе (portfolio_resume): реал остановлен, идут теневые сделки до восстановления equity"
+                      >портфель: теневой</span>
+                    }
                     @if (isBacktestRunning(row.id)) {
                       <span
-                        class="logic-test-progress"
+                        class="logic-test-progress-wrap"
                         [title]="backtestProgressTitle(row.id)"
                         [attr.aria-label]="'Тестирование ' + backtestProgressPct(row.id) + '%'"
                       >
-                        <span class="logic-test-progress-ring" aria-hidden="true">↻</span>
-                        <span class="logic-test-progress-pct">{{ backtestProgressPct(row.id) }}</span>
+                        <span class="logic-test-progress">
+                          <span class="logic-test-progress-ring" aria-hidden="true">↻</span>
+                          <span class="logic-test-progress-pct">{{ backtestProgressPct(row.id) }}</span>
+                        </span>
+                        @if (backtestCurrentBarLabel(row.id); as barDt) {
+                          <span class="logic-test-progress-date">{{ barDt }}</span>
+                        }
                       </span>
                     }
                   </span>
@@ -182,11 +266,11 @@
                 </span>
               </td>
 
-              <td>{{ row.account_id }}</td>
+              <td class="col-account-id">{{ row.account_id }}</td>
 
-              <td>{{ row.account_code }} — {{ row.account_name }}</td>
+              <td class="col-account" [title]="row.account_code + ' — ' + row.account_name">{{ row.account_code }} — {{ row.account_name }}</td>
 
-              <td>
+              <td class="col-account-type">
 
                 <span class="badge" [class.badge-fake]="row.account_type === 'fake'">
 
@@ -196,9 +280,9 @@
 
               </td>
 
-              <td>{{ row.broker_code }}</td>
+              <td class="col-broker">{{ row.broker_code }}</td>
 
-              <td>{{ row.account_is_active ? 'да' : 'нет' }}</td>
+              <td class="col-active">{{ row.account_is_active ? 'да' : 'нет' }}</td>
 
               <td class="col-combat-pnl">
                 @if (hasCombatFinancialResult(row.id)) {
@@ -220,20 +304,34 @@
 
               <td class="col-test-pnl">
                 @if (hasTestFinancialResult(row.id)) {
-                  <span
-                    class="trade-pnl logic-test-pnl"
-                    [class.trade-pnl-pos]="(testFinancialResult(row.id) ?? 0) > 0"
-                    [class.trade-pnl-neg]="(testFinancialResult(row.id) ?? 0) < 0"
-                    [title]="testFinancialResultTitle(row.id)"
-                  >
-                    {{ formatPnl(testFinancialResult(row.id)) }}
-                    @if (testFinancialResultPct(row.id, row.initial_balance) != null) {
-                      <span class="pnl-deposit-pct">({{ formatPnlPct(testFinancialResultPct(row.id, row.initial_balance)) }})</span>
+                  <span class="logic-test-pnl-cell" [title]="testFinancialResultTitle(row.id)">
+                    <span
+                      class="trade-pnl logic-test-pnl"
+                      [class.trade-pnl-pos]="(testFinancialResult(row.id) ?? 0) > 0"
+                      [class.trade-pnl-neg]="(testFinancialResult(row.id) ?? 0) < 0"
+                    >
+                      {{ formatPnl(testFinancialResult(row.id)) }}
+                      @if (testFinancialResultPct(row.id, row.initial_balance) != null) {
+                        <span class="pnl-deposit-pct">({{ formatPnlPct(testFinancialResultPct(row.id, row.initial_balance)) }})</span>
+                      }
+                    </span>
+                    @if (testPeriodLabel(row.id)) {
+                      <span class="logic-test-period">{{ testPeriodLabel(row.id) }}</span>
                     }
                   </span>
                 } @else {
                   <span class="logic-test-pnl-empty" title="Тестирования ещё не было">—</span>
                 }
+              </td>
+
+              <td class="col-export" (click)="$event.stopPropagation()">
+                <label class="export-check">
+                  <input
+                    type="checkbox"
+                    [checked]="isExportSelected(row.id)"
+                    (change)="toggleExportSelection(row.id, $any($event.target).checked)"
+                  />
+                </label>
               </td>
 
               <td class="col-actions">
@@ -263,6 +361,26 @@
                     />
 
                   </svg>
+
+                </button>
+
+                <button
+
+                  type="button"
+
+                  class="icon-btn icon-copy"
+
+                  title="Скопировать логику"
+
+                  aria-label="Скопировать логику"
+
+                  [disabled]="isCopying(row)"
+
+                  (click)="copyLogic(row, $event)"
+
+                >
+
+                  +
 
                 </button>
 
@@ -302,7 +420,7 @@
 
               <tr class="logic-detail-row">
 
-                <td colspan="10">
+                <td colspan="13">
 
                   <div class="logic-signals-panel" (click)="$event.stopPropagation()">
 
@@ -321,12 +439,28 @@
                             aria-hidden="true"
                           >▸</span>
 
-                          <span class="signals-title">Параметры логики</span>
+                          <span
+                            class="signals-title params-logic-title"
+                            [title]="'Параметры логики — ' + displayLogicName(row)"
+                          >
+                            Параметры логики — {{ displayLogicName(row) }}
+                          </span>
 
                           @if (isParamsLoading(row.id)) {
                             <span class="signals-loading">загрузка…</span>
                           }
 
+                        </span>
+
+                        <span class="signals-summary-actions" (click)="$event.stopPropagation()">
+                          <button
+                            type="button"
+                            class="btn btn-sm btn-hide-logic"
+                            title="Свернуть детали логики"
+                            (click)="collapseLogic(row.id, $event)"
+                          >
+                            Скрыть
+                          </button>
                         </span>
 
                       </summary>
@@ -351,7 +485,35 @@
 
                           <tbody>
 
-                            <tr>
+                            <tr class="params-group-row params-band-a">
+
+                              <td colspan="3">Основные</td>
+
+                            </tr>
+
+                            <tr class="params-band-a">
+
+                              <td>Имя логики</td>
+
+                              <td>
+
+                                <input
+                                  type="text"
+                                  class="params-input params-input-name"
+                                  maxlength="100"
+                                  [ngModel]="getParamsDraft(row.id).name"
+                                  (ngModelChange)="onParamsNameChange(row.id, $event)"
+                                  (click)="$event.stopPropagation()"
+                                  placeholder="Название логики"
+                                />
+
+                              </td>
+
+                              <td class="params-hint">Отображается в таблице и в заголовке раскрытой логики. Сохраняется вместе с параметрами.</td>
+
+                            </tr>
+
+                            <tr class="params-band-a">
 
                               <td>Таймфрейм</td>
 
@@ -374,7 +536,7 @@
 
                             </tr>
 
-                            <tr>
+                            <tr class="params-band-a">
 
                               <td>Таймфрейм стоп-лосса</td>
 
@@ -397,7 +559,46 @@
 
                             </tr>
 
-                            <tr>
+                            <tr class="params-group-row params-band-b">
+
+                              <td colspan="3">Расчёт лота</td>
+
+                            </tr>
+
+                            <tr class="params-band-b">
+
+                              <td>База %</td>
+
+                              <td>
+
+                                <select
+                                  class="params-input"
+                                  [ngModel]="getParamsDraft(row.id).position_size_base"
+                                  (ngModelChange)="onParamsSizeBaseChange(row.id, $event)"
+                                  (click)="$event.stopPropagation()"
+                                >
+                                  <option value="portfolio">Весь портфель без ден. фонда</option>
+                                  <option value="portfolio_incl_fund">Весь портфель с ден. фондом</option>
+                                  <option value="free_cash">Свободные деньги</option>
+                                </select>
+
+                              </td>
+
+                              <td class="params-hint">
+
+                                По умолчанию — портфель без выбранного денежного фонда (его MTM вычитается).
+                                «С фондом» — % от всего equity. «Свободные» — только кэш.
+                                @if (row.account_type === 'fake') {
+                                  Тест: кэш+MTM бумаг.
+                                } @else {
+                                  Real: total / кэш с брокера.
+                                }
+
+                              </td>
+
+                            </tr>
+
+                            <tr class="params-band-b">
 
                               <td>% депозита на сделку</td>
 
@@ -414,11 +615,76 @@
 
                               </td>
 
-                              <td class="params-hint">Доля текущего остатка на одну покупку (1–100)</td>
+                              <td class="params-hint">
+
+                                Доля выбранной базы на одну покупку (1–100)
+
+                              </td>
 
                             </tr>
 
-                            <tr>
+                            <tr class="params-band-b">
+
+                              <td>Макс. открытых позиций</td>
+
+                              <td>
+
+                                <input
+                                  type="text"
+                                  inputmode="numeric"
+                                  class="params-input params-input-short"
+                                  [ngModel]="getParamsDraft(row.id).max_open_positions"
+                                  (ngModelChange)="onParamsMaxPositionsChange(row.id, $event)"
+                                  (click)="$event.stopPropagation()"
+                                />
+
+                              </td>
+
+                              <td class="params-hint">Число одновременных сделок (для плеча и лимита)</td>
+
+                            </tr>
+
+                            <tr class="params-band-b">
+
+                              <td>Макс. сумма на сделку</td>
+
+                              <td>
+
+                                <input
+                                  type="text"
+                                  inputmode="decimal"
+                                  class="params-input"
+                                  [ngModel]="getParamsDraft(row.id).max_order_amount"
+                                  (ngModelChange)="onParamsMaxOrderAmountChange(row.id, $event)"
+                                  (click)="$event.stopPropagation()"
+                                  placeholder="без лимита"
+                                />
+
+                              </td>
+
+                              <td class="params-hint">Потолок номинала одной покупки, ₽ (пусто = нет)</td>
+
+                            </tr>
+
+                            <tr class="params-band-b">
+
+                              <td>Плечо (расчёт)</td>
+
+                              <td><strong>{{ formatLotLeverage(row.id) }}</strong></td>
+
+                              <td class="params-hint">
+                                макс. позиций × (% / 100); 1× = весь портфель при полном наборе слотов
+                              </td>
+
+                            </tr>
+
+                            <tr class="params-group-row params-band-a">
+
+                              <td colspan="3">Рейтинг сигнала</td>
+
+                            </tr>
+
+                            <tr class="params-band-a">
 
                               <td>Базовая ставка (% годовых)</td>
 
@@ -436,12 +702,12 @@
                               </td>
 
                               <td class="params-hint">
-                                Порог успеха рейтинга сигнала на логике: доля ставки на одну свечу TF
+                                Рейтинг сигналов и линейный TP по портфелю (portfolio_ltp_renew): (equity−initial)/initial ≥ base%×годы + TP%; закрытие на падении equity с пика, затем shadow/возобновление
                               </td>
 
                             </tr>
 
-                            <tr>
+                            <tr class="params-band-a">
 
                               <td>Дней предрасчёта рейтинга</td>
 
@@ -464,42 +730,35 @@
 
                             </tr>
 
-                            <tr>
+                            <tr class="params-group-row params-band-b">
 
-                              <td>Макс. открытых позиций</td>
-
-                              <td>
-
-                                <input
-                                  type="text"
-                                  inputmode="numeric"
-                                  class="params-input params-input-short"
-                                  [ngModel]="getParamsDraft(row.id).max_open_positions"
-                                  (ngModelChange)="onParamsMaxPositionsChange(row.id, $event)"
-                                  (click)="$event.stopPropagation()"
-                                />
-
-                              </td>
-
-                              <td class="params-hint">Long-позиции по разным бумагам одновременно</td>
+                              <td colspan="3">Остатки боя (не кэш исторического теста)</td>
 
                             </tr>
 
-                            <tr>
+                            <tr class="params-band-b">
 
-                              <td>Начальный остаток</td>
+                              <td>Начальный остаток (старт)</td>
 
                               <td>
 
-                                <input
-                                  type="text"
-                                  inputmode="decimal"
-                                  class="params-input"
-                                  [ngModel]="getParamsDraft(row.id).initial_balance"
-                                  (ngModelChange)="onParamsInitialBalanceChange(row.id, $event)"
-                                  (click)="$event.stopPropagation()"
-                                  [placeholder]="row.account_type === 'fake' ? '1000000' : 'необязательно'"
-                                />
+                                @if (row.account_type === 'fake') {
+
+                                  <input
+                                    type="text"
+                                    inputmode="decimal"
+                                    class="params-input"
+                                    [ngModel]="getParamsDraft(row.id).initial_balance"
+                                    (ngModelChange)="onParamsInitialBalanceChange(row.id, $event)"
+                                    (click)="$event.stopPropagation()"
+                                    placeholder="1000000"
+                                  />
+
+                                } @else {
+
+                                  <strong>{{ formatMoney(row.initial_balance) }}</strong>
+
+                                }
 
                               </td>
 
@@ -507,11 +766,12 @@
 
                                 @if (row.account_type === 'fake') {
 
-                                  Стартовый депозит бумажной торговли
+                                  Стартовый депозит: точка отсчёта для боя на фейке и для старта исторического теста.
+                                  Само поле во время прогона не «ездит» по сделкам теста.
 
                                 } @else {
 
-                                  Эталон депозита для расчёта лота (опционально)
+                                  Реальный счёт: опорный остаток с брокера (не редактируется как параметр теста).
 
                                 }
 
@@ -519,7 +779,7 @@
 
                             </tr>
 
-                            <tr>
+                            <tr class="params-band-b">
 
                               <td>% комиссии от сделки</td>
 
@@ -542,7 +802,7 @@
 
                             </tr>
 
-                            <tr>
+                            <tr class="params-band-b">
 
                               <td>Метод расчёта PnL</td>
 
@@ -565,17 +825,95 @@
 
                             </tr>
 
-                            <tr>
+                            <tr class="params-band-b">
 
-                              <td>Текущий остаток</td>
+                              <td>Текущий остаток (бой)</td>
 
                               <td><strong>{{ formatMoney(row.current_balance) }}</strong></td>
 
-                              <td class="params-hint">Обновляется runner после симулированных сделок</td>
+                              <td class="params-hint">
+
+                                @if (row.account_type === 'fake') {
+
+                                  Свободный кэш боевого runner на фейковом счёте (после live/sim-сделок).
+                                  Исторический бэктест это поле не пересчитывает — у теста свой test_balance на прогоне;
+                                  смотрите эквити и «Финрез теста» в блоке «Тестирование».
+
+                                } @else {
+
+                                  Свободный кэш с брокера для боевых сделок.
+                                  Исторический бэктест это поле не меняет (кэш теста — отдельно, в прогоне).
+
+                                }
+
+                              </td>
 
                             </tr>
 
-                            <tr class="params-actions-row">
+                            <tr class="params-group-row params-band-a">
+
+                              <td colspan="3">Денежный фонд</td>
+
+                            </tr>
+
+                            <tr class="params-band-a">
+
+                              <td>Денежный фонд</td>
+
+                              <td>
+
+                                <select
+                                  class="params-input"
+                                  [ngModel]="getParamsDraft(row.id).cash_fund_code"
+                                  (ngModelChange)="onParamsCashFundCodeChange(row.id, $event)"
+                                  (click)="$event.stopPropagation()"
+                                >
+                                  @for (opt of cashFundOptions; track opt.value) {
+                                    <option [value]="opt.value">{{ opt.label }}</option>
+                                  }
+                                </select>
+
+                              </td>
+
+                              <td class="params-hint">
+                                Пусто = не покупать. При базе «без ден. фонда» его MTM вычитается из % лота; при «с фондом» — входит. Парковка: BUY при equity выше порога; фонд не продаём.
+                              </td>
+
+                            </tr>
+
+                            <tr class="params-band-a">
+
+                              <td>Порог портфеля (equity), ₽</td>
+
+                              <td>
+
+                                <input
+                                  type="text"
+                                  inputmode="decimal"
+                                  class="params-input"
+                                  [ngModel]="getParamsDraft(row.id).cash_fund_threshold"
+                                  (ngModelChange)="onParamsCashFundThresholdChange(row.id, $event)"
+                                  (click)="$event.stopPropagation()"
+                                  placeholder="1000000"
+                                />
+
+                              </td>
+
+                              <td class="params-hint">
+                                Избыток = equity − порог (equity = кэш + позиции по рынку). Покупаем фонд на
+                                min(свободный кэш, избыток − уже купленный фонд). При пороге = начальному балансу
+                                положительный финрез (~13 тыс.) даёт покупку, если есть свободный кэш на лот
+                              </td>
+
+                            </tr>
+
+                            <tr class="params-group-row params-band-b">
+
+                              <td colspan="3">Режимы</td>
+
+                            </tr>
+
+                            <tr class="params-actions-row params-band-b">
 
                               <td colspan="3">
 
@@ -595,13 +933,41 @@
 
                                   <input
                                     type="checkbox"
-                                    [ngModel]="getParamsDraft(row.id).reset_balance"
-                                    (ngModelChange)="onParamsResetBalanceChange(row.id, $event)"
+                                    [ngModel]="getParamsDraft(row.id).warmup_pretest"
+                                    (ngModelChange)="onParamsWarmupPretestChange(row.id, $event)"
                                   />
 
-                                  Сбросить текущий остаток к начальному при сохранении
+                                  Прогрев (предварительное тестирование)
 
                                 </label>
+
+                                <label class="params-reset" (click)="$event.stopPropagation()">
+
+                                  <input
+                                    type="checkbox"
+                                    [ngModel]="getParamsDraft(row.id).close_positions_eod"
+                                    (ngModelChange)="onParamsClosePositionsEodChange(row.id, $event)"
+                                  />
+
+                                  Закрывать позиции в конце дня (кроме фондов)
+
+                                </label>
+
+                                @if (row.account_type === 'fake') {
+
+                                  <label class="params-reset" (click)="$event.stopPropagation()">
+
+                                    <input
+                                      type="checkbox"
+                                      [ngModel]="getParamsDraft(row.id).reset_balance"
+                                      (ngModelChange)="onParamsResetBalanceChange(row.id, $event)"
+                                    />
+
+                                    Сбросить текущий остаток к начальному при сохранении
+
+                                  </label>
+
+                                }
 
                                 @if (paramsSaveError(row.id)) {
                                   <p class="params-save-error">{{ paramsSaveError(row.id) }}</p>
@@ -925,30 +1291,30 @@
                                 class="col-sig-rating"
                                 title="Сумма боевых рейтингов по бумагам"
                               >
-                                {{ sig.rating ?? 0 }}
+                                {{ sig.rating }}
                               </td>
 
                               <td class="col-formula">
 
-                                <input
+                                <textarea
 
-                                  type="text"
+                                  rows="3"
 
-                                  class="formula-input"
+                                  class="formula-input formula-textarea"
 
-                                  [value]="formulaDraft(sig)"
+                                  [ngModel]="formulaDraft(sig)"
 
                                   [disabled]="isFormulaSaving(sig.id)"
 
-                                  (input)="onFormulaInput(sig, $any($event.target).value)"
+                                  (ngModelChange)="onFormulaInput(sig, $event)"
 
                                   (blur)="saveSignalFormula(sig)"
 
-                                  (keydown.enter)="saveSignalFormula(sig); $any($event.target).blur()"
+                                  (keydown.control.enter)="saveSignalFormula(sig); $any($event.target).blur()"
 
                                   spellcheck="false"
 
-                                />
+                                ></textarea>
 
                                 @if (formulaParseHint(sig); as hint) {
 
@@ -1253,6 +1619,125 @@
 
                     </details>
 
+                    <details class="signals-block periods-block" [open]="isPeriodsBlockExpanded(row.id)">
+
+                      <summary class="signals-summary">
+
+                        <span
+                          class="signals-summary-head"
+                          (click)="togglePeriodsBlock(row.id, $event)"
+                        >
+
+                          <span
+                            class="signals-chevron"
+                            [class.open]="isPeriodsBlockExpanded(row.id)"
+                            aria-hidden="true"
+                          >▸</span>
+
+                          <span class="signals-title">Торговые периоды</span>
+
+                          @if (isPeriodsLoading(row.id)) {
+                            <span class="signals-loading">загрузка…</span>
+                          }
+
+                        </span>
+
+                        <span class="signals-summary-actions periods-summary-actions">
+
+                          <label
+                            class="periods-use-flag"
+                            (click)="$event.stopPropagation()"
+                          >
+                            <input
+                              type="checkbox"
+                              [checked]="useNonTradingPeriods(row.id)"
+                              (change)="onUseNonTradingPeriodsChange(row.id, $any($event.target).checked, $event)"
+                            />
+                            Учитывать неторговые периоды
+                          </label>
+
+                          <button
+                            type="button"
+                            class="btn btn-sm btn-securities"
+                            [disabled]="isPeriodsApplying(row.id)"
+                            (click)="applyMoexNonTradingPeriods(row.id, $event)"
+                          >
+                            {{ isPeriodsApplying(row.id) ? 'Установка…' : 'Установить как на MOEX' }}
+                          </button>
+
+                        </span>
+
+                      </summary>
+
+                      <div class="signals-body">
+
+                        <p class="signals-help">
+                          Неторговые интервалы (МСК) — в эти окна новые сделки по сигналам не открываются.
+                          Стоп-лоссы по уже открытым позициям могут сработать и в неторговое время.
+                          По умолчанию TQBR ≈ вне 10:00–18:40 пн–пт + выходные целиком.
+                        </p>
+
+                        @if (!useNonTradingPeriods(row.id)) {
+                          <p class="signals-help periods-warn">
+                            Галочка «Учитывать неторговые периоды» выключена — интервалы ниже
+                            <strong>не применяются</strong>, сделки возможны в любое время, включая субботу и воскресенье.
+                          </p>
+                        }
+
+                        <div class="periods-days">
+                          @for (day of weekDayLabels; track day.dow) {
+                            <div class="periods-day">
+                              <div class="periods-day-head">
+                                <div class="periods-day-title">{{ day.label }}</div>
+                                <button
+                                  type="button"
+                                  class="btn btn-sm periods-add-btn"
+                                  title="Добавить интервал"
+                                  (click)="addNonTradingInterval(row.id, day.dow, $event)"
+                                >
+                                  +
+                                </button>
+                              </div>
+                              <div class="periods-day-intervals">
+                                @for (iv of intervalsForDay(row.id, day.dow); track iv.id) {
+                                  <div class="periods-interval-row" [title]="iv.note || ''">
+                                    <input
+                                      type="time"
+                                      class="periods-time"
+                                      [ngModel]="iv.time_from"
+                                      (ngModelChange)="onNonTradingIntervalTimeChange(row.id, iv.id, 'time_from', $event)"
+                                      (click)="$event.stopPropagation()"
+                                    />
+                                    <span class="periods-time-sep">–</span>
+                                    <input
+                                      type="time"
+                                      class="periods-time"
+                                      [ngModel]="iv.time_to"
+                                      (ngModelChange)="onNonTradingIntervalTimeChange(row.id, iv.id, 'time_to', $event)"
+                                      (click)="$event.stopPropagation()"
+                                    />
+                                    <button
+                                      type="button"
+                                      class="icon-btn icon-danger periods-del-btn"
+                                      title="Удалить интервал"
+                                      aria-label="Удалить интервал"
+                                      (click)="deleteNonTradingInterval(row.id, iv.id, $event)"
+                                    >
+                                      ✕
+                                    </button>
+                                  </div>
+                                } @empty {
+                                  <span class="periods-interval periods-interval-empty">нет</span>
+                                }
+                              </div>
+                            </div>
+                          }
+                        </div>
+
+                      </div>
+
+                    </details>
+
                     <details class="signals-block securities-block" [open]="isSecuritiesBlockExpanded(row.id)">
 
                       <summary class="signals-summary">
@@ -1317,7 +1802,6 @@
                                     <input
                                       type="checkbox"
                                       [checked]="allStocksPickerSelected(row.id)"
-                                      [disabled]="pickerStocksAvailable(row.id).length === 0"
                                       (change)="toggleAllStocksPicker(row.id, $any($event.target).checked)"
                                     />
 
@@ -1377,7 +1861,6 @@
                                     <input
                                       type="checkbox"
                                       [checked]="allFuturesPickerSelected(row.id)"
-                                      [disabled]="pickerFuturesAvailable(row.id).length === 0"
                                       (change)="toggleAllFuturesPicker(row.id, $any($event.target).checked)"
                                     />
 
@@ -1485,6 +1968,9 @@
                                   @if (sec.real_trading_paused) {
                                     <span class="sec-paused-badge" title="Реальная торговля приостановлена (SL с возобновлением); идут теневые сделки">теневой режим</span>
                                   }
+                                  @if (sec.real_trading_inverted) {
+                                    <span class="sec-inverted-badge" title="По бумаге включена локальная инверсия после SL">инверсия</span>
+                                  }
                                 </td>
 
                                 <td class="col-lot">{{ sec.lot_size ?? 1 }}</td>
@@ -1527,6 +2013,7 @@
 
                         <p class="signals-help">
                           Портфель бумаг этой торговой логики. Сигналы и стопы применяются к выбранным инструментам.
+                          Денежный фонд (TMON/LQDT/SBMM) из параметров появляется сверху списка и не участвует в сигналах.
                         </p>
 
                       </div>
@@ -1545,9 +2032,13 @@
                         [blockExpanded]="isTradesBlockExpanded(row.id)"
                         [dimmed]="isBacktestRunning(row.id)"
                         [disabled]="isBacktestRunning(row.id)"
+                        [timeframeId]="timeframeIdForLogic(row)"
+                        [signalIndicatorIds]="signalIndicatorIdsFor(row.id)"
                         [tbankTokenAlert]="tbankTokenAlert"
+                        [pinnedPaper]="cashFundPinnedPaper(row)"
                         (toggleBlock)="toggleTradesBlock(row.id)"
                         (closeAll)="closeAllPositionsAtMarket(row.id)"
+                        (exportTrades)="exportLogicTrades(row.id, false)"
                         (openTokenDialog)="openTbankTokenDialogFromAlert()"
                         (requestLots)="requestTradeLots($event)"
                       />
@@ -1556,16 +2047,20 @@
                         [logicRow]="row"
                         mode="test"
                         [trades]="tradesFor(row.id, true)"
+                        [summaryFinancialResult]="testFinancialResult(row.id)"
+                        [summaryCommission]="testCommission(row.id)"
                         [tradeLots]="logicTradeLots"
                         [lotsLoading]="tradeLotsLoading"
                         [blockExpanded]="isTestTradesBlockExpanded(row.id)"
                         [backtestRun]="backtestFor(row.id)"
                         [timeframeId]="timeframeIdForLogic(row)"
                         [signalIndicatorIds]="signalIndicatorIdsFor(row.id)"
+                        [pinnedPaper]="cashFundPinnedPaper(row)"
                         (toggleBlock)="toggleTestTradesBlock(row.id)"
                         (startBacktest)="startBacktestRun(row.id, $event)"
                         (periodDialogOpen)="onPeriodDialogOpen($event)"
                         (cancelBacktest)="cancelBacktestRun(row.id)"
+                        (exportTrades)="exportLogicTrades(row.id, true)"
                         (requestLots)="requestTradeLots($event)"
                       />
                     </div>
@@ -1584,7 +2079,7 @@
 
               <tr>
 
-                <td colspan="10" class="empty">Нет записей в logics</td>
+                <td colspan="13" class="empty">Нет записей в logics</td>
 
               </tr>
 

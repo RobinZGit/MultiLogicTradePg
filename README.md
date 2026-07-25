@@ -39,7 +39,25 @@ psql -U postgres -d multilogictrade -f 02_multilogictrade_functions_and_procedur
 | API | `api/` | Express → PostgreSQL |
 | UI | `web/` | Angular (страница logics, структура БД) |
 
-**Локальный запуск:** `web\MultiLogic_Trade_Progress_Start.bat`
+**Локальный запуск:** `web\MultiLogic_Trade_Progress_Start.bat`  
+(или ярлык **MultiLogic Trade** с рабочего стола после установки — окно консоли остаётся открытым, поднимаются API `:3000` и Angular `:4200`)
+
+### Windows installer
+
+Готовый один файл установщика:
+
+[`installer/windows/dist/MultiLogicTradePgSetup.exe`](installer/windows/dist/MultiLogicTradePgSetup.exe)
+
+Запустите `.exe` от имени администратора на Windows. Он ставит проект в
+`C:\Program Files\MultiLogicTradePg`, при необходимости ставит Node.js и PostgreSQL 15,
+разворачивает БД `00` → `01` → `02` (пароль PostgreSQL `111`), выполняет `npm ci`
+для `api` и `web`, создаёт ярлыки на рабочем столе и в меню Пуск.
+
+Исходники Inno Setup: [`installer/windows`](installer/windows). Пересборка:
+
+```powershell
+.\installer\windows\build-installer.ps1
+```
 
 **GitHub Pages (только UI, без API):**  
 https://robinzgit.github.io/MultiLogicTradePg/  

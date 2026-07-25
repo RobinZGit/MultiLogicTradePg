@@ -1,3 +1,16 @@
+/**
+ * MultiLogicTradePg Express API — мост Angular ↔ PostgreSQL.
+ *
+ * Группы маршрутов (кратко для разработчика / справки UI):
+ * - /api/logics, /api/logic-params, signals, stops, securities, trades — торговые логики
+ * - /api/securities, /api/prices, /api/security-indicator-series, /api/indicators — рынок и индикаторы
+ * - /api/settings/* — T-Bank токен, tech-logging, cleanup; /api/maintenance/cleanup
+ * - /api/schema — дерево БД для шестерёнки (obj_description функций/процедур)
+ * - trade-runner / backtest / rating-precalc — фоновые циклы
+ *
+ * Пользовательская справка: иконка книги в шапке Angular.
+ * Комментарии SQL: COMMENT ON FUNCTION/PROCEDURE в 01/02 и sql/routine_comments_missing.sql.
+ */
 require('dotenv').config();
 const express = require('express');
 const cors = require('cors');
@@ -11,6 +24,7 @@ const {
   getRatingPrecalcStatus,
 } = require('./logic-rating-precalc');
 const { runTradeCycle, startTradeRunner } = require('./trade-runner');
+const { startMaintenanceScheduler } = require('./maintenance-scheduler');
 const {
   touchUiHeartbeatDb,
   clearUiHeartbeatDb,
@@ -18,19 +32,198 @@ const {
 } = require('./lib/trade-runner-session');
 const {
   getTradingParams,
+  getTradingParamsForLogics,
   saveTradingParams,
   ensureDefaultParams,
   getLogicParamsDetailed,
+  syncRealAccountBalancesIfNeeded,
+  resetLogicTradingStateOnAccountChange,
 } = require('./lib/logic-params');
+const { buildLogicBundle, importLogicBundle } = require('./lib/logic-bundle');
 const { writeTechLogEvent } = require('./lib/tech-log');
+const {
+  assertRealTbankAccount,
+  sellAllPositions,
+  planBuyBonds,
+  executeBuyBonds,
+  listBondFunds,
+  getAccountCash,
+} = require('./lib/account-portfolio-actions');
 
-const VALID_STOP_SCOPES = new Set(['security', 'security_resume', 'portfolio']);
-const TAKE_PROFIT_SCOPES = new Set(['security', 'portfolio']);
+const VALID_STOP_SCOPES = new Set([
+  'security',
+  'security_resume',
+  'security_inversion',
+  'portfolio',
+  'portfolio_resume',
+  'portfolio_ltp_renew',
+  'security_ltp_renew',
+]);
+const TAKE_PROFIT_SCOPES = new Set([
+  'security',
+  'portfolio',
+  'portfolio_ltp_renew',
+  'security_ltp_renew',
+]);
 
 function isScopeValidForRuleKind(ruleKind, scopeType) {
-  if (!VALID_STOP_SCOPES.has(scopeType)) return false;
   if (ruleKind === 'take_profit') return TAKE_PROFIT_SCOPES.has(scopeType);
-  return true;
+  if (ruleKind === 'stop_loss') {
+    return (
+      VALID_STOP_SCOPES.has(scopeType) &&
+      scopeType !== 'security_ltp_renew' &&
+      scopeType !== 'portfolio_ltp_renew'
+    );
+  }
+  return false;
+}
+
+const warmupWatchers = new Set();
+
+function localIsoDate(d = new Date()) {
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  return `${y}-${m}-${day}`;
+}
+
+function shiftLocalDate(isoDate, days) {
+  const d = new Date(`${isoDate}T12:00:00`);
+  d.setDate(d.getDate() + days);
+  return localIsoDate(d);
+}
+
+async function logicNeedsWarmup(pool, logicId) {
+  const [{ warmup_pretest, rating_lookback_days }, stopResp] = await Promise.all([
+    getTradingParams(pool, logicId),
+    pool.query(
+      `
+      SELECT 1
+      FROM logic_stops
+      WHERE logic_id = $1
+        AND rule_kind = 'stop_loss'
+        AND scope_type IN ('security_resume', 'security_inversion')
+        AND is_active = TRUE
+      LIMIT 1
+      `,
+      [logicId]
+    ),
+  ]);
+  return {
+    enabled: warmup_pretest !== false && stopResp.rows.length > 0,
+    lookbackDays: Math.max(1, Math.min(90, Number(rating_lookback_days) || 7)),
+  };
+}
+
+async function transferWarmupSecurityState(pool, logicId, runId) {
+  await pool.query(
+    `
+    UPDATE logic_securities
+    SET
+      real_trading_paused = FALSE,
+      real_trading_paused_long = FALSE,
+      real_trading_paused_short = FALSE,
+      real_trading_inverted = FALSE,
+      stop_resume_equity = NULL,
+      stop_resume_baseline = NULL,
+      stop_resume_triggered_at = NULL,
+      stop_resume_equity_long = NULL,
+      stop_resume_baseline_long = NULL,
+      stop_resume_triggered_at_long = NULL,
+      stop_resume_equity_short = NULL,
+      stop_resume_baseline_short = NULL,
+      stop_resume_triggered_at_short = NULL
+    WHERE logic_id = $1
+    `,
+    [logicId]
+  );
+  await pool.query(
+    `
+    UPDATE logic_securities ls
+    SET
+      real_trading_paused_long = COALESCE(st.real_trading_paused_long, FALSE),
+      real_trading_paused_short = COALESCE(st.real_trading_paused_short, FALSE),
+      real_trading_paused = COALESCE(st.real_trading_paused_long, FALSE)
+        OR COALESCE(st.real_trading_paused_short, FALSE)
+        OR COALESCE(st.real_trading_paused, FALSE),
+      real_trading_inverted = COALESCE(st.real_trading_inverted, FALSE),
+      stop_resume_equity_long = st.stop_resume_equity_long,
+      stop_resume_baseline_long = st.stop_resume_baseline_long,
+      stop_resume_triggered_at_long = CASE
+        WHEN COALESCE(st.real_trading_paused_long, FALSE) THEN CURRENT_TIMESTAMP
+        ELSE NULL
+      END,
+      stop_resume_equity_short = st.stop_resume_equity_short,
+      stop_resume_baseline_short = st.stop_resume_baseline_short,
+      stop_resume_triggered_at_short = CASE
+        WHEN COALESCE(st.real_trading_paused_short, FALSE) THEN CURRENT_TIMESTAMP
+        ELSE NULL
+      END,
+      stop_resume_equity = NULL,
+      stop_resume_baseline = NULL,
+      stop_resume_triggered_at = CASE
+        WHEN COALESCE(st.real_trading_paused_long, FALSE)
+          OR COALESCE(st.real_trading_paused_short, FALSE)
+          OR COALESCE(st.real_trading_paused, FALSE)
+          OR COALESCE(st.real_trading_inverted, FALSE)
+          THEN CURRENT_TIMESTAMP
+        ELSE NULL
+      END
+    FROM logic_backtest_security_state st
+    WHERE st.run_id = $2
+      AND st.security_id = ls.security_id
+      AND ls.logic_id = $1
+    `,
+    [logicId, runId]
+  );
+}
+
+function watchWarmupBacktest(pool, logicId, runId) {
+  const key = `${logicId}:${runId}`;
+  if (warmupWatchers.has(key)) return;
+  warmupWatchers.add(key);
+  const poll = async () => {
+    try {
+      const status = await getBacktestStatus(pool, logicId, runId);
+      if (!status || ['pending', 'loading_prices', 'loading_indicators', 'running'].includes(status.status)) {
+        setTimeout(poll, 2000);
+        return;
+      }
+      if (status.status === 'completed') {
+        await transferWarmupSecurityState(pool, logicId, runId);
+        const { rows } = await pool.query(
+          `UPDATE logics SET is_enabled = TRUE WHERE id = $1 RETURNING id`,
+          [logicId]
+        );
+        if (rows.length > 0) {
+          await writeTechLogEvent(pool, {
+            threadKey: `logic:${logicId}:warmup`,
+            operation: 'logic.warmup.enabled',
+            message: `Warm-up completed, logic enabled (run ${runId})`,
+            source: 'api',
+            logicId,
+            payload: { run_id: runId },
+          });
+          startRatingPrecalc(pool, logicId).catch(() => {});
+        }
+      } else {
+        await writeTechLogEvent(pool, {
+          threadKey: `logic:${logicId}:warmup`,
+          operation: 'logic.warmup.failed',
+          message: `Warm-up finished with status ${status.status}; logic remains disabled`,
+          source: 'api',
+          logicId,
+          payload: { run_id: runId, status },
+        });
+      }
+    } catch (err) {
+      console.error('watchWarmupBacktest', err);
+      setTimeout(poll, 5000);
+      return;
+    }
+    warmupWatchers.delete(key);
+  };
+  setTimeout(poll, 2000);
 }
 
 const app = express();
@@ -94,15 +287,29 @@ app.put('/api/settings/tbank-token', async (req, res) => {
     return;
   }
   try {
+    // Сохраняем предыдущий токен: verify идёт после UPSERT — при ошибке откатываем
+    const { rows: prevRows } = await pool.query(
+      `SELECT btrim(COALESCE(pv.value, '')) AS token
+       FROM parameter_values pv
+       JOIN parameter_types pt ON pt.id = pv.parameter_type_id
+       JOIN parameter_sets ps ON ps.id = pv.parameter_set_id
+       WHERE ps.name = 'Default' AND pt.short_name = 'TBANK_API_TOKEN'
+       LIMIT 1`
+    );
+    const previousToken = prevRows[0]?.token || '';
+
     await pool.query('CALL set_tbank_token($1)', [token]);
     const { rows } = await pool.query('SELECT tbank_verify_token() AS status');
     const status = rows[0]?.status ?? {};
     if (!status.valid) {
+      if (previousToken && previousToken !== token) {
+        await pool.query('CALL set_tbank_token($1)', [previousToken]);
+      }
       res.status(400).json({
         error:
           status.error_message ||
-          'Токен сохранён, но T-Bank его не принял. Проверьте API-токен.',
-        has_token: Boolean(status.has_token),
+          'T-Bank не принял токен. Предыдущий токен восстановлен.',
+        has_token: previousToken !== '',
         valid: false,
         error_message: status.error_message ?? null,
       });
@@ -147,6 +354,41 @@ app.put('/api/settings/tech-logging', async (req, res) => {
     res.json({ ok: true, enabled });
   } catch (err) {
     console.error('PUT /api/settings/tech-logging', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.get('/api/settings/cleanup', async (_req, res) => {
+  try {
+    const { rows } = await pool.query(
+      'SELECT cleanup_unused_market_data_enabled() AS enabled'
+    );
+    res.json({ enabled: Boolean(rows[0]?.enabled) });
+  } catch (err) {
+    console.error('GET /api/settings/cleanup', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.put('/api/settings/cleanup', async (req, res) => {
+  const enabled = Boolean(req.body?.enabled);
+  try {
+    await pool.query('CALL set_cleanup_unused_market_data($1)', [enabled]);
+    res.json({ ok: true, enabled });
+  } catch (err) {
+    console.error('PUT /api/settings/cleanup', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/api/maintenance/cleanup', async (_req, res) => {
+  try {
+    const { rows } = await pool.query(
+      'SELECT cleanup_trading_disk_space() AS result'
+    );
+    res.json({ ok: true, result: rows[0]?.result ?? {} });
+  } catch (err) {
+    console.error('POST /api/maintenance/cleanup', err);
     res.status(500).json({ error: err.message });
   }
 });
@@ -898,6 +1140,7 @@ app.get('/api/logics', async (_req, res) => {
         l.account_id,
         l.is_enabled,
         l.note,
+        COALESCE(l.portfolio_trading_paused, FALSE) AS portfolio_trading_paused,
         a.account_code,
         a.name AS account_name,
         a.account_type,
@@ -910,11 +1153,15 @@ app.get('/api/logics', async (_req, res) => {
       JOIN brokers b ON b.id = a.broker_id
       ORDER BY l.id
     `);
-    const result = [];
-    for (const r of rows) {
-      const params = await getTradingParams(pool, r.id);
-      result.push({ ...r, ...params });
-    }
+    // Без T-Bank на каждый poll: остатки из logic_params (бой/enable/смена счёта обновляют сами).
+    const paramsByLogic = await getTradingParamsForLogics(
+      pool,
+      rows.map((r) => r.id)
+    );
+    const result = rows.map((r) => ({
+      ...r,
+      ...(paramsByLogic.get(r.id) || {}),
+    }));
     res.json(result);
   } catch (err) {
     console.error('GET /api/logics', err);
@@ -1317,6 +1564,74 @@ app.delete('/api/accounts/:id', async (req, res) => {
   }
 });
 
+/** Фонды облигаций для покупки (сейчас TBRU — Т-Капитал Облигации). */
+app.get('/api/accounts/bond-funds', (_req, res) => {
+  res.json(listBondFunds());
+});
+
+/** Продать всё на реальном счёте T-Bank (акции, облигации, фонды…; валюту пропускаем). */
+app.post('/api/accounts/:id/sell-all', async (req, res) => {
+  const id = parseId(req.params.id);
+  if (!id) {
+    res.status(400).json({ error: 'Invalid account id' });
+    return;
+  }
+  try {
+    const result = await sellAllPositions(pool, id);
+    res.json(result);
+  } catch (err) {
+    const status = err.status || 500;
+    if (status >= 500) console.error('POST /api/accounts/:id/sell-all', err);
+    res.status(status).json({ error: err.message || 'sell-all failed' });
+  }
+});
+
+/** Свободный кэш реального счёта (для дефолта суммы покупки облигаций). */
+app.get('/api/accounts/:id/cash', async (req, res) => {
+  const id = parseId(req.params.id);
+  if (!id) {
+    res.status(400).json({ error: 'Invalid account id' });
+    return;
+  }
+  try {
+    await assertRealTbankAccount(pool, id);
+    const cash = await getAccountCash(pool, id);
+    res.json({ ok: true, account_id: id, ...cash });
+  } catch (err) {
+    const status = err.status || 500;
+    if (status >= 500) console.error('GET /api/accounts/:id/cash', err);
+    res.status(status).json({ error: err.message || 'cash failed' });
+  }
+});
+
+/**
+ * План / покупка облигаций по составу фонда (TBRU):
+ * body: { fund_code?, amount_rub?, execute?: boolean }
+ * Жадно от более доходных (часто корп.) к менее (ОФЗ).
+ */
+app.post('/api/accounts/:id/buy-bonds', async (req, res) => {
+  const id = parseId(req.params.id);
+  if (!id) {
+    res.status(400).json({ error: 'Invalid account id' });
+    return;
+  }
+  const execute = req.body?.execute === true || req.body?.execute === 'true';
+  const opts = {
+    fund_code: req.body?.fund_code || 'TBRU',
+    amount_rub: req.body?.amount_rub,
+  };
+  try {
+    const result = execute
+      ? await executeBuyBonds(pool, id, opts)
+      : await planBuyBonds(pool, id, opts);
+    res.json(result);
+  } catch (err) {
+    const status = err.status || 500;
+    if (status >= 500) console.error('POST /api/accounts/:id/buy-bonds', err);
+    res.status(status).json({ error: err.message || 'buy-bonds failed' });
+  }
+});
+
 app.post('/api/logics', async (req, res) => {
   const parsed = parseLogicBody(req.body);
   if (parsed.error) {
@@ -1334,6 +1649,7 @@ app.post('/api/logics', async (req, res) => {
     );
     const row = rows[0];
     await ensureDefaultParams(pool, row.id);
+    await syncRealAccountBalancesIfNeeded(pool, row.id, { force: true });
     const params = await getTradingParams(pool, row.id);
     res.status(201).json({ ...row, ...params });
   } catch (err) {
@@ -1347,6 +1663,180 @@ app.post('/api/logics', async (req, res) => {
       return;
     }
     res.status(500).json({ error: err.message });
+  }
+});
+
+/** Экспорт выбранных логик: params/signals/stops/securities; без тестов и сделок. */
+app.post('/api/logics/export', async (req, res) => {
+  const ids = Array.isArray(req.body?.ids) ? req.body.ids : [];
+  try {
+    const bundle = await buildLogicBundle(pool, ids);
+    res.json(bundle);
+  } catch (err) {
+    console.error('POST /api/logics/export', err);
+    res.status(err.status || 500).json({ error: err.message });
+  }
+});
+
+/**
+ * Импорт bundle: создаёт логики с теми же бумагами/сигналами/стопами/параметрами.
+ * Тесты и сделки не импортируются (пустой журнал).
+ */
+app.post('/api/logics/import', async (req, res) => {
+  try {
+    const result = await importLogicBundle(pool, req.body);
+    res.status(201).json(result);
+  } catch (err) {
+    console.error('POST /api/logics/import', err);
+    res.status(err.status || 500).json({ error: err.message });
+  }
+});
+
+app.post('/api/logics/:id/copy', async (req, res) => {
+  const id = Number(req.params.id);
+  if (!Number.isInteger(id) || id <= 0) {
+    res.status(400).json({ error: 'Invalid logic id' });
+    return;
+  }
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const { rows: sourceRows } = await client.query(
+      'SELECT id, name, account_id, note FROM logics WHERE id = $1',
+      [id]
+    );
+    if (sourceRows.length === 0) {
+      await client.query('ROLLBACK');
+      res.status(404).json({ error: 'Logic not found' });
+      return;
+    }
+    const source = sourceRows[0];
+    const baseName = `${source.name} copy`;
+    let copyName = baseName;
+    for (let i = 2; i <= 100; i += 1) {
+      const { rows: existing } = await client.query(
+        'SELECT 1 FROM logics WHERE name = $1 LIMIT 1',
+        [copyName]
+      );
+      if (existing.length === 0) break;
+      copyName = `${baseName} ${i}`;
+    }
+
+    const { rows: inserted } = await client.query(
+      `
+      INSERT INTO logics (name, account_id, is_enabled, note)
+      VALUES ($1, $2, FALSE, $3)
+      RETURNING id, name, account_id, is_enabled, note
+      `,
+      [copyName, source.account_id, source.note]
+    );
+    const copy = inserted[0];
+
+    await client.query(
+      `
+      INSERT INTO logic_params (logic_id, param_key, param_value, value_type)
+      SELECT $1, param_key, param_value, value_type
+      FROM logic_params
+      WHERE logic_id = $2
+      ON CONFLICT (logic_id, param_key) DO UPDATE SET
+        param_value = EXCLUDED.param_value,
+        value_type = EXCLUDED.value_type,
+        updated_at = CURRENT_TIMESTAMP
+      `,
+      [copy.id, id]
+    );
+
+    await client.query(
+      `
+      INSERT INTO logic_indicator_signals (
+        logic_id, indicator_id, position_event, position_side, signal_kind,
+        formula, rating, rating_test, display_order, is_active
+      )
+      SELECT
+        $1, indicator_id, position_event, position_side, signal_kind,
+        formula, 0, 0, display_order, is_active
+      FROM logic_indicator_signals
+      WHERE logic_id = $2
+      ORDER BY display_order, id
+      `,
+      [copy.id, id]
+    );
+
+    await client.query(
+      `
+      INSERT INTO logic_stops (
+        logic_id, rule_kind, scope_type, value, value_unit, display_order, is_active
+      )
+      SELECT $1, rule_kind, scope_type, value, value_unit, display_order, is_active
+      FROM logic_stops
+      WHERE logic_id = $2
+      ORDER BY display_order, id
+      `,
+      [copy.id, id]
+    );
+
+    await client.query(
+      `
+      INSERT INTO logic_securities (logic_id, security_id, display_order, is_active)
+      SELECT $1, security_id, display_order, is_active
+      FROM logic_securities
+      WHERE logic_id = $2
+      ORDER BY display_order, id
+      ON CONFLICT (logic_id, security_id) DO NOTHING
+      `,
+      [copy.id, id]
+    );
+
+    await client.query(
+      `
+      INSERT INTO logic_non_trading_intervals (
+        logic_id, day_of_week, time_from, time_to, note, display_order, is_active
+      )
+      SELECT $1, day_of_week, time_from, time_to, note, display_order, is_active
+      FROM logic_non_trading_intervals
+      WHERE logic_id = $2
+      ORDER BY display_order, id
+      `,
+      [copy.id, id]
+    );
+
+    await client.query('COMMIT');
+    // Копия с real-счёта не должна унаследовать paper 1M — остаток с брокера или 0
+    await syncRealAccountBalancesIfNeeded(pool, copy.id, { force: true });
+    const { rows: fullRows } = await pool.query(
+      `
+      SELECT
+        l.id,
+        l.name,
+        l.account_id,
+        l.is_enabled,
+        l.note,
+        a.account_code,
+        a.name AS account_name,
+        a.account_type,
+        a.broker_id,
+        a.is_active AS account_is_active,
+        b.code AS broker_code,
+        b.name AS broker_name
+      FROM logics l
+      JOIN accounts a ON a.id = l.account_id
+      JOIN brokers b ON b.id = a.broker_id
+      WHERE l.id = $1
+      `,
+      [copy.id]
+    );
+    const params = await getTradingParams(pool, copy.id);
+    res.status(201).json({ ...(fullRows[0] ?? copy), ...params });
+  } catch (err) {
+    await client.query('ROLLBACK');
+    console.error('POST /api/logics/:id/copy', err);
+    if (err.code === '23505') {
+      res.status(409).json({ error: 'Could not create a unique copy name' });
+      return;
+    }
+    res.status(500).json({ error: err.message });
+  } finally {
+    client.release();
   }
 });
 
@@ -1365,7 +1855,7 @@ app.put('/api/logics/:id', async (req, res) => {
   try {
     await client.query('BEGIN');
     const existing = await client.query(
-      'SELECT id, name FROM logics WHERE id = $1',
+      'SELECT id, name, account_id, is_enabled FROM logics WHERE id = $1',
       [id]
     );
     if (existing.rows.length === 0) {
@@ -1373,6 +1863,8 @@ app.put('/api/logics/:id', async (req, res) => {
       res.status(404).json({ error: 'Logic not found' });
       return;
     }
+    const prevAccountId = Number(existing.rows[0].account_id);
+    const accountChanged = prevAccountId !== Number(parsed.account_id);
     const { rows } = await client.query(
       `
       UPDATE logics
@@ -1382,8 +1874,44 @@ app.put('/api/logics/:id', async (req, res) => {
       `,
       [parsed.name, parsed.account_id, parsed.is_enabled, parsed.note, id]
     );
+
+    let account_change = null;
+    if (accountChanged) {
+      // Боевая история/FINRES + pause state; остатки под новый счёт.
+      const cleared = await resetLogicTradingStateOnAccountChange(client, id);
+      account_change = {
+        from_account_id: prevAccountId,
+        to_account_id: Number(parsed.account_id),
+        cleared_trades: cleared.cleared_trades,
+      };
+      await writeTechLogEvent(client, {
+        threadKey: `logic:${id}:control`,
+        operation: 'logic.account_changed',
+        message: 'Счёт логики изменён: история сделок и FINRES очищены',
+        source: 'api',
+        logicId: id,
+        payload: account_change,
+      });
+    }
+
     await client.query('COMMIT');
-    res.json(rows[0]);
+    if (!accountChanged) {
+      // Смена на real / уже real — initial/current только с брокера (или 0)
+      await syncRealAccountBalancesIfNeeded(pool, id, { force: true });
+    }
+
+    let rating_precalc = null;
+    // Как «выкл → вкл»: при активной логике после смены счёта — предрасчёт рейтинга.
+    if (accountChanged && rows[0].is_enabled) {
+      rating_precalc = await startRatingPrecalc(pool, id);
+    }
+
+    res.json({
+      ...rows[0],
+      account_changed: accountChanged,
+      account_change,
+      rating_precalc,
+    });
   } catch (err) {
     await client.query('ROLLBACK');
     console.error('PUT /api/logics/:id', err);
@@ -1419,6 +1947,9 @@ app.delete('/api/logics/:id', async (req, res) => {
       res.status(404).json({ error: 'Logic not found' });
       return;
     }
+    // logic_trades.logic_id historically RESTRICT — remove trades/lots before logic.
+    await client.query('DELETE FROM logic_trade_lots WHERE logic_id = $1', [id]);
+    await client.query('DELETE FROM logic_trades WHERE logic_id = $1', [id]);
     await client.query('DELETE FROM logics WHERE id = $1', [id]);
     await client.query('COMMIT');
     res.json({ ok: true, id });
@@ -1443,14 +1974,74 @@ app.patch('/api/logics/:id', async (req, res) => {
     return;
   }
   try {
+    const { rows: existsRows } = await pool.query(
+      `SELECT id FROM logics WHERE id = $1`,
+      [id]
+    );
+    if (existsRows.length === 0) {
+      res.status(404).json({ error: 'Logic not found' });
+      return;
+    }
+    if (is_enabled) {
+      const warmup = await logicNeedsWarmup(pool, id);
+      if (warmup.enabled) {
+        const { rows: activeWarmup } = await pool.query(
+          `
+          SELECT id, date_from, date_to
+          FROM logic_backtest_runs
+          WHERE logic_id = $1
+            AND status IN ('pending', 'loading_prices', 'loading_indicators', 'running')
+          ORDER BY id DESC
+          LIMIT 1
+          `,
+          [id]
+        );
+        if (activeWarmup.length > 0) {
+          const run = activeWarmup[0];
+          await pool.query(`UPDATE logics SET is_enabled = FALSE WHERE id = $1`, [id]);
+          watchWarmupBacktest(pool, id, run.id);
+          res.json({
+            id,
+            is_enabled: false,
+            warmup_pretest: {
+              started: true,
+              run_id: run.id,
+              date_from: run.date_from,
+              date_to: run.date_to,
+            },
+          });
+          return;
+        }
+        const dateTo = localIsoDate();
+        const dateFrom = shiftLocalDate(dateTo, -(warmup.lookbackDays - 1));
+        const runId = await startBacktest(pool, id, dateFrom, dateTo);
+        await pool.query(`UPDATE logics SET is_enabled = FALSE WHERE id = $1`, [id]);
+        watchWarmupBacktest(pool, id, runId);
+        await writeTechLogEvent(pool, {
+          threadKey: `logic:${id}:warmup`,
+          operation: 'logic.warmup.started',
+          message: `Warm-up backtest started before enabling logic`,
+          source: 'api',
+          logicId: id,
+          payload: { run_id: runId, date_from: dateFrom, date_to: dateTo },
+        });
+        res.json({
+          id,
+          is_enabled: false,
+          warmup_pretest: {
+            started: true,
+            run_id: runId,
+            date_from: dateFrom,
+            date_to: dateTo,
+          },
+        });
+        return;
+      }
+    }
     const { rows } = await pool.query(
       `UPDATE logics SET is_enabled = $1 WHERE id = $2 RETURNING id, is_enabled`,
       [is_enabled, id]
     );
-    if (rows.length === 0) {
-      res.status(404).json({ error: 'Logic not found' });
-      return;
-    }
     await writeTechLogEvent(pool, {
       threadKey: `logic:${id}:control`,
       operation: is_enabled ? 'logic.enabled' : 'logic.disabled',
@@ -1461,6 +2052,8 @@ app.patch('/api/logics/:id', async (req, res) => {
     });
     let rating_precalc = null;
     if (is_enabled) {
+      // Остатки с брокера — в фоне, не блокируем ответ UI (раньше блокировал poll списка).
+      syncRealAccountBalancesIfNeeded(pool, id, { force: true }).catch(() => {});
       // Фон: не ждём; бой уже включён
       rating_precalc = await startRatingPrecalc(pool, id);
     }
@@ -1840,8 +2433,8 @@ app.post('/api/logic-stops', async (req, res) => {
     res.status(400).json({
       error:
         ruleKind === 'take_profit'
-          ? 'scope_type for take_profit must be security or portfolio'
-          : 'scope_type must be security, security_resume or portfolio',
+          ? 'scope_type for take_profit must be security, portfolio or portfolio_ltp_renew'
+          : 'scope_type must be security, security_resume, security_inversion, portfolio or portfolio_resume',
     });
     return;
   }
@@ -1910,8 +2503,8 @@ app.put('/api/logic-stops/:id', async (req, res) => {
         res.status(400).json({
           error:
             ruleKind === 'take_profit'
-              ? 'scope_type for take_profit must be security or portfolio'
-              : 'scope_type must be security, security_resume or portfolio',
+              ? 'scope_type for take_profit must be security, portfolio or portfolio_ltp_renew'
+              : 'scope_type must be security, security_resume, security_inversion, portfolio or portfolio_resume',
         });
         return;
       }
@@ -1974,9 +2567,18 @@ const LOGIC_SECURITY_SELECT = `
     ls.is_active,
     ls.created_at,
     ls.real_trading_paused,
+    ls.real_trading_paused_long,
+    ls.real_trading_paused_short,
+    ls.real_trading_inverted,
     ls.stop_resume_equity::float8 AS stop_resume_equity,
     ls.stop_resume_baseline::float8 AS stop_resume_baseline,
     ls.stop_resume_triggered_at,
+    ls.stop_resume_equity_long::float8 AS stop_resume_equity_long,
+    ls.stop_resume_baseline_long::float8 AS stop_resume_baseline_long,
+    ls.stop_resume_triggered_at_long,
+    ls.stop_resume_equity_short::float8 AS stop_resume_equity_short,
+    ls.stop_resume_baseline_short::float8 AS stop_resume_baseline_short,
+    ls.stop_resume_triggered_at_short,
     s.name AS security_name,
     s.lot_size,
     st.name AS security_type,
@@ -2102,6 +2704,303 @@ app.delete('/api/logic-securities/:id', async (req, res) => {
   }
 });
 
+app.get('/api/logics/:id/non-trading-periods', async (req, res) => {
+  const id = Number(req.params.id);
+  if (!Number.isInteger(id) || id <= 0) {
+    res.status(400).json({ error: 'Invalid logic id' });
+    return;
+  }
+  try {
+    await pool.query('SELECT logic_ensure_non_trading_periods($1)', [id]);
+    const { rows } = await pool.query(
+      `
+      SELECT
+        id,
+        logic_id,
+        day_of_week,
+        to_char(time_from, 'HH24:MI') AS time_from,
+        to_char(time_to, 'HH24:MI') AS time_to,
+        note,
+        display_order,
+        is_active
+      FROM logic_non_trading_intervals
+      WHERE logic_id = $1
+      ORDER BY day_of_week, time_from, id
+      `,
+      [id]
+    );
+    const trading = await getTradingParams(pool, id);
+    res.json({
+      logic_id: id,
+      use_non_trading_periods: trading.use_non_trading_periods !== false,
+      intervals: rows,
+    });
+  } catch (err) {
+    console.error('GET /api/logics/:id/non-trading-periods', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/api/logics/:id/non-trading-periods/moex-defaults', async (req, res) => {
+  const id = Number(req.params.id);
+  if (!Number.isInteger(id) || id <= 0) {
+    res.status(400).json({ error: 'Invalid logic id' });
+    return;
+  }
+  try {
+    const { rows: exists } = await pool.query('SELECT id FROM logics WHERE id = $1', [id]);
+    if (exists.length === 0) {
+      res.status(404).json({ error: 'Logic not found' });
+      return;
+    }
+    const { rows } = await pool.query(
+      'SELECT logic_apply_moex_non_trading_periods($1::INTEGER) AS n',
+      [id]
+    );
+    const { rows: intervals } = await pool.query(
+      `
+      SELECT
+        id,
+        logic_id,
+        day_of_week,
+        to_char(time_from, 'HH24:MI') AS time_from,
+        to_char(time_to, 'HH24:MI') AS time_to,
+        note,
+        display_order,
+        is_active
+      FROM logic_non_trading_intervals
+      WHERE logic_id = $1
+      ORDER BY day_of_week, time_from, id
+      `,
+      [id]
+    );
+    const trading = await getTradingParams(pool, id);
+    await writeTechLogEvent(pool, {
+      threadKey: `logic:${id}:sessions`,
+      operation: 'logic.non_trading.moex_defaults',
+      message: 'Неторговые периоды установлены как на MOEX',
+      source: 'api',
+      logicId: id,
+      payload: { count: rows[0]?.n ?? intervals.length },
+    });
+    res.json({
+      logic_id: id,
+      applied: Number(rows[0]?.n ?? 0),
+      use_non_trading_periods: trading.use_non_trading_periods !== false,
+      intervals,
+    });
+  } catch (err) {
+    console.error('POST /api/logics/:id/non-trading-periods/moex-defaults', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+function parseTimeHm(raw) {
+  const s = String(raw ?? '').trim();
+  const m = s.match(/^(\d{1,2}):(\d{2})(?::\d{2})?$/);
+  if (!m) return null;
+  const h = Number(m[1]);
+  const min = Number(m[2]);
+  if (!Number.isInteger(h) || !Number.isInteger(min) || h < 0 || h > 23 || min < 0 || min > 59) {
+    return null;
+  }
+  return `${String(h).padStart(2, '0')}:${String(min).padStart(2, '0')}`;
+}
+
+async function fetchNonTradingIntervals(pool, logicId) {
+  const { rows } = await pool.query(
+    `
+    SELECT
+      id,
+      logic_id,
+      day_of_week,
+      to_char(time_from, 'HH24:MI') AS time_from,
+      to_char(time_to, 'HH24:MI') AS time_to,
+      note,
+      display_order,
+      is_active
+    FROM logic_non_trading_intervals
+    WHERE logic_id = $1
+    ORDER BY day_of_week, time_from, id
+    `,
+    [logicId]
+  );
+  return rows;
+}
+
+app.post('/api/logics/:id/non-trading-periods', async (req, res) => {
+  const id = Number(req.params.id);
+  if (!Number.isInteger(id) || id <= 0) {
+    res.status(400).json({ error: 'Invalid logic id' });
+    return;
+  }
+  const day = Math.round(Number(req.body?.day_of_week));
+  const timeFrom = parseTimeHm(req.body?.time_from);
+  const timeTo = parseTimeHm(req.body?.time_to);
+  const note =
+    req.body?.note == null || req.body?.note === ''
+      ? null
+      : String(req.body.note).trim().slice(0, 200);
+  if (!Number.isInteger(day) || day < 1 || day > 7) {
+    res.status(400).json({ error: 'day_of_week: целое 1…7 (Пн…Вс)' });
+    return;
+  }
+  if (!timeFrom || !timeTo) {
+    res.status(400).json({ error: 'time_from / time_to: формат ЧЧ:ММ' });
+    return;
+  }
+  if (timeFrom > timeTo) {
+    res.status(400).json({ error: 'time_from не позже time_to' });
+    return;
+  }
+  try {
+    const { rows: exists } = await pool.query('SELECT id FROM logics WHERE id = $1', [id]);
+    if (exists.length === 0) {
+      res.status(404).json({ error: 'Logic not found' });
+      return;
+    }
+    const { rows: ord } = await pool.query(
+      `
+      SELECT COALESCE(MAX(display_order), 0) + 1 AS n
+      FROM logic_non_trading_intervals
+      WHERE logic_id = $1
+      `,
+      [id]
+    );
+    await pool.query(
+      `
+      INSERT INTO logic_non_trading_intervals (
+        logic_id, day_of_week, time_from, time_to, note, display_order, is_active
+      )
+      VALUES ($1, $2, $3::time, $4::time, $5, $6, TRUE)
+      `,
+      [id, day, timeFrom, timeTo, note, Number(ord[0]?.n ?? 1)]
+    );
+    const trading = await getTradingParams(pool, id);
+    res.status(201).json({
+      logic_id: id,
+      use_non_trading_periods: trading.use_non_trading_periods !== false,
+      intervals: await fetchNonTradingIntervals(pool, id),
+    });
+  } catch (err) {
+    console.error('POST /api/logics/:id/non-trading-periods', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.patch('/api/logic-non-trading-intervals/:id', async (req, res) => {
+  const id = Number(req.params.id);
+  if (!Number.isInteger(id) || id <= 0) {
+    res.status(400).json({ error: 'Invalid interval id' });
+    return;
+  }
+  const patches = [];
+  const vals = [];
+  let n = 1;
+  if (req.body?.day_of_week !== undefined) {
+    const day = Math.round(Number(req.body.day_of_week));
+    if (!Number.isInteger(day) || day < 1 || day > 7) {
+      res.status(400).json({ error: 'day_of_week: целое 1…7' });
+      return;
+    }
+    patches.push(`day_of_week = $${n++}`);
+    vals.push(day);
+  }
+  if (req.body?.time_from !== undefined) {
+    const t = parseTimeHm(req.body.time_from);
+    if (!t) {
+      res.status(400).json({ error: 'time_from: ЧЧ:ММ' });
+      return;
+    }
+    patches.push(`time_from = $${n++}::time`);
+    vals.push(t);
+  }
+  if (req.body?.time_to !== undefined) {
+    const t = parseTimeHm(req.body.time_to);
+    if (!t) {
+      res.status(400).json({ error: 'time_to: ЧЧ:ММ' });
+      return;
+    }
+    patches.push(`time_to = $${n++}::time`);
+    vals.push(t);
+  }
+  if (req.body?.note !== undefined) {
+    const note =
+      req.body.note == null || req.body.note === ''
+        ? null
+        : String(req.body.note).trim().slice(0, 200);
+    patches.push(`note = $${n++}`);
+    vals.push(note);
+  }
+  if (req.body?.is_active !== undefined) {
+    patches.push(`is_active = $${n++}`);
+    vals.push(Boolean(req.body.is_active));
+  }
+  if (patches.length === 0) {
+    res.status(400).json({ error: 'Нечего обновлять' });
+    return;
+  }
+  vals.push(id);
+  try {
+    const { rows } = await pool.query(
+      `
+      UPDATE logic_non_trading_intervals
+      SET ${patches.join(', ')}
+      WHERE id = $${n}
+      RETURNING logic_id
+      `,
+      vals
+    );
+    if (rows.length === 0) {
+      res.status(404).json({ error: 'Interval not found' });
+      return;
+    }
+    const logicId = rows[0].logic_id;
+    const trading = await getTradingParams(pool, logicId);
+    res.json({
+      logic_id: logicId,
+      use_non_trading_periods: trading.use_non_trading_periods !== false,
+      intervals: await fetchNonTradingIntervals(pool, logicId),
+    });
+  } catch (err) {
+    console.error('PATCH /api/logic-non-trading-intervals/:id', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.delete('/api/logic-non-trading-intervals/:id', async (req, res) => {
+  const id = Number(req.params.id);
+  if (!Number.isInteger(id) || id <= 0) {
+    res.status(400).json({ error: 'Invalid interval id' });
+    return;
+  }
+  try {
+    const { rows } = await pool.query(
+      `
+      DELETE FROM logic_non_trading_intervals
+      WHERE id = $1
+      RETURNING logic_id
+      `,
+      [id]
+    );
+    if (rows.length === 0) {
+      res.status(404).json({ error: 'Interval not found' });
+      return;
+    }
+    const logicId = rows[0].logic_id;
+    const trading = await getTradingParams(pool, logicId);
+    res.json({
+      ok: true,
+      logic_id: logicId,
+      use_non_trading_periods: trading.use_non_trading_periods !== false,
+      intervals: await fetchNonTradingIntervals(pool, logicId),
+    });
+  } catch (err) {
+    console.error('DELETE /api/logic-non-trading-intervals/:id', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
 const LOGIC_TRADE_SELECT = `
   SELECT
     lt.id,
@@ -2161,9 +3060,15 @@ app.get('/api/logic-trades', async (req, res) => {
       : isTestRaw === '0' || isTestRaw === 'false'
         ? false
         : null;
+  const runIdRaw = req.query.run_id;
+  const runId =
+    runIdRaw != null && runIdRaw !== '' && Number.isFinite(Number(runIdRaw))
+      ? Number(runIdRaw)
+      : null;
   const limitRaw = Number(req.query.limit);
-  const defaultLimit = isTest === true ? 5000 : 100;
-  const limitCap = isTest === true ? 20000 : 500;
+  // Test runs can exceed 5k closes; panel must load the full latest run or finres != table column.
+  const defaultLimit = isTest === true ? 20000 : 100;
+  const limitCap = isTest === true ? 50000 : 500;
   const limit = Math.min(
     Math.max(Number.isFinite(limitRaw) && limitRaw > 0 ? limitRaw : defaultLimit, 1),
     limitCap
@@ -2176,17 +3081,229 @@ app.get('/api/logic-trades', async (req, res) => {
     } else if (isTest === false) {
       where += ' AND lt.is_test = FALSE';
     }
+    if (runId != null && runId > 0) {
+      params.push(runId);
+      where += ` AND lt.run_id = $${params.length}`;
+    }
     params.push(limit);
     const { rows } = await pool.query(
       `${LOGIC_TRADE_SELECT}
        ${where}
        ORDER BY lt.executed_at DESC, lt.id DESC
-       LIMIT $2`,
+       LIMIT $${params.length}`,
       params
     );
     res.json(rows);
   } catch (err) {
     console.error('GET /api/logic-trades', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+/**
+ * Full trade dump for analysis (open/close/shadow/rejected/etc. + lots).
+ * Query: logic_id, is_test=0|1, optional run_id (test: omit = latest run if any).
+ */
+app.get('/api/logic-trades/export', async (req, res) => {
+  const logicId = Number(req.query.logic_id);
+  if (!Number.isInteger(logicId) || logicId <= 0) {
+    res.status(400).json({ error: 'logic_id required' });
+    return;
+  }
+  const isTestRaw = req.query.is_test;
+  const isTest =
+    isTestRaw === '1' || isTestRaw === 'true'
+      ? true
+      : isTestRaw === '0' || isTestRaw === 'false'
+        ? false
+        : null;
+  if (isTest == null) {
+    res.status(400).json({ error: 'is_test required (0 or 1)' });
+    return;
+  }
+  let runId =
+    req.query.run_id != null &&
+    req.query.run_id !== '' &&
+    Number.isFinite(Number(req.query.run_id))
+      ? Number(req.query.run_id)
+      : null;
+  try {
+    const { rows: logicRows } = await pool.query(
+      `SELECT id, name, is_enabled, note FROM logics WHERE id = $1`,
+      [logicId]
+    );
+    if (logicRows.length === 0) {
+      res.status(404).json({ error: 'Logic not found' });
+      return;
+    }
+    const logic = logicRows[0];
+
+    // Same portable definition as logics/export: params, signals, stops, papers, account.
+    const logicBundle = await buildLogicBundle(pool, [logicId]);
+    const logicDef = logicBundle.logics?.[0] || {
+      name: logic.name,
+      note: logic.note,
+      params: [],
+      signals: [],
+      stops: [],
+      securities: [],
+      account: null,
+    };
+    const tradingParams = await getTradingParams(pool, logicId);
+    let nonTradingIntervals = [];
+    try {
+      await pool.query('SELECT logic_ensure_non_trading_periods($1)', [logicId]);
+      nonTradingIntervals = await fetchNonTradingIntervals(pool, logicId);
+    } catch (_ntpErr) {
+      nonTradingIntervals = [];
+    }
+
+    let runMeta = null;
+    if (isTest) {
+      if (runId == null || runId <= 0) {
+        const { rows: runRows } = await pool.query(
+          `SELECT id, date_from, date_to, status, financial_result, test_balance,
+                  to_char(started_at, 'YYYY-MM-DD HH24:MI:SS') AS started_at,
+                  to_char(finished_at, 'YYYY-MM-DD HH24:MI:SS') AS finished_at
+           FROM logic_backtest_runs
+           WHERE logic_id = $1
+           ORDER BY id DESC
+           LIMIT 1`,
+          [logicId]
+        );
+        if (runRows.length > 0) {
+          runId = Number(runRows[0].id);
+          runMeta = runRows[0];
+        }
+      } else {
+        const { rows: runRows } = await pool.query(
+          `SELECT id, date_from, date_to, status, financial_result, test_balance,
+                  to_char(started_at, 'YYYY-MM-DD HH24:MI:SS') AS started_at,
+                  to_char(finished_at, 'YYYY-MM-DD HH24:MI:SS') AS finished_at
+           FROM logic_backtest_runs
+           WHERE logic_id = $1 AND id = $2`,
+          [logicId, runId]
+        );
+        runMeta = runRows[0] || null;
+      }
+    }
+
+    const params = [logicId];
+    let where = 'WHERE lt.logic_id = $1 AND lt.is_test = $2';
+    params.push(isTest);
+    if (isTest && runId != null && runId > 0) {
+      params.push(runId);
+      where += ` AND lt.run_id = $${params.length}`;
+    }
+    // No status/shadow filter — full dump for analysis.
+    const limit = 100000;
+    params.push(limit);
+    const { rows: trades } = await pool.query(
+      `${LOGIC_TRADE_SELECT}
+       ${where}
+       ORDER BY lt.bar_dt ASC NULLS LAST, lt.executed_at ASC, lt.id ASC
+       LIMIT $${params.length}`,
+      params
+    );
+
+    const tradeIds = trades.map((t) => Number(t.id)).filter((id) => id > 0);
+    let lots = [];
+    if (tradeIds.length > 0) {
+      const { rows: lotRows } = await pool.query(
+        `
+        SELECT
+          l.id,
+          l.logic_id,
+          l.close_trade_id,
+          l.open_trade_id,
+          l.action_id,
+          l.cost_method,
+          l.quantity,
+          l.close_amount,
+          l.open_amount,
+          l.close_commission,
+          l.open_commission,
+          l.financial_result,
+          to_char(l.created_at, 'YYYY-MM-DD HH24:MI:SS') AS created_at,
+          ac.name AS action_name,
+          to_char(ot.executed_at, 'YYYY-MM-DD HH24:MI:SS') AS open_executed_at,
+          ot.price AS open_price,
+          to_char(ct.executed_at, 'YYYY-MM-DD HH24:MI:SS') AS close_executed_at,
+          ct.price AS close_price
+        FROM logic_trade_lots l
+        JOIN actions ac ON ac.id = l.action_id
+        JOIN logic_trades ct ON ct.id = l.close_trade_id
+        LEFT JOIN logic_trades ot ON ot.id = l.open_trade_id
+        WHERE l.logic_id = $1
+          AND (l.close_trade_id = ANY($2::bigint[]) OR l.open_trade_id = ANY($2::bigint[]))
+        ORDER BY l.id ASC
+        `,
+        [logicId, tradeIds]
+      );
+      lots = lotRows;
+    }
+
+    const counts = {
+      total: trades.length,
+      open: 0,
+      close: 0,
+      shadow: 0,
+      non_shadow: 0,
+      simulated: 0,
+      fictitious: 0,
+      by_status: {},
+      by_signal_kind: {},
+      with_remaining: 0,
+      lots: lots.length,
+    };
+    for (const t of trades) {
+      if (t.side_name === 'Open') counts.open += 1;
+      if (t.side_name === 'Close') counts.close += 1;
+      if (t.is_shadow) counts.shadow += 1;
+      else counts.non_shadow += 1;
+      if (t.is_simulated) counts.simulated += 1;
+      if (t.is_fictitious) counts.fictitious += 1;
+      const st = String(t.status || 'unknown');
+      counts.by_status[st] = (counts.by_status[st] || 0) + 1;
+      const sk = String(t.signal_kind || 'unknown');
+      counts.by_signal_kind[sk] = (counts.by_signal_kind[sk] || 0) + 1;
+      if (t.remaining_qty != null && Number(t.remaining_qty) > 0) {
+        counts.with_remaining += 1;
+      }
+    }
+
+    res.json({
+      format: 'multilogic-trades-export',
+      version: 2,
+      exported_at: new Date().toISOString(),
+      is_test: isTest,
+      // Full logic card for analysis (params, signals, stops, papers, account).
+      logic: {
+        id: Number(logicDef.id ?? logicId),
+        name: logicDef.name,
+        note: logicDef.note ?? null,
+        is_enabled: Boolean(logic.is_enabled),
+        account: logicDef.account ?? null,
+        params: logicDef.params ?? [],
+        signals: logicDef.signals ?? [],
+        stops: logicDef.stops ?? [],
+        securities: logicDef.securities ?? [],
+      },
+      trading_params: tradingParams,
+      non_trading_periods: {
+        use_non_trading_periods: tradingParams.use_non_trading_periods !== false,
+        intervals: nonTradingIntervals,
+      },
+      run_id: runId,
+      run: runMeta,
+      counts,
+      trades,
+      lots,
+      note:
+        'Complete dump for AI/debug: logic params/signals/stops/papers, trading params, non-trading periods, all trades (open/close/shadow/simulated/fictitious/all statuses) + lots.',
+    });
+  } catch (err) {
+    console.error('GET /api/logic-trades/export', err);
     res.status(500).json({ error: err.message });
   }
 });
@@ -2205,18 +3322,24 @@ app.get('/api/logic-trades/pnl-summary', async (req, res) => {
       // При наличии run_id берём сделки последнего прогона логики.
       const { rows } = await pool.query(
         `
+        -- latest_run: тот же критерий, что getBacktestStatus (ORDER BY id DESC),
+        -- иначе колонка «Тест» и блок «Тестирование» суммируют разные прогоны.
         WITH latest_run AS (
           SELECT DISTINCT ON (r.logic_id)
             r.logic_id,
-            r.id AS run_id
+            r.id AS run_id,
+            r.date_from::text AS date_from,
+            r.date_to::text AS date_to
           FROM logic_backtest_runs r
-          ORDER BY r.logic_id, COALESCE(r.finished_at, r.started_at, r.created_at) DESC, r.id DESC
+          ORDER BY r.logic_id, r.id DESC
         )
         SELECT
           lt.logic_id,
           COALESCE(SUM(lt.financial_result), 0)::float8 AS financial_result,
           COALESCE(SUM(COALESCE(lt.commission, 0)), 0)::float8 AS commission,
-          COUNT(*)::int AS trade_count
+          COUNT(*)::int AS trade_count,
+          MAX(lr.date_from) AS date_from,
+          MAX(lr.date_to) AS date_to
         FROM logic_trades lt
         LEFT JOIN latest_run lr ON lr.logic_id = lt.logic_id
         WHERE lt.is_test = TRUE
@@ -2247,6 +3370,8 @@ app.get('/api/logic-trades/pnl-summary', async (req, res) => {
           financial_result: Number(r.financial_result),
           commission: Number(r.commission),
           trade_count: Number(r.trade_count),
+          date_from: r.date_from != null ? String(r.date_from) : null,
+          date_to: r.date_to != null ? String(r.date_to) : null,
         })),
       });
       return;
@@ -2442,6 +3567,34 @@ app.get('/api/logic-backtest/status', async (req, res) => {
   }
 });
 
+/** All in-progress backtests (UI recover after leaving /operations tab). */
+app.get('/api/logic-backtest/active', async (_req, res) => {
+  try {
+    const { rows } = await pool.query(
+      `
+      SELECT DISTINCT ON (r.logic_id)
+        r.id, r.logic_id,
+        r.date_from::text AS date_from,
+        r.date_to::text AS date_to,
+        r.status,
+        r.progress_pct::float8 AS progress_pct,
+        r.phase_message, r.phase_detail, r.current_bar_dt,
+        r.total_bars, r.processed_bars, r.trades_created,
+        r.test_balance::float8 AS test_balance,
+        r.financial_result::float8 AS financial_result,
+        r.cancel_requested, r.error_message, r.started_at, r.finished_at, r.created_at
+      FROM logic_backtest_runs r
+      WHERE r.status IN ('pending', 'loading_prices', 'loading_indicators', 'running')
+      ORDER BY r.logic_id, r.id DESC
+      `
+    );
+    res.json({ rows });
+  } catch (err) {
+    console.error('GET /api/logic-backtest/active', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
 app.post('/api/logic-backtest/cancel', async (req, res) => {
   const runId = Number(req.body?.run_id);
   if (!Number.isInteger(runId) || runId <= 0) {
@@ -2588,6 +3741,112 @@ app.get('/api/tech-log', async (req, res) => {
   }
 });
 
+app.get('/api/processes', async (_req, res) => {
+  const rows = [];
+  try {
+    const active = await pool.query(`
+      SELECT
+        pid,
+        state,
+        wait_event_type,
+        wait_event,
+        now() - COALESCE(query_start, xact_start, backend_start) AS age,
+        left(regexp_replace(COALESCE(query, ''), '\\s+', ' ', 'g'), 180) AS query
+      FROM pg_stat_activity
+      WHERE datname = current_database()
+        AND pid <> pg_backend_pid()
+        AND state <> 'idle'
+      ORDER BY COALESCE(query_start, xact_start, backend_start) NULLS LAST
+      LIMIT 20
+    `);
+    for (const r of active.rows) {
+      rows.push({
+        type: 'postgres',
+        label: `PostgreSQL pid ${r.pid}`,
+        status: r.state || 'active',
+        detail: r.query || '',
+        wait: [r.wait_event_type, r.wait_event].filter(Boolean).join(':') || null,
+        age: String(r.age || ''),
+      });
+    }
+
+    const backtests = await pool.query(`
+      SELECT
+        r.logic_id,
+        l.name AS logic_name,
+        r.status,
+        COALESCE(r.progress_pct, 0) AS progress_pct,
+        r.phase_message,
+        r.phase_detail,
+        r.started_at
+      FROM logic_backtest_runs r
+      JOIN logics l ON l.id = r.logic_id
+      WHERE r.status IN ('pending', 'loading_prices', 'loading_indicators', 'running')
+      ORDER BY r.started_at DESC
+      LIMIT 20
+    `);
+    for (const r of backtests.rows) {
+      rows.push({
+        type: 'backtest',
+        label: `Test: ${r.logic_name}`,
+        status: r.status,
+        detail: [r.phase_message, r.phase_detail].filter(Boolean).join(' — '),
+        progress_pct: Number(r.progress_pct) || 0,
+        logic_id: r.logic_id,
+        started_at: r.started_at,
+      });
+    }
+
+    const enabled = await pool.query(`
+      SELECT COUNT(*)::int AS cnt
+      FROM logics
+      WHERE is_enabled = TRUE
+    `);
+    const enabledCount = Number(enabled.rows[0]?.cnt) || 0;
+    if (enabledCount > 0) {
+      rows.push({
+        type: 'trade_runner',
+        label: 'Trade runner',
+        status: 'scheduled',
+        detail: `${enabledCount} enabled logic(s), Node fallback interval ${process.env.TRADE_RUNNER_INTERVAL_MS || 15000} ms`,
+      });
+    }
+
+    try {
+      const cronExists = await pool.query(`SELECT to_regclass('cron.job') AS job_table`);
+      if (cronExists.rows[0]?.job_table) {
+        const cron = await pool.query(`
+          SELECT jobid, schedule, command, active
+          FROM cron.job
+          WHERE command ILIKE '%run_trade_cycle%'
+          ORDER BY jobid
+          LIMIT 10
+        `);
+        for (const r of cron.rows) {
+          rows.push({
+            type: 'pg_cron',
+            label: `pg_cron job ${r.jobid}`,
+            status: r.active ? 'active' : 'disabled',
+            detail: `${r.schedule}: ${r.command}`,
+          });
+        }
+      }
+    } catch (cronErr) {
+      rows.push({
+        type: 'pg_cron',
+        label: 'pg_cron',
+        status: 'unavailable',
+        detail: cronErr.message,
+      });
+    }
+
+    res.json({ rows });
+  } catch (err) {
+    console.error('GET /api/processes', err);
+    res.status(500).json({ error: err.message, rows });
+  }
+});
+
 function btrimStr(v) {
   if (v == null) return '';
   return String(v).trim();
@@ -2613,7 +3872,16 @@ app.get('/api/schema', async (_req, res) => {
           obj_description(p.oid, 'pg_proc') AS description
         FROM pg_proc p
         JOIN pg_namespace n ON n.oid = p.pronamespace
-        WHERE n.nspname = 'public' AND p.prokind IN ('f', 'p')
+        WHERE n.nspname = 'public'
+          AND p.prokind IN ('f', 'p')
+          -- не тащим функции расширений (pgsql-http и т.п.) — только прикладные из 02
+          AND NOT EXISTS (
+            SELECT 1
+            FROM pg_depend d
+            JOIN pg_extension e ON e.oid = d.refobjid
+            WHERE d.objid = p.oid
+              AND d.deptype = 'e'
+          )
         ORDER BY p.prokind, p.proname, p.oid
       `),
       pool.query(`
@@ -2693,6 +3961,9 @@ app.get('/api/schema', async (_req, res) => {
     res.json({
       schema: 'public',
       database: process.env.PGDATABASE || 'multilogictrade',
+      sourceMode: 'live',
+      sourceNote:
+        'Структура из подключённой PostgreSQL (таблицы, колонки, индексы, ограничения; все функции/процедуры public кроме расширений).',
       tables,
       routines: routinesResult.rows.map(formatRoutine),
       extensions: extensionsResult.rows,
@@ -2785,6 +4056,24 @@ function parseLogicTradingParams(body) {
     hasField = true;
   }
 
+  if (body?.position_size_base !== undefined) {
+    const base = String(body.position_size_base || '')
+      .trim()
+      .toLowerCase();
+    if (
+      base !== 'free_cash' &&
+      base !== 'portfolio' &&
+      base !== 'portfolio_incl_fund'
+    ) {
+      return {
+        error:
+          'База расчёта лота: свободные деньги, весь портфель без фонда или с фондом',
+      };
+    }
+    out.position_size_base = base;
+    hasField = true;
+  }
+
   if (body?.position_size_pct !== undefined) {
     const v = Number(body.position_size_pct);
     if (!Number.isFinite(v) || v <= 0 || v > 100) {
@@ -2800,6 +4089,19 @@ function parseLogicTradingParams(body) {
       return { error: 'Макс. позиций: целое число > 0' };
     }
     out.max_open_positions = v;
+    hasField = true;
+  }
+
+  if (body?.max_order_amount !== undefined) {
+    if (body.max_order_amount === null || body.max_order_amount === '') {
+      out.max_order_amount = null;
+    } else {
+      const v = Number(body.max_order_amount);
+      if (!Number.isFinite(v) || v < 0) {
+        return { error: 'Макс. сумма на сделку: число ≥ 0 или пусто' };
+      }
+      out.max_order_amount = v;
+    }
     hasField = true;
   }
 
@@ -2863,6 +4165,41 @@ function parseLogicTradingParams(body) {
 
   if (body?.inversion !== undefined) {
     out.inversion = Boolean(body.inversion);
+    hasField = true;
+  }
+
+  if (body?.warmup_pretest !== undefined) {
+    out.warmup_pretest = Boolean(body.warmup_pretest);
+    hasField = true;
+  }
+
+  if (body?.cash_fund_code !== undefined) {
+    const code = String(body.cash_fund_code ?? '')
+      .trim()
+      .toUpperCase();
+    if (!['', 'TMON', 'LQDT', 'SBMM'].includes(code)) {
+      return { error: 'Денежный фонд: пусто, TMON, LQDT или SBMM' };
+    }
+    out.cash_fund_code = code;
+    hasField = true;
+  }
+
+  if (body?.cash_fund_threshold !== undefined) {
+    const v = Number(body.cash_fund_threshold);
+    if (!Number.isFinite(v) || v < 0) {
+      return { error: 'Порог свободных денег: число ≥ 0' };
+    }
+    out.cash_fund_threshold = v;
+    hasField = true;
+  }
+
+  if (body?.use_non_trading_periods !== undefined) {
+    out.use_non_trading_periods = Boolean(body.use_non_trading_periods);
+    hasField = true;
+  }
+
+  if (body?.close_positions_eod !== undefined) {
+    out.close_positions_eod = Boolean(body.close_positions_eod);
     hasField = true;
   }
 
@@ -3220,12 +4557,16 @@ async function enrichAccountBalance(row) {
       [row.id]
     );
     const bal = rows[0]?.bal ?? {};
-    base.balance = bal.amount ?? null;
+    base.balance = bal.amount != null ? Number(bal.amount) : null;
+    base.cash_amount = bal.cash_amount != null ? Number(bal.cash_amount) : null;
     base.balance_currency = bal.currency ?? null;
-    base.balance_display = bal.display ?? '—';
-    base.balance_error = bal.error ?? null;
+    base.balance_error = bal.error ? String(bal.error) : null;
+    // При ошибке T-Bank SQL кладёт display='ошибка' — оставляем, текст в balance_error
+    base.balance_display = base.balance_error
+      ? bal.display || 'ошибка'
+      : bal.display ?? '—';
   } catch (err) {
-    base.balance_error = err.message;
+    base.balance_error = err.message || String(err);
     base.balance_display = 'ошибка';
   }
   return base;
@@ -3331,4 +4672,5 @@ app.listen(port, () => {
   console.log(`MultiLogicTrade API: http://localhost:${port}`);
   console.log(`CORS origin: ${corsOrigin}`);
   startTradeRunner(pool);
+  startMaintenanceScheduler(pool);
 });

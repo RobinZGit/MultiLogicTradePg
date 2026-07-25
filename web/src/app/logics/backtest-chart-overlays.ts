@@ -6,6 +6,7 @@ import {
   PriceCandle,
 } from '../models/market.model';
 import { LogicTradeRow } from '../shared/logic-trade';
+import { asDateOnly } from '../shared/date-format';
 
 export function dtKey(dt: string): string {
   return String(dt || '')
@@ -13,6 +14,17 @@ export function dtKey(dt: string): string {
     .replace(/Z$/i, '')
     .replace(/\.\d+/, '')
     .slice(0, 19);
+}
+
+/** YYYY-MM-DD for period filters (ISO date_from from API must not break papers list). */
+function periodDay(raw: string | null | undefined): string | null {
+  return asDateOnly(raw);
+}
+
+/** Единый числовой id бумаги — иначе pin «327» vs сделки 327 → ост. 0 и дубль строки. */
+function paperSecurityId(raw: unknown): number {
+  const n = Number(raw);
+  return Number.isFinite(n) ? n : 0;
 }
 
 /** Минимальная / максимальная дата сделок бумаги (для окна графика). */
@@ -31,11 +43,14 @@ export function tradesForSecurity(
   dateFrom?: string | null,
   dateTo?: string | null
 ): LogicTradeRow[] {
-  const fromKey = dateFrom ? `${dateFrom} 00:00:00` : null;
-  const toKey = dateTo ? `${dateTo} 23:59:59` : null;
+  const fromDay = periodDay(dateFrom);
+  const toDay = periodDay(dateTo);
+  const fromKey = fromDay ? `${fromDay} 00:00:00` : null;
+  const toKey = toDay ? `${toDay} 23:59:59` : null;
+  const secId = paperSecurityId(securityId);
   return trades
     .filter((t) => {
-      if (t.security_id !== securityId) return false;
+      if (paperSecurityId(t.security_id) !== secId) return false;
       const key = dtKey(t.bar_dt || t.executed_at);
       if (fromKey && key < fromKey) return false;
       if (toKey && key > toKey) return false;
@@ -44,43 +59,64 @@ export function tradesForSecurity(
     .sort((a, b) => dtKey(a.bar_dt).localeCompare(dtKey(b.bar_dt)));
 }
 
-/** Бумаги, по которым были сделки в тесте. */
-export function papersWithTrades(
-  trades: LogicTradeRow[],
-  dateFrom?: string | null,
-  dateTo?: string | null
-): {
+export type PaperListRow = {
   security_id: number;
   security_name: string;
   security_prefix: string | null;
+  /** Реализованный финрез (закрытия). У непродаваемого фонда обычно 0. */
   pnl: number;
   commission: number;
   trade_count: number;
-}[] {
-  const map = new Map<
-    number,
-    {
-      security_id: number;
-      security_name: string;
-      security_prefix: string | null;
-      pnl: number;
-      commission: number;
-      trade_count: number;
-    }
-  >();
+  /** Нетто открытый остаток: Long +qty, Short −qty (по remaining_qty открытий). */
+  open_qty: number;
+  /** Последняя известная цена (сделка / свеча) для оценки остатка. */
+  last_price: number | null;
+  /** Оценка остатка в деньгах: |open_qty| × last_price. */
+  position_value: number;
+};
+
+function emptyPaperRow(
+  securityId: number,
+  securityName: string,
+  securityPrefix: string | null
+): PaperListRow {
+  return {
+    security_id: securityId,
+    security_name: securityName,
+    security_prefix: securityPrefix,
+    pnl: 0,
+    commission: 0,
+    trade_count: 0,
+    open_qty: 0,
+    last_price: null,
+    position_value: 0,
+  };
+}
+
+/** Бумаги, по которым были сделки; optional pin (денежный фонд) — всегда сверху. */
+export function papersWithTrades(
+  trades: LogicTradeRow[],
+  dateFrom?: string | null,
+  dateTo?: string | null,
+  pinned?: PaperListRow | null
+): PaperListRow[] {
+  const fromDay = periodDay(dateFrom);
+  const toDay = periodDay(dateTo);
+  const fromKey = fromDay ? `${fromDay} 00:00:00` : null;
+  const toKey = toDay ? `${toDay} 23:59:59` : null;
+  const map = new Map<number, PaperListRow>();
+  /** Последняя цена Open по бумаге (до подгрузки свечи периода). */
+  const lastOpenPx = new Map<number, { dt: string; px: number }>();
   for (const t of trades) {
     if (t.status !== 'filled' && t.status !== 'submitted') continue;
     const key = dtKey(t.bar_dt || t.executed_at);
-    if (dateFrom && key < `${dateFrom} 00:00:00`) continue;
-    if (dateTo && key > `${dateTo} 23:59:59`) continue;
-    const row = map.get(t.security_id) ?? {
-      security_id: t.security_id,
-      security_name: t.security_name,
-      security_prefix: t.security_prefix,
-      pnl: 0,
-      commission: 0,
-      trade_count: 0,
-    };
+    if (fromKey && key < fromKey) continue;
+    if (toKey && key > toKey) continue;
+    const secId = paperSecurityId(t.security_id);
+    if (secId <= 0) continue;
+    const row =
+      map.get(secId) ??
+      emptyPaperRow(secId, t.security_name, t.security_prefix);
     row.trade_count += 1;
     if (
       !t.is_shadow &&
@@ -96,14 +132,84 @@ export function papersWithTrades(
     ) {
       row.commission += Number(t.commission);
     }
-    map.set(t.security_id, row);
+    // Остаток позиции: сумма remaining по Open (фонд не закрывается → иначе всегда «0» в списке).
+    if (!t.is_shadow && t.side_name === 'Open') {
+      const remRaw = t.remaining_qty;
+      const rem =
+        remRaw == null || !Number.isFinite(Number(remRaw))
+          ? Number(t.quantity)
+          : Number(remRaw);
+      if (rem > 0) {
+        row.open_qty += t.action_name === 'Short' ? -rem : rem;
+        const px = Number(t.price);
+        if (Number.isFinite(px) && px > 0) {
+          const prev = lastOpenPx.get(secId);
+          if (!prev || key >= prev.dt) {
+            lastOpenPx.set(secId, { dt: key, px });
+          }
+        }
+      }
+    }
+    map.set(secId, row);
   }
-  return [...map.values()].sort((a, b) =>
+  for (const [secId, row] of map) {
+    applyPaperMarkValue(row, lastOpenPx.get(secId)?.px ?? null);
+  }
+  const sorted = [...map.values()].sort((a, b) =>
     (a.security_prefix || a.security_name).localeCompare(
       b.security_prefix || b.security_name,
       'ru'
     )
   );
+  const pinId = paperSecurityId(pinned?.security_id);
+  if (!pinned || pinId <= 0) {
+    return sorted;
+  }
+  const pinPrefix = String(pinned.security_prefix ?? '')
+    .trim()
+    .toUpperCase();
+  let fromTrades = map.get(pinId);
+  if (!fromTrades && pinPrefix) {
+    fromTrades = sorted.find(
+      (r) =>
+        String(r.security_prefix ?? '')
+          .trim()
+          .toUpperCase() === pinPrefix
+    );
+  }
+  const headId = fromTrades?.security_id ?? pinId;
+  const head: PaperListRow = {
+    security_id: headId,
+    security_name: pinned.security_name || fromTrades?.security_name || '',
+    security_prefix: pinned.security_prefix ?? fromTrades?.security_prefix ?? null,
+    pnl: fromTrades?.pnl ?? 0,
+    commission: fromTrades?.commission ?? 0,
+    trade_count: fromTrades?.trade_count ?? 0,
+    open_qty: fromTrades?.open_qty ?? 0,
+    last_price: fromTrades?.last_price ?? null,
+    position_value: fromTrades?.position_value ?? 0,
+  };
+  return [
+    head,
+    ...sorted.filter((r) => paperSecurityId(r.security_id) !== paperSecurityId(headId)),
+  ];
+}
+
+/** Оценка открытого остатка в деньгах. */
+export function applyPaperMarkValue(
+  row: PaperListRow,
+  markPrice: number | null | undefined
+): void {
+  const px = Number(markPrice);
+  if (!Number.isFinite(px) || px <= 0 || row.open_qty === 0) {
+    if (row.open_qty === 0) {
+      row.last_price = null;
+      row.position_value = 0;
+    }
+    return;
+  }
+  row.last_price = px;
+  row.position_value = Math.abs(row.open_qty) * px;
 }
 
 export function buildTradeMarkers(trades: LogicTradeRow[]): ChartTradeMarker[] {
@@ -140,6 +246,29 @@ export function buildStopMarkers(trades: LogicTradeRow[]): ChartStopMarker[] {
   return out;
 }
 
+/**
+ * Портфельные SL/TP для вертикалей на эквити: одно событие на бар
+ * (закрытие всех бумаг с reason stop_loss:portfolio / take_profit:portfolio).
+ */
+export function buildPortfolioStopMarkers(trades: LogicTradeRow[]): ChartStopMarker[] {
+  const portfolioCloses = trades.filter((t) => {
+    const reason = String(t.trade_reason || '').toLowerCase();
+    return (
+      t.side_name === 'Close' &&
+      (reason.includes('portfolio') || reason.includes('портфел'))
+    );
+  });
+  const byKey = new Map<string, ChartStopMarker>();
+  for (const m of buildStopMarkers(portfolioCloses)) {
+    if (m.ruleKind !== 'stop_loss' && m.ruleKind !== 'take_profit') continue;
+    const key = `${dtKey(m.dt)}|${m.ruleKind}`;
+    if (!byKey.has(key)) {
+      byKey.set(key, m);
+    }
+  }
+  return [...byKey.values()].sort((a, b) => dtKey(a.dt).localeCompare(dtKey(b.dt)));
+}
+
 function shortenStopLabel(reason: string): string {
   const s = reason.trim();
   if (s.length <= 42) return s;
@@ -158,6 +287,8 @@ export function buildShadedDisabledRanges(trades: LogicTradeRow[]): ChartShadedR
   const ranges: ChartShadedRange[] = [];
   let start: string | null = null;
   let lastOffDt: string | null = null;
+  let invStart: string | null = null;
+  let invLastDt: string | null = null;
 
   const flush = (endDt: string) => {
     if (!start) return;
@@ -167,14 +298,41 @@ export function buildShadedDisabledRanges(trades: LogicTradeRow[]): ChartShadedR
       startDt: start,
       endDt: end,
       label: 'выкл.',
+      kind: 'paused',
     });
     start = null;
     lastOffDt = null;
   };
 
+  const flushInversion = (endDt: string) => {
+    if (!invStart) return;
+    const end = endDt || invLastDt || invStart;
+    if (dtKey(end) < dtKey(invStart)) return;
+    ranges.push({
+      startDt: invStart,
+      endDt: end,
+      label: 'инверсия',
+      kind: 'inverted',
+    });
+    invStart = null;
+    invLastDt = null;
+  };
+
   for (const t of sorted) {
     const dt = t.bar_dt || t.executed_at;
     const reason = (t.trade_reason || '').toLowerCase();
+    if (reason.includes('security_inversion')) {
+      if (invStart) {
+        flushInversion(dt);
+      } else {
+        invStart = dt;
+        invLastDt = dt;
+      }
+      continue;
+    }
+    if (invStart) {
+      invLastDt = dt;
+    }
     const stopPause =
       t.side_name === 'Close' &&
       (reason.includes('stop_loss') || reason.includes('security_resume'));
@@ -195,6 +353,9 @@ export function buildShadedDisabledRanges(trades: LogicTradeRow[]): ChartShadedR
   }
   if (start && lastOffDt) {
     flush(lastOffDt);
+  }
+  if (invStart && invLastDt) {
+    flushInversion(invLastDt);
   }
   return ranges;
 }

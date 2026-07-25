@@ -1,14 +1,15 @@
-import { Component, OnDestroy, OnInit } from '@angular/core';
+import { Component, ElementRef, OnDestroy, OnInit, ViewChild, ChangeDetectorRef } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { FormsModule } from '@angular/forms';
-import { Subject, switchMap, takeUntil, timer, forkJoin, of } from 'rxjs';
-import { catchError, map } from 'rxjs/operators';
+import { Subject, exhaustMap, takeUntil, timer, forkJoin, of } from 'rxjs';
+import { catchError, debounceTime, filter, map } from 'rxjs/operators';
 import { LogicsService } from '../services/logics.service';
 import { ReferencesService } from '../services/references.service';
 import { SecuritiesService } from '../services/securities.service';
 import { SettingsService } from '../services/settings.service';
 import { TechLogService } from '../services/tech-log.service';
-import { LogicIndicatorSignalRow, LogicRow, LogicSecurityRow, LogicStopRow } from '../models/logic.model';
+import { BacktestUiStateService } from '../services/backtest-ui-state.service';
+import { LogicIndicatorSignalRow, LogicRow, LogicSecurityRow, LogicStopRow, LogicParamsResponse } from '../models/logic.model';
 import { IndicatorRow } from '../models/lookup.model';
 import { SecurityRow } from '../models/market.model';
 import {
@@ -49,12 +50,13 @@ import {
   LogicTradeLotRow,
   LogicTradeRow,
 } from '../shared/logic-trade';
+import { formatDateRangeLabel, formatHumanDate } from '../shared/date-format';
 import {
   BacktestRunStatus,
   LogicPositionsPanelComponent,
 } from './logic-positions-panel.component';
 import { LogicCombatSignalDetailComponent } from './logic-combat-signal-detail.component';
-import type { SignalRatingPrecalcStatus } from '../services/logics.service';
+import type { ProcessStatusItem, SignalRatingPrecalcStatus } from '../services/logics.service';
 
 const POLL_INTERVAL_MS = 2000;
 
@@ -91,10 +93,18 @@ type StopFormDraft = {
   styleUrl: './logics.component.css',
 })
 export class LogicsComponent implements OnInit, OnDestroy {
+  @ViewChild('logicImportFile') logicImportFile?: ElementRef<HTMLInputElement>;
+
   logics: LogicRow[] = [];
   loading = true;
   error: string | null = null;
   pollIntervalMs = POLL_INTERVAL_MS;
+
+  /** Checkbox selection for export (right column). */
+  selectedExportIds = new Set<number>();
+  exportImportBusy = false;
+  /** Busy keys: `${logicId}:test` | `${logicId}:live` for trades JSON export. */
+  private tradesExportBusy = new Set<string>();
 
   editorOpen = false;
   editorMode: LogicEditorMode = 'add';
@@ -109,6 +119,7 @@ export class LogicsComponent implements OnInit, OnDestroy {
   combatRatingReloadToken = new Map<number, number>();
   private ratingPrecalcPollIds = new Set<number>();
   expandedStopsBlocks = new Set<number>();
+  expandedPeriodsBlocks = new Set<number>();
   expandedSecuritiesBlocks = new Set<number>();
   expandedTradesBlocks = new Set<number>();
   expandedTestTradesBlocks = new Set<number>();
@@ -123,16 +134,27 @@ export class LogicsComponent implements OnInit, OnDestroy {
   /** Стабильные ссылки для шаблона (без filter на каждый CD). */
   private testTradesViewByLogic = new Map<number, LogicTradeRow[]>();
   private signalIndicatorIdsByLogic = new Map<number, number[]>();
-  backtestRuns = new Map<number, BacktestRunStatus>();
-  private backtestPollIds = new Set<number>();
+  /** Shared with BacktestUiStateService — survives leaving /operations. */
+  backtestRuns: Map<number, BacktestRunStatus>;
+  private backtestPollIds: Set<number>;
   /** Пока открыт диалог периода — не дёргать тяжёлый poll (дата на input лагает). */
   uiInteractionPause = false;
   private pollTick = 0;
+  private testPnlInFlight = false;
+  private combatPnlInFlight = false;
+  processRows: ProcessStatusItem[] = [];
+  processError: string | null = null;
   /** Онлайн-сводка тестового финреза по логикам (не колонка в БД). */
-  testPnlByLogic = new Map<
+  testPnlByLogic: Map<
     number,
-    { financial_result: number; commission: number; trade_count: number }
-  >();
+    {
+      financial_result: number;
+      commission: number;
+      trade_count: number;
+      date_from?: string | null;
+      date_to?: string | null;
+    }
+  >;
   /** Онлайн-сводка боевого финреза (is_test=0). */
   combatPnlByLogic = new Map<
     number,
@@ -142,6 +164,31 @@ export class LogicsComponent implements OnInit, OnDestroy {
   signalsLoading = new Set<number>();
   stopsLoading = new Set<number>();
   securitiesLoading = new Set<number>();
+  periodsLoading = new Set<number>();
+  periodsApplying = new Set<number>();
+  nonTradingByLogic = new Map<
+    number,
+    {
+      use_non_trading_periods: boolean;
+      intervals: {
+        id: number;
+        day_of_week: number;
+        time_from: string;
+        time_to: string;
+        note?: string | null;
+      }[];
+    }
+  >();
+  periodsSaving = new Set<number>();
+  readonly weekDayLabels = [
+    { dow: 1, label: 'Пн' },
+    { dow: 2, label: 'Вт' },
+    { dow: 3, label: 'Ср' },
+    { dow: 4, label: 'Чт' },
+    { dow: 5, label: 'Пт' },
+    { dow: 6, label: 'Сб' },
+    { dow: 7, label: 'Вс' },
+  ];
   tradesLoading = new Set<number>();
   private testTradesInFlight = new Set<number>();
   private liveTradesInFlight = new Set<number>();
@@ -194,12 +241,16 @@ export class LogicsComponent implements OnInit, OnDestroy {
   private savingFormulaIds = new Set<number>();
   private savingStopIds = new Set<number>();
   private savingParamsIds = new Set<number>();
+  private copyingLogicIds = new Set<number>();
   paramsDrafts = new Map<
     number,
     {
+      name: string;
       timeframe: string;
+      position_size_base: 'free_cash' | 'portfolio' | 'portfolio_incl_fund';
       position_size_pct: string;
       max_open_positions: string;
+      max_order_amount: string;
       initial_balance: string;
       commission_pct: string;
       cost_method: 'FIFO' | 'AVERAGE';
@@ -207,12 +258,23 @@ export class LogicsComponent implements OnInit, OnDestroy {
       base_annual_rate_pct: string;
       rating_lookback_days: string;
       inversion: boolean;
+      warmup_pretest: boolean;
+      cash_fund_code: string;
+      cash_fund_threshold: string;
+      use_non_trading_periods: boolean;
+      close_positions_eod: boolean;
       reset_balance: boolean;
     }
   >();
   paramsSaveErrors = new Map<number, string>();
   paramsLoading = new Set<number>();
   timeframesCatalog: { id: number; tf: string; full_name: string }[] = [];
+  readonly cashFundOptions: { value: string; label: string }[] = [
+    { value: '', label: 'Не покупать' },
+    { value: 'TMON', label: 'TMON — Т-Капитал денежный рынок' },
+    { value: 'LQDT', label: 'LQDT — ВИМ Ликвидность' },
+    { value: 'SBMM', label: 'SBMM — Сбер Первый' },
+  ];
   /** Пользователь менял черновик — poll не перезаписывает поля ввода. */
   private paramsDirtyIds = new Set<number>();
 
@@ -222,10 +284,33 @@ export class LogicsComponent implements OnInit, OnDestroy {
     private readonly securitiesService: SecuritiesService,
     private readonly settings: SettingsService,
     private readonly techLog: TechLogService,
-    private readonly appConfig: AppConfigService
-  ) {}
+    private readonly appConfig: AppConfigService,
+    private readonly backtestUi: BacktestUiStateService,
+    private readonly cdr: ChangeDetectorRef
+  ) {
+    this.backtestRuns = this.backtestUi.runs;
+    this.backtestPollIds = this.backtestUi.pollIds;
+    this.testPnlByLogic = this.backtestUi.testPnlByLogic;
+  }
 
   ngOnInit(): void {
+    this.backtestUi.attach();
+    for (const logicId of this.backtestUi.expandTestBlocks) {
+      this.expandedTestTradesBlocks.add(logicId);
+      this.expandedLogics.add(logicId);
+    }
+    // Status poll owns BacktestUiStateService; here only light UI after debounced bumps.
+    this.backtestUi.changes$.pipe(debounceTime(300), takeUntil(this.destroy$)).subscribe(() => {
+      for (const logicId of [...this.backtestPollIds]) {
+        // Full 50k trades only when run finished (not every status tick while running).
+        if (!this.isBacktestRunning(logicId)) {
+          this.loadTestTradesForLogic(logicId, true);
+          this.refreshTestPnlSummary();
+        }
+        this.rebuildTestTradesView(logicId);
+      }
+      this.cdr.markForCheck();
+    });
     this.loadIndicatorsCatalog();
     this.loadMoexExchangeId();
     this.securitiesService.getTimeframes().subscribe({
@@ -236,15 +321,29 @@ export class LogicsComponent implements OnInit, OnDestroy {
     timer(0, POLL_INTERVAL_MS)
       .pipe(
         takeUntil(this.destroy$),
-        switchMap(() => this.logicsService.getLogics())
+        // Не крутить /logics+trades пока вкладка скрыта (route reuse держит компонент живым).
+        filter(() => typeof document === 'undefined' || !document.hidden),
+        // exhaustMap: не отменять и не накладывать GET /logics, пока предыдущий в полёте.
+        exhaustMap(() => {
+          // Редактор логики / диалог периода — не дергать список (иначе select «висит»).
+          if (this.editorOpen || this.uiInteractionPause) {
+            return of(null);
+          }
+          return this.logicsService.getLogics().pipe(
+            catchError((err) => {
+              if (this.loading || this.logics.length === 0) {
+                this.error = logicsLoadErrorMessage(this.appConfig.apiUrl, err);
+              }
+              this.loading = false;
+              return of(null);
+            })
+          );
+        })
       )
       .subscribe({
         next: (rows) => {
-          // Диалог «период теста»: не гонять CD/trades — иначе date input «дубовый».
-          if (this.uiInteractionPause) {
-            for (const logicId of this.backtestPollIds) {
-              this.refreshBacktestStatus(logicId);
-            }
+          // Диалог / редактор: статус теста крутит BacktestUiStateService — список не трогаем.
+          if (rows == null || this.uiInteractionPause || this.editorOpen) {
             return;
           }
           this.logics = rows.map((row) => {
@@ -257,8 +356,10 @@ export class LogicsComponent implements OnInit, OnDestroy {
               return local
                 ? {
                     ...row,
+                    position_size_base: local.position_size_base,
                     position_size_pct: local.position_size_pct,
                     max_open_positions: local.max_open_positions,
+                    max_order_amount: local.max_order_amount,
                     initial_balance: local.initial_balance,
                     base_annual_rate_pct: local.base_annual_rate_pct,
                     // current_balance — только для отображения, берём с сервера
@@ -269,16 +370,16 @@ export class LogicsComponent implements OnInit, OnDestroy {
           });
           this.loading = false;
           this.error = null;
+          // Re-sync yellow/progress from DB (covers remount / F5 / lost local map).
+          if (this.pollTick % 5 === 0) {
+            this.backtestUi.recoverActive();
+          }
           // Сделки — read-only, обновляем; редактируемые блоки (параметры, формулы) — нет
           this.refreshAllTradesSummaries();
           this.refreshPnlSummaries();
+          this.refreshProcesses();
           this.maybeCheckTbankTokenForTrades();
-        },
-        error: (err) => {
-          if (this.loading || this.logics.length === 0) {
-            this.error = logicsLoadErrorMessage(this.appConfig.apiUrl, err);
-          }
-          this.loading = false;
+          this.cdr.markForCheck();
         },
       });
   }
@@ -317,8 +418,39 @@ export class LogicsComponent implements OnInit, OnDestroy {
     return this.expandedSecuritiesBlocks.has(id);
   }
 
+  isPeriodsBlockExpanded(id: number): boolean {
+    return this.expandedPeriodsBlocks.has(id);
+  }
+
   isTradesBlockExpanded(id: number): boolean {
     return this.expandedTradesBlocks.has(id);
+  }
+
+  activeProcesses(): ProcessStatusItem[] {
+    const local: ProcessStatusItem[] = [];
+    for (const s of this.ratingPrecalcByLogic.values()) {
+      if (s.status === 'pending' || s.status === 'running') {
+        local.push({
+          type: 'angular',
+          label: `Rating precalc logic #${s.logic_id}`,
+          status: s.status,
+          detail: s.phase_message,
+          progress_pct: s.progress_pct,
+          logic_id: s.logic_id,
+        });
+      }
+    }
+    return [...this.processRows, ...local].slice(0, 12);
+  }
+
+  hasActiveProcesses(): boolean {
+    return this.activeProcesses().length > 0 || !!this.processError;
+  }
+
+  processTitle(p: ProcessStatusItem): string {
+    return [p.label, p.status, p.detail, p.wait, p.age]
+      .filter(Boolean)
+      .join(' · ');
   }
 
   toggleLogicExpand(row: LogicRow, event: Event): void {
@@ -329,21 +461,43 @@ export class LogicsComponent implements OnInit, OnDestroy {
       return;
     }
     if (this.expandedLogics.has(row.id)) {
-      this.expandedLogics.delete(row.id);
-      this.expandedParamsBlocks.delete(row.id);
-      this.paramsDirtyIds.delete(row.id);
-      this.expandedSignalsBlocks.delete(row.id);
-      this.expandedStopsBlocks.delete(row.id);
-      this.expandedSecuritiesBlocks.delete(row.id);
-      this.expandedTradesBlocks.delete(row.id);
-      this.expandedTestTradesBlocks.delete(row.id);
-      this.closeSignalPicker();
-      this.closeStopForm();
-      this.closeSecurityPicker();
+      this.collapseLogic(row.id);
       return;
     }
     this.expandedLogics.add(row.id);
     this.ensureParamsDraft(row.id);
+    // Прогреть сигналы сразу — не ждать открытия блока «Сигналы».
+    this.loadSignalsForLogic(row.id);
+  }
+
+  /** Collapse expanded logic (same as clicking the row when open). */
+  collapseLogic(logicId: number, event?: Event): void {
+    event?.preventDefault();
+    event?.stopPropagation();
+    this.expandedLogics.delete(logicId);
+    this.expandedParamsBlocks.delete(logicId);
+    this.paramsDirtyIds.delete(logicId);
+    this.expandedSignalsBlocks.delete(logicId);
+    this.expandedStopsBlocks.delete(logicId);
+    this.expandedSecuritiesBlocks.delete(logicId);
+    this.expandedTradesBlocks.delete(logicId);
+    this.expandedTestTradesBlocks.delete(logicId);
+    this.closeSignalPicker();
+    this.closeStopForm();
+    this.closeSecurityPicker();
+  }
+
+  /** Name shown in expanded header / table while editing draft. */
+  displayLogicName(row: LogicRow): string {
+    const draft = this.paramsDrafts.get(row.id);
+    const fromDraft = draft?.name?.trim();
+    return fromDraft || row.name || `Логика #${row.id}`;
+  }
+
+  onParamsNameChange(logicId: number, value: string): void {
+    this.getParamsDraft(logicId).name = value;
+    this.paramsDirtyIds.add(logicId);
+    this.paramsSaveErrors.delete(logicId);
   }
 
   /** Черновик параметров — всегда объект из Map (не временный литерал). */
@@ -368,10 +522,53 @@ export class LogicsComponent implements OnInit, OnDestroy {
     this.paramsSaveErrors.delete(logicId);
   }
 
+  private normalizePositionSizeBase(
+    value: string | null | undefined
+  ): 'free_cash' | 'portfolio' | 'portfolio_incl_fund' {
+    if (value === 'free_cash') return 'free_cash';
+    if (value === 'portfolio_incl_fund') return 'portfolio_incl_fund';
+    return 'portfolio';
+  }
+
+  onParamsSizeBaseChange(
+    logicId: number,
+    value: 'free_cash' | 'portfolio' | 'portfolio_incl_fund'
+  ): void {
+    this.getParamsDraft(logicId).position_size_base =
+      this.normalizePositionSizeBase(value);
+    this.paramsDirtyIds.add(logicId);
+    this.paramsSaveErrors.delete(logicId);
+  }
+
   onParamsPctChange(logicId: number, value: string): void {
     this.getParamsDraft(logicId).position_size_pct = value;
     this.paramsDirtyIds.add(logicId);
     this.paramsSaveErrors.delete(logicId);
+  }
+
+  onParamsMaxOrderAmountChange(logicId: number, value: string): void {
+    this.getParamsDraft(logicId).max_order_amount = value;
+    this.paramsDirtyIds.add(logicId);
+    this.paramsSaveErrors.delete(logicId);
+  }
+
+  /** Плечо (ед.) = макс. позиций × (% депозита / 100). 1 = весь портфель при полном наборе. */
+  lotLeverageUnits(logicId: number): number | null {
+    const d = this.paramsDrafts.get(logicId);
+    if (!d) return null;
+    const pct = this.parseDecimalInput(d.position_size_pct);
+    const max = Math.round(this.parseDecimalInput(d.max_open_positions));
+    if (!Number.isFinite(pct) || pct <= 0 || !Number.isInteger(max) || max <= 0) {
+      return null;
+    }
+    return (pct / 100) * max;
+  }
+
+  formatLotLeverage(logicId: number): string {
+    const v = this.lotLeverageUnits(logicId);
+    if (v == null) return '—';
+    const rounded = Math.round(v * 100) / 100;
+    return `${rounded}×`;
   }
 
   onParamsBaseAnnualRateChange(logicId: number, value: string): void {
@@ -418,6 +615,32 @@ export class LogicsComponent implements OnInit, OnDestroy {
 
   onParamsInversionChange(logicId: number, value: boolean): void {
     this.getParamsDraft(logicId).inversion = value;
+    this.paramsDirtyIds.add(logicId);
+    this.paramsSaveErrors.delete(logicId);
+  }
+
+  onParamsWarmupPretestChange(logicId: number, value: boolean): void {
+    this.getParamsDraft(logicId).warmup_pretest = value;
+    this.paramsDirtyIds.add(logicId);
+    this.paramsSaveErrors.delete(logicId);
+  }
+
+  onParamsCashFundCodeChange(logicId: number, value: string): void {
+    this.getParamsDraft(logicId).cash_fund_code = String(value ?? '')
+      .trim()
+      .toUpperCase();
+    this.paramsDirtyIds.add(logicId);
+    this.paramsSaveErrors.delete(logicId);
+  }
+
+  onParamsCashFundThresholdChange(logicId: number, value: string): void {
+    this.getParamsDraft(logicId).cash_fund_threshold = value;
+    this.paramsDirtyIds.add(logicId);
+    this.paramsSaveErrors.delete(logicId);
+  }
+
+  onParamsClosePositionsEodChange(logicId: number, value: boolean): void {
+    this.getParamsDraft(logicId).close_positions_eod = value;
     this.paramsDirtyIds.add(logicId);
     this.paramsSaveErrors.delete(logicId);
   }
@@ -472,7 +695,10 @@ export class LogicsComponent implements OnInit, OnDestroy {
       next: (resp) => {
         this.applyTradingParamsToLogic(logicId, resp.trading);
         if (!this.paramsDirtyIds.has(logicId)) {
-          this.paramsDrafts.set(logicId, this.draftFromTrading(resp.trading));
+          const row = this.logics.find((l) => l.id === logicId);
+          const draft = this.draftFromTrading(resp.trading);
+          draft.name = row?.name ?? draft.name;
+          this.paramsDrafts.set(logicId, draft);
         }
         this.paramsLoading.delete(logicId);
       },
@@ -489,8 +715,10 @@ export class LogicsComponent implements OnInit, OnDestroy {
     logicId: number,
     trading: {
       timeframe?: string;
+      position_size_base?: 'free_cash' | 'portfolio' | 'portfolio_incl_fund';
       position_size_pct: number;
       max_open_positions: number;
+      max_order_amount?: number | null;
       initial_balance: number | null;
       current_balance: number | null;
       commission_pct?: number;
@@ -499,6 +727,11 @@ export class LogicsComponent implements OnInit, OnDestroy {
       base_annual_rate_pct?: number;
       rating_lookback_days?: number;
       inversion?: boolean;
+      warmup_pretest?: boolean;
+      cash_fund_code?: string;
+      cash_fund_threshold?: number;
+      use_non_trading_periods?: boolean;
+      close_positions_eod?: boolean;
     }
   ): void {
     const idx = this.logics.findIndex((l) => l.id === logicId);
@@ -509,8 +742,10 @@ export class LogicsComponent implements OnInit, OnDestroy {
 
   private draftFromTrading(trading: {
     timeframe?: string;
+    position_size_base?: 'free_cash' | 'portfolio' | 'portfolio_incl_fund';
     position_size_pct: number;
     max_open_positions: number;
+    max_order_amount?: number | null;
     initial_balance: number | null;
     current_balance: number | null;
     commission_pct?: number;
@@ -519,10 +754,18 @@ export class LogicsComponent implements OnInit, OnDestroy {
     base_annual_rate_pct?: number;
     rating_lookback_days?: number;
     inversion?: boolean;
+    warmup_pretest?: boolean;
+    cash_fund_code?: string;
+    cash_fund_threshold?: number;
+    use_non_trading_periods?: boolean;
+    close_positions_eod?: boolean;
   }): {
+    name: string;
     timeframe: string;
+    position_size_base: 'free_cash' | 'portfolio' | 'portfolio_incl_fund';
     position_size_pct: string;
     max_open_positions: string;
+    max_order_amount: string;
     initial_balance: string;
     commission_pct: string;
     cost_method: 'FIFO' | 'AVERAGE';
@@ -530,14 +773,30 @@ export class LogicsComponent implements OnInit, OnDestroy {
     base_annual_rate_pct: string;
     rating_lookback_days: string;
     inversion: boolean;
+    warmup_pretest: boolean;
+    cash_fund_code: string;
+    cash_fund_threshold: string;
+    use_non_trading_periods: boolean;
+    close_positions_eod: boolean;
     reset_balance: boolean;
   } {
     const method: 'FIFO' | 'AVERAGE' =
       trading.cost_method === 'AVERAGE' ? 'AVERAGE' : 'FIFO';
+    const fundRaw = String(trading.cash_fund_code ?? '')
+      .trim()
+      .toUpperCase();
+    const cash_fund_code = ['', 'TMON', 'LQDT', 'SBMM'].includes(fundRaw)
+      ? fundRaw
+      : '';
     return {
+      name: '',
       timeframe: (trading.timeframe ?? 'M15').toUpperCase(),
+      position_size_base: this.normalizePositionSizeBase(trading.position_size_base),
       position_size_pct: this.formatPctParam(trading.position_size_pct),
       max_open_positions: this.formatIntParam(trading.max_open_positions, 5),
+      max_order_amount: this.formatBalanceDraft(
+        trading.max_order_amount != null ? trading.max_order_amount : null
+      ),
       initial_balance: this.formatBalanceDraft(trading.initial_balance),
       commission_pct: this.formatPctParam(trading.commission_pct ?? 0.03),
       cost_method: method,
@@ -545,6 +804,13 @@ export class LogicsComponent implements OnInit, OnDestroy {
       base_annual_rate_pct: this.formatPctParam(trading.base_annual_rate_pct ?? 20),
       rating_lookback_days: this.formatIntParam(trading.rating_lookback_days ?? 7, 7),
       inversion: !!trading.inversion,
+      warmup_pretest: trading.warmup_pretest !== false,
+      cash_fund_code,
+      cash_fund_threshold: this.formatBalanceDraft(
+        trading.cash_fund_threshold != null ? trading.cash_fund_threshold : 1000000
+      ),
+      use_non_trading_periods: trading.use_non_trading_periods !== false,
+      close_positions_eod: trading.close_positions_eod === true,
       reset_balance: false,
     };
   }
@@ -570,10 +836,12 @@ export class LogicsComponent implements OnInit, OnDestroy {
   }
 
   private draftFromLogicRow(row: LogicRow) {
-    return this.draftFromTrading({
+    const draft = this.draftFromTrading({
       timeframe: row.timeframe ?? 'M15',
+      position_size_base: row.position_size_base,
       position_size_pct: row.position_size_pct,
       max_open_positions: row.max_open_positions,
+      max_order_amount: row.max_order_amount,
       initial_balance: row.initial_balance,
       current_balance: row.current_balance,
       commission_pct: row.commission_pct,
@@ -582,7 +850,14 @@ export class LogicsComponent implements OnInit, OnDestroy {
       base_annual_rate_pct: row.base_annual_rate_pct,
       rating_lookback_days: row.rating_lookback_days,
       inversion: row.inversion,
+      warmup_pretest: row.warmup_pretest,
+      cash_fund_code: row.cash_fund_code,
+      cash_fund_threshold: row.cash_fund_threshold,
+      use_non_trading_periods: row.use_non_trading_periods,
+      close_positions_eod: row.close_positions_eod,
     });
+    draft.name = row.name ?? '';
+    return draft;
   }
 
   isParamsSaving(logicId: number): boolean {
@@ -592,8 +867,14 @@ export class LogicsComponent implements OnInit, OnDestroy {
   saveTradingParams(row: LogicRow, event: Event): void {
     event.stopPropagation();
     const draft = this.getParamsDraft(row.id);
+    const position_size_base = this.normalizePositionSizeBase(
+      draft.position_size_base
+    );
     const position_size_pct = this.parseDecimalInput(draft.position_size_pct);
     const max_open_positions = Math.round(this.parseDecimalInput(draft.max_open_positions));
+    const maxOrderRaw = draft.max_order_amount.trim();
+    const max_order_amount =
+      maxOrderRaw === '' ? null : this.parseDecimalInput(maxOrderRaw.replace(',', '.'));
     const initialRaw = draft.initial_balance.trim();
     const initial_balance =
       initialRaw === '' ? null : this.parseDecimalInput(initialRaw.replace(',', '.'));
@@ -614,8 +895,12 @@ export class LogicsComponent implements OnInit, OnDestroy {
       this.paramsSaveErrors.set(row.id, 'Макс. позиций: целое число больше 0');
       return;
     }
+    if (max_order_amount != null && (!Number.isFinite(max_order_amount) || max_order_amount < 0)) {
+      this.paramsSaveErrors.set(row.id, 'Макс. сумма на сделку: число ≥ 0 или пусто');
+      return;
+    }
     if (initial_balance != null && (!Number.isFinite(initial_balance) || initial_balance < 0)) {
-      this.paramsSaveErrors.set(row.id, 'Начальный остаток: число ≥ 0 или пусто');
+      this.paramsSaveErrors.set(row.id, 'Начальный остаток (старт): число ≥ 0 или пусто');
       return;
     }
     if (!Number.isFinite(commission_pct) || commission_pct < 0 || commission_pct > 100) {
@@ -639,13 +924,41 @@ export class LogicsComponent implements OnInit, OnDestroy {
       return;
     }
 
+    const cash_fund_threshold = this.parseDecimalInput(draft.cash_fund_threshold);
+    if (!Number.isFinite(cash_fund_threshold) || cash_fund_threshold < 0) {
+      this.paramsSaveErrors.set(row.id, 'Порог свободных денег: число ≥ 0');
+      return;
+    }
+    const cash_fund_code = String(draft.cash_fund_code ?? '')
+      .trim()
+      .toUpperCase();
+    if (!['', 'TMON', 'LQDT', 'SBMM'].includes(cash_fund_code)) {
+      this.paramsSaveErrors.set(row.id, 'Денежный фонд: пусто, TMON, LQDT или SBMM');
+      return;
+    }
+
     this.paramsSaveErrors.delete(row.id);
     this.savingParamsIds.add(row.id);
-    this.logicsService
-      .saveLogicParams(row.id, {
+
+    const name = String(draft.name ?? '').trim();
+    if (!name) {
+      this.savingParamsIds.delete(row.id);
+      this.paramsSaveErrors.set(row.id, 'Имя логики не может быть пустым');
+      return;
+    }
+    if (name.length > 100) {
+      this.savingParamsIds.delete(row.id);
+      this.paramsSaveErrors.set(row.id, 'Имя логики: не более 100 символов');
+      return;
+    }
+
+    const saveParams = () =>
+      this.logicsService.saveLogicParams(row.id, {
         timeframe: draft.timeframe,
+        position_size_base,
         position_size_pct,
         max_open_positions,
+        max_order_amount,
         initial_balance,
         commission_pct,
         cost_method: draft.cost_method,
@@ -653,33 +966,76 @@ export class LogicsComponent implements OnInit, OnDestroy {
         base_annual_rate_pct,
         rating_lookback_days,
         inversion: draft.inversion,
+        warmup_pretest: draft.warmup_pretest,
+        cash_fund_code,
+        cash_fund_threshold,
+        use_non_trading_periods: draft.use_non_trading_periods,
+        close_positions_eod: draft.close_positions_eod,
         reset_balance: draft.reset_balance,
-      })
-      .subscribe({
-        next: (resp) => {
-          this.applyTradingParamsToLogic(row.id, resp.trading);
-          this.paramsDrafts.set(row.id, this.draftFromTrading(resp.trading));
-          this.paramsDirtyIds.delete(row.id);
-          this.savingParamsIds.delete(row.id);
-          this.paramsSaveErrors.delete(row.id);
-          this.techLog.event(
-            this.techLog.logicThreadKey(row.id, 'params'),
-            'logic.params.saved',
-            'Параметры логики сохранены (UI)',
-            {
-              logicId: row.id,
-              payload: { trading: resp.trading, params: resp.params },
-            }
-          );
-        },
-        error: (err) => {
-          this.savingParamsIds.delete(row.id);
-          this.paramsSaveErrors.set(
-            row.id,
-            err?.error?.error ?? 'Не удалось сохранить параметры'
-          );
-        },
       });
+
+    const afterParamsSaved = (resp: LogicParamsResponse) => {
+      this.applyTradingParamsToLogic(row.id, resp.trading);
+      const nextDraft = this.draftFromTrading(resp.trading);
+      nextDraft.name = row.name;
+      this.paramsDrafts.set(row.id, nextDraft);
+      this.paramsDirtyIds.delete(row.id);
+      this.savingParamsIds.delete(row.id);
+      this.paramsSaveErrors.delete(row.id);
+      const nt = this.nonTradingByLogic.get(row.id);
+      if (nt) {
+        this.nonTradingByLogic.set(row.id, {
+          ...nt,
+          use_non_trading_periods: resp.trading.use_non_trading_periods !== false,
+        });
+      }
+      this.loadSecuritiesForLogic(row.id, true);
+      this.techLog.event(
+        this.techLog.logicThreadKey(row.id, 'params'),
+        'logic.params.saved',
+        'Параметры логики сохранены (UI)',
+        {
+          logicId: row.id,
+          payload: { trading: resp.trading, params: resp.params },
+        }
+      );
+    };
+
+    const onSaveError = (err: { error?: { error?: string } }) => {
+      this.savingParamsIds.delete(row.id);
+      this.paramsSaveErrors.set(
+        row.id,
+        err?.error?.error ?? 'Не удалось сохранить параметры'
+      );
+    };
+
+    if (name !== row.name) {
+      this.logicsService
+        .updateLogic(row.id, {
+          name,
+          account_id: row.account_id,
+          is_enabled: row.is_enabled,
+          note: row.note ?? null,
+        })
+        .subscribe({
+          next: (updated) => {
+            row.name = updated.name;
+            const local = this.logics.find((l) => l.id === row.id);
+            if (local) local.name = updated.name;
+            saveParams().subscribe({
+              next: afterParamsSaved,
+              error: onSaveError,
+            });
+          },
+          error: onSaveError,
+        });
+      return;
+    }
+
+    saveParams().subscribe({
+      next: afterParamsSaved,
+      error: onSaveError,
+    });
   }
 
   formatMoney(value: number | null | undefined): string {
@@ -726,6 +1082,198 @@ export class LogicsComponent implements OnInit, OnDestroy {
     }
   }
 
+  togglePeriodsBlock(logicId: number, event: Event): void {
+    event.preventDefault();
+    event.stopPropagation();
+    if (this.expandedPeriodsBlocks.has(logicId)) {
+      this.expandedPeriodsBlocks.delete(logicId);
+    } else {
+      this.expandedPeriodsBlocks.add(logicId);
+      this.loadNonTradingPeriods(logicId);
+    }
+  }
+
+  isPeriodsLoading(logicId: number): boolean {
+    return this.periodsLoading.has(logicId);
+  }
+
+  isPeriodsApplying(logicId: number): boolean {
+    return this.periodsApplying.has(logicId);
+  }
+
+  intervalsForDay(
+    logicId: number,
+    dayOfWeek: number
+  ): {
+    id: number;
+    day_of_week: number;
+    time_from: string;
+    time_to: string;
+    note?: string | null;
+  }[] {
+    const row = this.nonTradingByLogic.get(logicId);
+    if (!row) return [];
+    return row.intervals.filter((i) => i.day_of_week === dayOfWeek);
+  }
+
+  private applyNonTradingResponse(
+    logicId: number,
+    resp: {
+      use_non_trading_periods?: boolean;
+      intervals?: {
+        id: number;
+        day_of_week: number;
+        time_from: string;
+        time_to: string;
+        note?: string | null;
+      }[];
+    }
+  ): void {
+    this.nonTradingByLogic.set(logicId, {
+      use_non_trading_periods: resp.use_non_trading_periods !== false,
+      intervals: resp.intervals ?? [],
+    });
+  }
+
+  addNonTradingInterval(logicId: number, dayOfWeek: number, event: Event): void {
+    event.preventDefault();
+    event.stopPropagation();
+    if (this.periodsSaving.has(logicId)) return;
+    this.periodsSaving.add(logicId);
+    const defaults =
+      dayOfWeek >= 6
+        ? { time_from: '00:00', time_to: '23:59' }
+        : { time_from: '18:40', time_to: '23:59' };
+    this.logicsService
+      .addNonTradingPeriod(logicId, {
+        day_of_week: dayOfWeek,
+        time_from: defaults.time_from,
+        time_to: defaults.time_to,
+      })
+      .subscribe({
+        next: (resp) => {
+          this.applyNonTradingResponse(logicId, resp);
+          this.periodsSaving.delete(logicId);
+        },
+        error: (err) => {
+          console.error('addNonTradingPeriod', err);
+          this.periodsSaving.delete(logicId);
+        },
+      });
+  }
+
+  onNonTradingIntervalTimeChange(
+    logicId: number,
+    intervalId: number,
+    field: 'time_from' | 'time_to',
+    value: string
+  ): void {
+    const raw = String(value ?? '').trim();
+    if (!/^\d{1,2}:\d{2}(:\d{2})?$/.test(raw)) return;
+    const hm = raw.slice(0, 5);
+    if (this.periodsSaving.has(intervalId)) return;
+    this.periodsSaving.add(intervalId);
+    this.logicsService
+      .updateNonTradingPeriod(intervalId, { [field]: hm })
+      .subscribe({
+        next: (resp) => {
+          this.applyNonTradingResponse(logicId, resp);
+          this.periodsSaving.delete(intervalId);
+        },
+        error: (err) => {
+          console.error('updateNonTradingPeriod', err);
+          this.periodsSaving.delete(intervalId);
+          this.loadNonTradingPeriods(logicId, true);
+        },
+      });
+  }
+
+  deleteNonTradingInterval(logicId: number, intervalId: number, event: Event): void {
+    event.preventDefault();
+    event.stopPropagation();
+    if (this.periodsSaving.has(intervalId)) return;
+    this.periodsSaving.add(intervalId);
+    this.logicsService.deleteNonTradingPeriod(intervalId).subscribe({
+      next: (resp) => {
+        this.applyNonTradingResponse(logicId, resp);
+        this.periodsSaving.delete(intervalId);
+      },
+      error: (err) => {
+        console.error('deleteNonTradingPeriod', err);
+        this.periodsSaving.delete(intervalId);
+      },
+    });
+  }
+
+  useNonTradingPeriods(logicId: number): boolean {
+    const cached = this.nonTradingByLogic.get(logicId);
+    if (cached) return cached.use_non_trading_periods;
+    return this.getParamsDraft(logicId).use_non_trading_periods !== false;
+  }
+
+  onUseNonTradingPeriodsChange(logicId: number, value: boolean, event?: Event): void {
+    event?.stopPropagation();
+    this.getParamsDraft(logicId).use_non_trading_periods = value;
+    const cached = this.nonTradingByLogic.get(logicId);
+    if (cached) {
+      this.nonTradingByLogic.set(logicId, { ...cached, use_non_trading_periods: value });
+    }
+    this.logicsService
+      .saveLogicParams(logicId, { use_non_trading_periods: value })
+      .subscribe({
+        next: (resp) => {
+          this.applyTradingParamsToLogic(logicId, resp.trading);
+          this.getParamsDraft(logicId).use_non_trading_periods =
+            resp.trading.use_non_trading_periods !== false;
+        },
+        error: (err) => {
+          console.error('use_non_trading_periods save', err);
+        },
+      });
+  }
+
+  applyMoexNonTradingPeriods(logicId: number, event: Event): void {
+    event.preventDefault();
+    event.stopPropagation();
+    this.periodsApplying.add(logicId);
+    this.logicsService.applyMoexNonTradingPeriods(logicId).subscribe({
+      next: (resp) => {
+        this.nonTradingByLogic.set(logicId, {
+          use_non_trading_periods: resp.use_non_trading_periods !== false,
+          intervals: resp.intervals ?? [],
+        });
+        this.periodsApplying.delete(logicId);
+        this.expandedPeriodsBlocks.add(logicId);
+      },
+      error: (err) => {
+        console.error('applyMoexNonTradingPeriods', err);
+        this.periodsApplying.delete(logicId);
+      },
+    });
+  }
+
+  private loadNonTradingPeriods(logicId: number, force = false): void {
+    if (!force && this.nonTradingByLogic.has(logicId) && !this.periodsLoading.has(logicId)) {
+      return;
+    }
+    this.periodsLoading.add(logicId);
+    this.logicsService.getNonTradingPeriods(logicId).subscribe({
+      next: (resp) => {
+        this.nonTradingByLogic.set(logicId, {
+          use_non_trading_periods: resp.use_non_trading_periods !== false,
+          intervals: resp.intervals ?? [],
+        });
+        this.getParamsDraft(logicId).use_non_trading_periods =
+          resp.use_non_trading_periods !== false;
+        this.periodsLoading.delete(logicId);
+      },
+      error: (err) => {
+        console.error('getNonTradingPeriods', err);
+        this.periodsLoading.delete(logicId);
+      },
+    });
+  }
+
   isTestTradesBlockExpanded(id: number): boolean {
     return this.expandedTestTradesBlocks.has(id);
   }
@@ -739,7 +1287,7 @@ export class LogicsComponent implements OnInit, OnDestroy {
       this.expandedTestTradesBlocks.add(logicId);
       this.loadSignalsForLogic(logicId);
       this.loadTestTradesForLogic(logicId);
-      this.refreshBacktestStatus(logicId);
+      this.backtestUi.watch(logicId);
     }
   }
 
@@ -846,12 +1394,30 @@ export class LogicsComponent implements OnInit, OnDestroy {
     return Number(row.financial_result);
   }
 
+  testCommission(logicId: number): number | null {
+    const row = this.testPnlByLogic.get(logicId);
+    if (!row) return null;
+    return Number(row.commission) || 0;
+  }
+
   testFinancialResultTitle(logicId: number): string {
     const row = this.testPnlByLogic.get(logicId);
     if (!row) return '';
     const pnl = this.formatPnl(row.financial_result);
     const com = this.formatMoney(row.commission);
-    return `Тест: финрез ${pnl}, комиссия ${com}, сделок ${row.trade_count}`;
+    const period = this.testPeriodLabel(logicId);
+    const periodPart = period ? `, период ${period}` : '';
+    return `Тест: финрез ${pnl}, комиссия ${com}, сделок ${row.trade_count}${periodPart}`;
+  }
+
+  /** Период последнего теста: день.месяц.год — без времени. */
+  testPeriodLabel(logicId: number): string {
+    const row = this.testPnlByLogic.get(logicId);
+    const fromRun = this.backtestRuns.get(logicId);
+    return formatDateRangeLabel(
+      row?.date_from ?? fromRun?.date_from,
+      row?.date_to ?? fromRun?.date_to,
+    );
   }
 
   hasCombatFinancialResult(logicId: number): boolean {
@@ -1064,11 +1630,14 @@ export class LogicsComponent implements OnInit, OnDestroy {
     if (a.length === 0) return true;
     const lastA = a[a.length - 1];
     const lastB = b[b.length - 1];
+    const remA = Number(lastA.remaining_qty ?? lastA.quantity);
+    const remB = Number(lastB.remaining_qty ?? lastB.quantity);
     return (
       a[0].id === b[0].id &&
       lastA.id === lastB.id &&
       Number(lastA.financial_result) === Number(lastB.financial_result) &&
-      String(lastA.bar_dt) === String(lastB.bar_dt)
+      String(lastA.bar_dt) === String(lastB.bar_dt) &&
+      remA === remB
     );
   }
 
@@ -1107,8 +1676,12 @@ export class LogicsComponent implements OnInit, OnDestroy {
   }
 
   isBacktestRunning(logicId: number): boolean {
-    const s = this.backtestRuns.get(logicId)?.status;
-    return s === 'pending' || s === 'loading_prices' || s === 'loading_indicators' || s === 'running';
+    return this.backtestUi.isRunning(logicId);
+  }
+
+  /** Bound in template so CD sees Map updates from the shared service. */
+  backtestUiTick(): number {
+    return this.backtestUi.uiTick;
   }
 
   backtestProgressPct(logicId: number): number {
@@ -1123,7 +1696,15 @@ export class LogicsComponent implements OnInit, OnDestroy {
     const pct = this.backtestProgressPct(logicId);
     const phase = run.phase_message || run.status || '';
     const detail = run.phase_detail ? ` — ${run.phase_detail}` : '';
-    return `Тест ${pct}%: ${phase}${detail}`;
+    const bar = formatHumanDate(run.current_bar_dt);
+    const barPart = bar ? ` · ${bar}` : '';
+    const period = formatDateRangeLabel(run.date_from, run.date_to);
+    const periodPart = period ? ` (${period})` : '';
+    return `Тест ${pct}%${barPart}: ${phase}${detail}${periodPart}`;
+  }
+
+  backtestCurrentBarLabel(logicId: number): string {
+    return formatHumanDate(this.backtestRuns.get(logicId)?.current_bar_dt) || '';
   }
 
   isTradesLoading(logicId: number): boolean {
@@ -1595,6 +2176,15 @@ export class LogicsComponent implements OnInit, OnDestroy {
   }
 
   onEditorSaved(): void {
+    const editedId = this.editorLogic?.id;
+    if (editedId != null) {
+      // После смены счёта API чистит боевые сделки — сбросить кэш панели.
+      this.logicTrades.delete(editedId);
+      this.expandedTradeRows.clear();
+      if (this.expandedTradesBlocks.has(editedId)) {
+        this.loadTradesForLogic(editedId, true);
+      }
+    }
     this.loadLogicsOnce();
   }
 
@@ -1611,6 +2201,7 @@ export class LogicsComponent implements OnInit, OnDestroy {
         this.expandedLogics.delete(row.id);
         this.expandedSecuritiesBlocks.delete(row.id);
         this.expandedTradesBlocks.delete(row.id);
+        this.selectedExportIds.delete(row.id);
         this.loadLogicsOnce();
       },
       error: (err) => {
@@ -1619,17 +2210,215 @@ export class LogicsComponent implements OnInit, OnDestroy {
     });
   }
 
+  copyLogic(row: LogicRow, event: Event): void {
+    event.stopPropagation();
+    if (this.copyingLogicIds.has(row.id)) return;
+    this.copyingLogicIds.add(row.id);
+    this.logicsService.copyLogic(row.id).subscribe({
+      next: (created) => {
+        this.copyingLogicIds.delete(row.id);
+        this.logics = [...this.logics, created].sort((a, b) => a.id - b.id);
+        this.expandedLogics.add(created.id);
+        this.ensureParamsDraft(created.id, true);
+        this.loadSignalsForLogic(created.id, true);
+        this.loadStopsForLogic(created.id);
+        this.loadSecuritiesForLogic(created.id);
+        alert(`Логика скопирована: ${created.name}`);
+        // After OK: list is already updated/expanded — scroll so the new row is on screen.
+        setTimeout(() => this.scrollLogicIntoView(created.id), 0);
+      },
+      error: (err) => {
+        this.copyingLogicIds.delete(row.id);
+        alert(err?.error?.error || 'Не удалось скопировать логику');
+      },
+    });
+  }
+
+  isExportSelected(logicId: number): boolean {
+    return this.selectedExportIds.has(logicId);
+  }
+
+  toggleExportSelection(logicId: number, checked: boolean): void {
+    if (checked) {
+      this.selectedExportIds.add(logicId);
+    } else {
+      this.selectedExportIds.delete(logicId);
+    }
+  }
+
+  allExportSelected(): boolean {
+    return (
+      this.logics.length > 0 &&
+      this.logics.every((r) => this.selectedExportIds.has(r.id))
+    );
+  }
+
+  toggleAllExport(checked: boolean): void {
+    if (checked) {
+      for (const r of this.logics) {
+        this.selectedExportIds.add(r.id);
+      }
+    } else {
+      this.selectedExportIds.clear();
+    }
+  }
+
+  exportSelectedLogics(): void {
+    const ids = this.logics
+      .filter((r) => this.selectedExportIds.has(r.id))
+      .map((r) => r.id);
+    if (ids.length === 0) {
+      alert('Отметьте логики для экспорта (чекбокс справа)');
+      return;
+    }
+    if (this.exportImportBusy) return;
+    this.exportImportBusy = true;
+    this.logicsService.exportLogics(ids).subscribe({
+      next: (bundle) => {
+        this.exportImportBusy = false;
+        const names = (bundle.logics || []).map((l) => l.name);
+        const stamp = new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-');
+        const blob = new Blob([JSON.stringify(bundle, null, 2)], {
+          type: 'application/json;charset=utf-8',
+        });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = `multilogic-logics-${stamp}.json`;
+        a.click();
+        URL.revokeObjectURL(url);
+        alert(
+          names.length === 1
+            ? `Экспортирована логика: ${names[0]}`
+            : `Экспортированы логики (${names.length}):\n${names.join('\n')}`
+        );
+      },
+      error: (err) => {
+        this.exportImportBusy = false;
+        alert(err?.error?.error || 'Не удалось экспортировать логики');
+      },
+    });
+  }
+
+  /** Download complete trades JSON (params/signals/stops + all trade flags) for AI analysis. */
+  exportLogicTrades(logicId: number, isTest: boolean): void {
+    const key = `${logicId}:${isTest ? 'test' : 'live'}`;
+    if (this.tradesExportBusy.has(key)) return;
+    this.tradesExportBusy.add(key);
+    const runId = isTest ? (this.backtestRuns.get(Number(logicId))?.id ?? null) : null;
+    this.logicsService.exportLogicTrades(logicId, isTest, runId).pipe(takeUntil(this.destroy$)).subscribe({
+      next: (bundle) => {
+        this.tradesExportBusy.delete(key);
+        const logicName = String(bundle?.logic?.name || `logic-${logicId}`)
+          .replace(/[^\w\-а-яА-ЯёЁ]+/g, '_')
+          .slice(0, 60);
+        const mode = isTest ? 'test' : 'live';
+        const stamp = new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-');
+        const run = isTest ? this.backtestRuns.get(Number(logicId)) : null;
+        const from = String(run?.date_from || '').slice(0, 10);
+        const to = String(run?.date_to || '').slice(0, 10);
+        const periodBit =
+          from && to ? `_${from}_${to}` : from ? `_${from}` : to ? `_${to}` : '';
+        const blob = new Blob([JSON.stringify(bundle, null, 2)], {
+          type: 'application/json;charset=utf-8',
+        });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = `multilogic-trades-${mode}-${logicName}${periodBit}-${stamp}.json`;
+        a.click();
+        URL.revokeObjectURL(url);
+        const n = Number(bundle?.counts?.['total'] ?? bundle?.trades?.length ?? 0);
+        const shadow = Number(bundle?.counts?.['shadow'] ?? 0);
+        alert(
+          `Экспорт ${mode === 'test' ? 'теста' : 'боя'}: ${n} сделок` +
+            (shadow ? ` (из них shadow: ${shadow})` : '') +
+            `\nФайл: ${a.download}`
+        );
+      },
+      error: (err) => {
+        this.tradesExportBusy.delete(key);
+        alert(err?.error?.error || 'Не удалось экспортировать сделки');
+      },
+    });
+  }
+
+  triggerImportLogics(): void {
+    if (this.exportImportBusy) return;
+    const input = this.logicImportFile?.nativeElement;
+    if (!input) return;
+    input.value = '';
+    input.click();
+  }
+
+  onImportFileSelected(event: Event): void {
+    const input = event.target as HTMLInputElement;
+    const file = input.files?.[0];
+    if (!file) return;
+    if (this.exportImportBusy) return;
+    this.exportImportBusy = true;
+    const reader = new FileReader();
+    reader.onload = () => {
+      try {
+        const text = String(reader.result || '');
+        const bundle = JSON.parse(text);
+        this.logicsService.importLogics(bundle).subscribe({
+          next: (result) => {
+            this.exportImportBusy = false;
+            this.loadLogicsOnce();
+            const names = (result.imported || []).map((r) => r.name);
+            let msg =
+              names.length === 1
+                ? `Импортирована логика: ${names[0]}`
+                : `Импортированы логики (${names.length}):\n${names.join('\n')}`;
+            if (result.warnings?.length) {
+              msg += `\n\nПредупреждения:\n${result.warnings.slice(0, 12).join('\n')}`;
+              if (result.warnings.length > 12) {
+                msg += `\n… ещё ${result.warnings.length - 12}`;
+              }
+            }
+            alert(msg);
+          },
+          error: (err) => {
+            this.exportImportBusy = false;
+            alert(err?.error?.error || 'Не удалось импортировать логики');
+          },
+        });
+      } catch {
+        this.exportImportBusy = false;
+        alert('Файл не является корректным JSON');
+      }
+    };
+    reader.onerror = () => {
+      this.exportImportBusy = false;
+      alert('Не удалось прочитать файл');
+    };
+    reader.readAsText(file, 'utf-8');
+  }
+
+  private scrollLogicIntoView(logicId: number): void {
+    const el = document.querySelector(
+      `.logic-main-row[data-logic-id="${logicId}"]`,
+    ) as HTMLElement | null;
+    el?.scrollIntoView({ behavior: 'smooth', block: 'start', inline: 'nearest' });
+  }
+
+  isCopying(row: LogicRow): boolean {
+    return this.copyingLogicIds.has(row.id);
+  }
+
   onEnabledChange(row: LogicRow, checked: boolean, event: Event): void {
     event.stopPropagation();
     if (this.savingIds.has(row.id)) return;
 
+    // Фейк-счёт: котировки с глобального TBANK_API_TOKEN (один на все логики/копии).
     if (checked && row.account_type === 'fake') {
-      this.settings.getTbankTokenStatus(true).subscribe({
+      this.settings.getTbankTokenConfigured().subscribe({
         next: (status) => {
-          if (!status.has_token || !status.valid) {
+          if (!status.has_token) {
             this.pendingEnableLogic = row;
             this.tbankTokenDialogContext = 'logic';
-            this.tbankTokenDialogReason = status.has_token ? 'invalid' : 'missing';
+            this.tbankTokenDialogReason = 'missing';
             this.tbankTokenDialogOpen = true;
             return;
           }
@@ -1653,10 +2442,10 @@ export class LogicsComponent implements OnInit, OnDestroy {
     this.settings.getTbankTokenStatus(true).subscribe({
       next: (status) => {
         this.applyTbankTokenStatus(status);
-        if (row && status.valid) {
+        if (row && status.has_token) {
           this.applyEnabledChange(row, true);
         }
-        if (pendingBt && status.valid) {
+        if (pendingBt && status.has_token) {
           this.doStartBacktestRun(pendingBt.logicId, pendingBt.period);
         }
       },
@@ -1735,12 +2524,19 @@ export class LogicsComponent implements OnInit, OnDestroy {
     this.logicsService.updateLogicEnabled(row.id, checked).subscribe({
       next: (resp) => {
         this.savingIds.delete(row.id);
+        row.is_enabled = resp.is_enabled;
         this.techLog.event(
           this.techLog.logicThreadKey(row.id, 'control'),
           checked ? 'logic.enabled' : 'logic.disabled',
           checked ? 'Логика включена (UI)' : 'Логика выключена (UI)',
-          { logicId: row.id, payload: { is_enabled: checked } }
+          { logicId: row.id, payload: resp }
         );
+        if (resp.warmup_pretest?.started) {
+          this.backtestUi.watch(row.id);
+          this.expandedLogics.add(row.id);
+          this.expandedTestTradesBlocks.add(row.id);
+          return;
+        }
         if (checked) {
           this.lastTbankTokenCheckAt = 0;
           this.maybeCheckTbankTokenForTrades();
@@ -1882,8 +2678,51 @@ export class LogicsComponent implements OnInit, OnDestroy {
     });
   }
 
-  private loadSecuritiesForLogic(logicId: number): void {
-    if (this.securitiesLoading.has(logicId)) return;
+  /** Денежный фонд — первая бумага в Позиции/Тестирование → «Бумаги». */
+  cashFundPinnedPaper(row: LogicRow): {
+    security_id: number;
+    security_name: string;
+    security_prefix: string | null;
+    pnl: number;
+    commission: number;
+    trade_count: number;
+    open_qty: number;
+    last_price: number | null;
+    position_value: number;
+  } | null {
+    const code = String(row.cash_fund_code ?? '')
+      .trim()
+      .toUpperCase();
+    if (!code || !['TMON', 'LQDT', 'SBMM'].includes(code)) {
+      return null;
+    }
+    if (!this.logicSecurities.has(row.id) && !this.securitiesLoading.has(row.id)) {
+      this.loadSecuritiesForLogic(row.id);
+    }
+    const sec = this.securitiesFor(row.id).find(
+      (s) =>
+        String(s.prefix ?? '')
+          .trim()
+          .toUpperCase() === code && s.is_active !== false
+    );
+    if (!sec) {
+      return null;
+    }
+    return {
+      security_id: Number(sec.security_id),
+      security_name: sec.security_name,
+      security_prefix: sec.prefix,
+      pnl: 0,
+      commission: 0,
+      trade_count: 0,
+      open_qty: 0,
+      last_price: null,
+      position_value: 0,
+    };
+  }
+
+  private loadSecuritiesForLogic(logicId: number, force = false): void {
+    if (!force && this.securitiesLoading.has(logicId)) return;
     this.securitiesLoading.add(logicId);
     this.logicsService.getLogicSecurities(logicId).subscribe({
       next: (rows) => {
@@ -1897,12 +2736,13 @@ export class LogicsComponent implements OnInit, OnDestroy {
   }
 
   startBacktestRun(logicId: number, period: { date_from: string; date_to: string }): void {
-    this.settings.getTbankTokenStatus(true).subscribe({
+    // Тест: тот же глобальный токен, что у seed-логик — без повторного HTTP-verify на каждую копию.
+    this.settings.getTbankTokenConfigured().subscribe({
       next: (status) => {
-        if (!status.has_token || !status.valid) {
+        if (!status.has_token) {
           this.pendingBacktest = { logicId, period };
           this.tbankTokenDialogContext = 'logic';
-          this.tbankTokenDialogReason = status.has_token ? 'invalid' : 'missing';
+          this.tbankTokenDialogReason = 'missing';
           this.tbankTokenDialogOpen = true;
           return;
         }
@@ -1917,10 +2757,10 @@ export class LogicsComponent implements OnInit, OnDestroy {
       .startBacktest({ logic_id: logicId, date_from: period.date_from, date_to: period.date_to })
       .subscribe({
         next: () => {
-          this.backtestPollIds.add(logicId);
+          // Единственный владелец status-poll — BacktestUiStateService.watch().
+          this.backtestUi.watch(logicId);
           this.expandedTestTradesBlocks.add(logicId);
           this.loadSignalsForLogic(logicId);
-          this.refreshBacktestStatus(logicId);
         },
         error: (err) => alert(err?.error?.error || 'Не удалось запустить тест'),
       });
@@ -1935,30 +2775,8 @@ export class LogicsComponent implements OnInit, OnDestroy {
       phase_detail: run.phase_detail || 'Запрос на остановку принят',
     });
     this.logicsService.cancelBacktest(run.id).subscribe({
-      next: () => this.refreshBacktestStatus(logicId),
+      next: () => this.backtestUi.watch(logicId),
       error: (err) => alert(err?.error?.error || 'Не удалось остановить тест'),
-    });
-  }
-
-  private refreshBacktestStatus(logicId: number): void {
-    this.logicsService.getBacktestStatus(logicId).pipe(takeUntil(this.destroy$)).subscribe({
-      next: (row) => {
-        if (row) {
-          this.backtestRuns.set(logicId, row);
-          const st = String(row.status ?? '');
-          if (['pending', 'loading_prices', 'loading_indicators', 'running'].includes(st)) {
-            this.backtestPollIds.add(logicId);
-          } else {
-            this.backtestPollIds.delete(logicId);
-            this.loadTestTradesForLogic(logicId, true);
-          }
-          this.rebuildTestTradesView(logicId);
-        } else {
-          this.backtestRuns.delete(logicId);
-          this.backtestPollIds.delete(logicId);
-          this.rebuildTestTradesView(logicId);
-        }
-      },
     });
   }
 
@@ -1988,8 +2806,9 @@ export class LogicsComponent implements OnInit, OnDestroy {
   private loadTestTradesForLogic(logicId: number, _silent = false): void {
     if (this.testTradesInFlight.has(logicId)) return;
     this.testTradesInFlight.add(logicId);
-    // Бэктест по многим бумагам — нужен большой лимит, иначе маркеры MMK и др. режутся.
-    this.logicsService.getLogicTrades(logicId, 5000, true).pipe(takeUntil(this.destroy$)).subscribe({
+    // Полный последний прогон: иначе LIMIT 5000 даёт другой финрез, чем колонка «Тест» (pnl-summary).
+    const runId = this.backtestRuns.get(Number(logicId))?.id ?? null;
+    this.logicsService.getLogicTrades(logicId, 50000, true, runId).pipe(takeUntil(this.destroy$)).subscribe({
       next: (rows) => {
         this.testTradesInFlight.delete(logicId);
         const prev = this.logicTradesTest.get(Number(logicId));
@@ -2008,58 +2827,83 @@ export class LogicsComponent implements OnInit, OnDestroy {
 
   private refreshAllTradesSummaries(): void {
     this.pollTick++;
-    // Тяжёлые списки сделок (особенно test≤5000) — не каждые 2 с по всем логикам.
+    // Тяжёлые списки — реже; status теста не дублируем (BacktestUiStateService).
     const heavyTick = this.pollTick % 3 === 0;
-
-    for (const logicId of this.backtestPollIds) {
-      this.refreshBacktestStatus(logicId);
-    }
 
     for (const row of this.logics) {
       const id = row.id;
       const liveOpen = this.expandedTradesBlocks.has(id);
       const testOpen = this.expandedTestTradesBlocks.has(id);
-      const testing = this.backtestPollIds.has(id);
+      const testing = this.isBacktestRunning(id);
 
       if (liveOpen || (this.expandedLogics.has(id) && heavyTick)) {
         this.loadTradesForLogic(id, true);
       }
-      // Тест-сделки: running / открытая панель — чаще; иначе только на heavyTick при развёрнутой логике.
-      if (testOpen || testing) {
-        if (testOpen || heavyTick) {
+      // Пока тест running — не качать 50k сделок каждые 2 с (прогресс из status).
+      // Полный список — после finish (changes$) или редко на heavyTick если панель открыта.
+      if (testing) {
+        if (testOpen && heavyTick) {
           this.loadTestTradesForLogic(id, true);
         }
-      } else if (this.expandedLogics.has(id) && heavyTick) {
+      } else if (testOpen || (this.expandedLogics.has(id) && heavyTick)) {
         this.loadTestTradesForLogic(id, true);
       }
     }
   }
 
   private refreshPnlSummaries(): void {
-    this.refreshTestPnlSummary();
+    // Test PnL column: реже во время активных прогонов (колонка не критична mid-run).
+    if (this.backtestPollIds.size === 0 || this.pollTick % 3 === 0) {
+      this.refreshTestPnlSummary();
+    }
     this.refreshCombatPnlSummary();
   }
 
-  private refreshTestPnlSummary(): void {
-    this.logicsService.getLogicTradesPnlSummary(true).subscribe({
+  private refreshProcesses(): void {
+    this.logicsService.getProcesses().pipe(takeUntil(this.destroy$)).subscribe({
       next: (resp) => {
-        const next = new Map<
-          number,
-          { financial_result: number; commission: number; trade_count: number }
-        >();
+        this.processRows = resp.rows ?? [];
+        this.processError = null;
+        // Processes strip also lists active backtests — keep yellow/watch in sync.
+        for (const p of this.processRows) {
+          if (p.type === 'backtest' && p.logic_id != null) {
+            const id = Number(p.logic_id);
+            if (Number.isFinite(id) && id > 0 && !this.backtestUi.isRunning(id)) {
+              this.backtestUi.watch(id);
+            }
+          }
+        }
+      },
+      error: (err) => {
+        this.processRows = [];
+        this.processError = err?.error?.error ?? err?.message ?? 'Не удалось загрузить процессы';
+      },
+    });
+  }
+
+  private refreshTestPnlSummary(): void {
+    if (this.testPnlInFlight) return;
+    if (typeof document !== 'undefined' && document.hidden) return;
+    this.testPnlInFlight = true;
+    this.logicsService.getLogicTradesPnlSummary(true).pipe(takeUntil(this.destroy$)).subscribe({
+      next: (resp) => {
+        this.testPnlInFlight = false;
+        this.testPnlByLogic.clear();
         for (const r of resp.rows ?? []) {
           const logicId = Number(r.logic_id);
           if (!Number.isFinite(logicId) || logicId <= 0) continue;
           const pnl = Number(r.financial_result);
-          next.set(logicId, {
+          this.testPnlByLogic.set(logicId, {
             financial_result: Number.isFinite(pnl) ? pnl : 0,
             commission: Number(r.commission) || 0,
             trade_count: Number(r.trade_count) || 0,
+            date_from: r.date_from ?? null,
+            date_to: r.date_to ?? null,
           });
         }
-        this.testPnlByLogic = next;
       },
       error: () => {
+        this.testPnlInFlight = false;
         // Старый API без /pnl-summary — только если нет нового endpoint
         this.refreshTestPnlFromBacktestRuns();
       },
@@ -2067,8 +2911,12 @@ export class LogicsComponent implements OnInit, OnDestroy {
   }
 
   private refreshCombatPnlSummary(): void {
-    this.logicsService.getLogicTradesPnlSummary(false).subscribe({
+    if (this.combatPnlInFlight) return;
+    if (typeof document !== 'undefined' && document.hidden) return;
+    this.combatPnlInFlight = true;
+    this.logicsService.getLogicTradesPnlSummary(false).pipe(takeUntil(this.destroy$)).subscribe({
       next: (resp) => {
+        this.combatPnlInFlight = false;
         const next = new Map<
           number,
           { financial_result: number; commission: number; trade_count: number }
@@ -2086,17 +2934,14 @@ export class LogicsComponent implements OnInit, OnDestroy {
         this.combatPnlByLogic = next;
       },
       error: () => {
-        /* опционально */
+        this.combatPnlInFlight = false;
       },
     });
   }
 
   /** Fallback без /pnl-summary: сумма уже загруженных test-сделок (не runs.financial_result). */
   private refreshTestPnlFromBacktestRuns(): void {
-    const next = new Map<
-      number,
-      { financial_result: number; commission: number; trade_count: number }
-    >();
+    this.testPnlByLogic.clear();
     for (const row of this.logics) {
       const trades = this.logicTradesTest.get(Number(row.id)) ?? [];
       const live = trades.filter((t) => !t.is_shadow);
@@ -2112,13 +2957,15 @@ export class LogicsComponent implements OnInit, OnDestroy {
         (sum, t) => sum + (Number(t.commission) || 0),
         0
       );
-      next.set(Number(row.id), {
+      const run = this.backtestRuns.get(Number(row.id));
+      this.testPnlByLogic.set(Number(row.id), {
         financial_result,
         commission,
         trade_count: live.length,
+        date_from: run?.date_from ?? null,
+        date_to: run?.date_to ?? null,
       });
     }
-    this.testPnlByLogic = next;
   }
 
   private loadMoexExchangeId(): void {
@@ -2185,6 +3032,10 @@ export class LogicsComponent implements OnInit, OnDestroy {
       next: (rows) => {
         this.logics = rows;
         this.error = null;
+        const alive = new Set(rows.map((r) => r.id));
+        for (const id of [...this.selectedExportIds]) {
+          if (!alive.has(id)) this.selectedExportIds.delete(id);
+        }
       },
     });
   }

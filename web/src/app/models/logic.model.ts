@@ -6,8 +6,12 @@ export interface LogicRow {
   is_enabled: boolean;
   note?: string | null;
   timeframe?: string;
+  /** free_cash | portfolio | portfolio_incl_fund — база % для расчёта лота */
+  position_size_base?: 'free_cash' | 'portfolio' | 'portfolio_incl_fund';
   position_size_pct: number;
   max_open_positions: number;
+  /** Потолок номинала одной покупки, ₽; null/undefined = без лимита */
+  max_order_amount?: number | null;
   initial_balance: number | null;
   current_balance: number | null;
   commission_pct?: number;
@@ -17,6 +21,18 @@ export interface LogicRow {
   rating_lookback_days?: number;
   /** Инверсия логики: условия наоборот и Long↔Short. */
   inversion?: boolean;
+  /** portfolio_resume SL: весь портфель в shadow до восстановления. */
+  portfolio_trading_paused?: boolean;
+  /** Перед включением боя: предварительный тест для stop resume / inversion states. */
+  warmup_pretest?: boolean;
+  /** Денежный фонд для парковки кэша: '' | TMON | LQDT | SBMM (runner later). */
+  cash_fund_code?: string;
+  /** Порог equity портфеля (₽): парковать min(кэш, equity−порог−уже_в_фонде). */
+  cash_fund_threshold?: number;
+  /** Учитывать неторговые периоды при открытии сделок. */
+  use_non_trading_periods?: boolean;
+  /** Закрывать позиции в конце дня (кроме денежных фондов). */
+  close_positions_eod?: boolean;
   account_code: string;
   account_name: string;
   account_type: 'real' | 'fake';
@@ -27,8 +43,10 @@ export interface LogicRow {
 
 export interface LogicTradingParamsPayload {
   timeframe?: string;
+  position_size_base?: 'free_cash' | 'portfolio' | 'portfolio_incl_fund';
   position_size_pct?: number;
   max_open_positions?: number;
+  max_order_amount?: number | null;
   initial_balance?: number | null;
   reset_balance?: boolean;
   commission_pct?: number;
@@ -37,12 +55,19 @@ export interface LogicTradingParamsPayload {
   base_annual_rate_pct?: number;
   rating_lookback_days?: number;
   inversion?: boolean;
+  warmup_pretest?: boolean;
+  cash_fund_code?: string;
+  cash_fund_threshold?: number;
+  use_non_trading_periods?: boolean;
+  close_positions_eod?: boolean;
 }
 
 export interface LogicTradingParamsResponse {
   timeframe: string;
+  position_size_base: 'free_cash' | 'portfolio' | 'portfolio_incl_fund';
   position_size_pct: number;
   max_open_positions: number;
+  max_order_amount: number | null;
   initial_balance: number | null;
   current_balance: number | null;
   commission_pct: number;
@@ -51,6 +76,37 @@ export interface LogicTradingParamsResponse {
   base_annual_rate_pct: number;
   rating_lookback_days: number;
   inversion: boolean;
+  warmup_pretest: boolean;
+  cash_fund_code: string;
+  cash_fund_threshold: number;
+  use_non_trading_periods: boolean;
+  close_positions_eod: boolean;
+}
+
+export interface LogicNonTradingIntervalRow {
+  id: number;
+  logic_id: number;
+  day_of_week: number;
+  time_from: string;
+  time_to: string;
+  note?: string | null;
+  display_order: number;
+  is_active: boolean;
+}
+
+export interface LogicNonTradingIntervalPayload {
+  day_of_week?: number;
+  time_from?: string;
+  time_to?: string;
+  note?: string | null;
+  is_active?: boolean;
+}
+
+export interface LogicNonTradingPeriodsResponse {
+  logic_id: number;
+  use_non_trading_periods: boolean;
+  intervals: LogicNonTradingIntervalRow[];
+  applied?: number;
 }
 
 export interface LogicParamRow {
@@ -92,7 +148,14 @@ export interface LogicStopRow {
   id: number;
   logic_id: number;
   rule_kind: 'stop_loss' | 'take_profit';
-  scope_type: 'security' | 'security_resume' | 'portfolio';
+  scope_type:
+    | 'security'
+    | 'security_resume'
+    | 'security_inversion'
+    | 'portfolio'
+    | 'portfolio_resume'
+    | 'portfolio_ltp_renew'
+    | 'security_ltp_renew';
   value: number;
   value_unit: 'percent' | 'atr';
   display_order: number;
@@ -115,7 +178,16 @@ export interface LogicSecurityRow {
   exchange_id: number | null;
   exchange_name: string | null;
   real_trading_paused?: boolean;
+  real_trading_paused_long?: boolean;
+  real_trading_paused_short?: boolean;
+  real_trading_inverted?: boolean;
   stop_resume_equity?: number | null;
   stop_resume_baseline?: number | null;
   stop_resume_triggered_at?: string | null;
+  stop_resume_equity_long?: number | null;
+  stop_resume_baseline_long?: number | null;
+  stop_resume_triggered_at_long?: string | null;
+  stop_resume_equity_short?: number | null;
+  stop_resume_baseline_short?: number | null;
+  stop_resume_triggered_at_short?: string | null;
 }

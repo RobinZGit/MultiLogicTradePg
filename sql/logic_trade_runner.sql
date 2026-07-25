@@ -361,11 +361,28 @@ $$;
 COMMENT ON FUNCTION logic_security_lot_size(INTEGER) IS
 'Лотность бумаги (штук в лоте); минимум 1';
 
+CREATE OR REPLACE FUNCTION logic_security_is_futures(p_security_id INTEGER)
+RETURNS BOOLEAN
+LANGUAGE sql STABLE AS $$
+    SELECT EXISTS (
+        SELECT 1
+        FROM security_prefixes sp
+        WHERE sp.security_id = p_security_id
+          AND sp.instrument_market = 'futures'
+    );
+$$;
+
+COMMENT ON FUNCTION logic_security_is_futures(INTEGER) IS
+'True если у бумаги есть prefix с instrument_market = futures';
+
+DROP FUNCTION IF EXISTS logic_calc_open_quantity(NUMERIC, NUMERIC, NUMERIC, INTEGER);
+
 CREATE OR REPLACE FUNCTION logic_calc_open_quantity(
     p_balance NUMERIC,
     p_position_size_pct NUMERIC,
     p_price NUMERIC,
-    p_lot_size INTEGER DEFAULT 1
+    p_lot_size INTEGER DEFAULT 1,
+    p_max_order_amount NUMERIC DEFAULT NULL
 )
 RETURNS INTEGER
 LANGUAGE plpgsql IMMUTABLE AS $$
@@ -386,6 +403,9 @@ BEGIN
     END IF;
     v_lot := GREATEST(1, COALESCE(p_lot_size, 1));
     v_amount := p_balance * (p_position_size_pct / 100.0);
+    IF p_max_order_amount IS NOT NULL AND p_max_order_amount > 0 THEN
+        v_amount := LEAST(v_amount, p_max_order_amount);
+    END IF;
     v_raw := floor(v_amount / p_price)::INTEGER;
     -- Округление вниз до целого числа лотов
     v_qty := (v_raw / v_lot) * v_lot;
@@ -396,8 +416,173 @@ BEGIN
 END;
 $$;
 
-COMMENT ON FUNCTION logic_calc_open_quantity(NUMERIC, NUMERIC, NUMERIC, INTEGER) IS
-'Лот открытия: % депозита / цена, округление вниз до lot_size бумаги';
+COMMENT ON FUNCTION logic_calc_open_quantity(NUMERIC, NUMERIC, NUMERIC, INTEGER, NUMERIC) IS
+'Лот: % базы / цена (опц. потолок суммы), вниз до lot_size';
+
+-- MTM выбранного денежного фонда логики (для исключения из базы «весь портфель»).
+CREATE OR REPLACE FUNCTION logic_selected_cash_fund_mtm(
+    p_logic_id INTEGER,
+    p_timeframe_id INTEGER
+)
+RETURNS NUMERIC
+LANGUAGE plpgsql AS $$
+DECLARE
+    v_code TEXT;
+    v_sec RECORD;
+    v_price NUMERIC;
+    v_qty NUMERIC;
+    v_mtm NUMERIC := 0;
+BEGIN
+    v_code := upper(btrim(COALESCE(
+        get_logic_param_text(p_logic_id, 'cash_fund_code'),
+        ''
+    )));
+    IF v_code = '' OR v_code NOT IN ('TMON', 'LQDT', 'SBMM') THEN
+        RETURN 0;
+    END IF;
+
+    FOR v_sec IN
+        SELECT ls.security_id
+        FROM logic_securities ls
+        JOIN security_prefixes sp ON sp.security_id = ls.security_id
+        WHERE ls.logic_id = p_logic_id
+          AND ls.is_active = TRUE
+          AND upper(sp.prefix) = v_code
+    LOOP
+        v_qty := logic_long_position_qty(p_logic_id, v_sec.security_id, FALSE);
+        IF v_qty <= 0 THEN
+            CONTINUE;
+        END IF;
+        v_price := logic_ensure_security_market_price(
+            p_logic_id, v_sec.security_id, p_timeframe_id
+        );
+        IF v_price IS NOT NULL AND v_price > 0 THEN
+            v_mtm := v_mtm + v_qty * v_price;
+        END IF;
+    END LOOP;
+
+    RETURN GREATEST(0, v_mtm);
+END;
+$$;
+
+COMMENT ON FUNCTION logic_selected_cash_fund_mtm(INTEGER, INTEGER) IS
+'Рыночная оценка выбранного cash_fund_code в логике; 0 если фонд не выбран';
+
+-- База для % лота:
+--   free_cash            — свободный кэш
+--   portfolio (default)  — весь портфель без выбранного денежного фонда
+--   portfolio_incl_fund  — весь портфель включая денежный фонд
+CREATE OR REPLACE FUNCTION logic_position_sizing_base(
+    p_logic_id INTEGER,
+    p_timeframe_id INTEGER
+)
+RETURNS NUMERIC
+LANGUAGE plpgsql AS $$
+DECLARE
+    v_account_id INTEGER;
+    v_account_type VARCHAR;
+    v_mode TEXT;
+    v_fund_code TEXT;
+    v_excl_fund BOOLEAN;
+    v_bal JSONB;
+    v_cash NUMERIC;
+    v_portfolio NUMERIC;
+    v_sec RECORD;
+    v_price NUMERIC;
+    v_long_qty NUMERIC;
+BEGIN
+    SELECT l.account_id, lower(COALESCE(a.account_type, 'fake'))
+    INTO v_account_id, v_account_type
+    FROM logics l
+    JOIN accounts a ON a.id = l.account_id
+    WHERE l.id = p_logic_id;
+
+    IF NOT FOUND THEN
+        RETURN 0;
+    END IF;
+
+    v_mode := lower(btrim(COALESCE(
+        get_logic_param_text(p_logic_id, 'position_size_base'),
+        'portfolio'
+    )));
+    IF v_mode NOT IN ('free_cash', 'portfolio', 'portfolio_incl_fund') THEN
+        v_mode := 'portfolio';
+    END IF;
+
+    v_fund_code := upper(btrim(COALESCE(
+        get_logic_param_text(p_logic_id, 'cash_fund_code'),
+        ''
+    )));
+    IF v_fund_code NOT IN ('TMON', 'LQDT', 'SBMM') THEN
+        v_fund_code := '';
+    END IF;
+    v_excl_fund := (v_mode = 'portfolio' AND v_fund_code <> '');
+
+    IF v_account_type <> 'fake' THEN
+        BEGIN
+            v_bal := fetch_tbank_account_balance(v_account_id);
+            IF v_bal IS NULL OR (v_bal->>'error') IS NOT NULL THEN
+                RETURN 0;
+            END IF;
+            IF v_mode IN ('portfolio', 'portfolio_incl_fund') THEN
+                v_portfolio := GREATEST(0, COALESCE((v_bal->>'amount')::NUMERIC, 0));
+                IF v_excl_fund THEN
+                    v_portfolio := GREATEST(
+                        0,
+                        v_portfolio - logic_selected_cash_fund_mtm(p_logic_id, p_timeframe_id)
+                    );
+                END IF;
+                RETURN v_portfolio;
+            END IF;
+            IF v_bal ? 'cash_amount' AND (v_bal->>'cash_amount') IS NOT NULL THEN
+                RETURN GREATEST(0, COALESCE((v_bal->>'cash_amount')::NUMERIC, 0));
+            END IF;
+            RETURN GREATEST(0, COALESCE((v_bal->>'amount')::NUMERIC, 0));
+        EXCEPTION
+            WHEN OTHERS THEN
+                RETURN 0;
+        END;
+    END IF;
+
+    -- Test (fake): свободные = current; портфель = current + MTM бумаг
+    v_cash := COALESCE(logic_ensure_balance(p_logic_id), 0);
+    IF v_mode = 'free_cash' THEN
+        RETURN GREATEST(0, v_cash);
+    END IF;
+
+    v_portfolio := v_cash;
+    FOR v_sec IN
+        SELECT ls.security_id
+        FROM logic_securities ls
+        WHERE ls.logic_id = p_logic_id AND ls.is_active = TRUE
+          AND (
+              NOT v_excl_fund
+              OR NOT EXISTS (
+                  SELECT 1
+                  FROM security_prefixes sp
+                  WHERE sp.security_id = ls.security_id
+                    AND upper(sp.prefix) = v_fund_code
+              )
+          )
+    LOOP
+        v_long_qty := logic_long_position_qty(p_logic_id, v_sec.security_id, FALSE);
+        IF v_long_qty <= 0 THEN
+            CONTINUE;
+        END IF;
+        v_price := logic_ensure_security_market_price(
+            p_logic_id, v_sec.security_id, p_timeframe_id
+        );
+        IF v_price IS NOT NULL AND v_price > 0 THEN
+            v_portfolio := v_portfolio + v_long_qty * v_price;
+        END IF;
+    END LOOP;
+
+    RETURN GREATEST(0, v_portfolio);
+END;
+$$;
+
+COMMENT ON FUNCTION logic_position_sizing_base(INTEGER, INTEGER) IS
+'База % лота: free_cash|portfolio (default, без фонда)|portfolio_incl_fund (с фондом)';
 
 CREATE OR REPLACE FUNCTION logic_upsert_param(
     p_logic_id INTEGER,
@@ -417,13 +602,119 @@ BEGIN
 END;
 $$;
 
+-- Paper-дефолт 1_000_000 / пусто — для real никогда не оставлять как «остаток».
+CREATE OR REPLACE FUNCTION logic_is_paper_balance_text(p_raw TEXT)
+RETURNS BOOLEAN
+LANGUAGE sql IMMUTABLE AS $$
+    SELECT CASE
+        WHEN p_raw IS NULL OR btrim(p_raw) = '' THEN TRUE
+        WHEN replace(replace(btrim(p_raw), ' ', ''), ',', '.')
+            IN ('1000000', '1000000.0', '1000000.00', '1000000.000', '1000000.000000')
+        THEN TRUE
+        ELSE FALSE
+    END;
+$$;
+
+CREATE OR REPLACE FUNCTION logic_apply_real_account_balances(
+    p_logic_id INTEGER,
+    p_force_initial BOOLEAN DEFAULT TRUE
+)
+RETURNS NUMERIC
+LANGUAGE plpgsql AS $$
+DECLARE
+    v_account_id INTEGER;
+    v_account_type VARCHAR;
+    v_bal JSONB;
+    v_amount NUMERIC := 0;
+    v_ok BOOLEAN := FALSE;
+BEGIN
+    SELECT l.account_id, lower(COALESCE(a.account_type, 'fake'))
+    INTO v_account_id, v_account_type
+    FROM logics l
+    JOIN accounts a ON a.id = l.account_id
+    WHERE l.id = p_logic_id;
+
+    IF NOT FOUND OR v_account_type = 'fake' THEN
+        RETURN NULL;
+    END IF;
+
+    BEGIN
+        v_bal := fetch_tbank_account_balance(v_account_id);
+        IF v_bal IS NOT NULL AND (v_bal->>'error') IS NULL THEN
+            IF v_bal ? 'cash_amount' AND (v_bal->>'cash_amount') IS NOT NULL THEN
+                v_amount := COALESCE((v_bal->>'cash_amount')::NUMERIC, 0);
+            ELSE
+                v_amount := COALESCE((v_bal->>'amount')::NUMERIC, 0);
+            END IF;
+            IF v_amount < 0 THEN
+                v_amount := 0;
+            END IF;
+            v_ok := TRUE;
+        END IF;
+    EXCEPTION
+        WHEN OTHERS THEN
+            v_ok := FALSE;
+            v_amount := 0;
+    END;
+
+    IF NOT v_ok THEN
+        v_amount := 0;
+    END IF;
+
+    -- Real: и начальный, и текущий — только с брокера (или 0). Не из параметров теста.
+    -- p_force_initial: совместимость сигнатуры; для real оба поля всегда с брокера.
+    PERFORM logic_upsert_param(p_logic_id, 'current_balance', v_amount::TEXT, 'money');
+    PERFORM logic_upsert_param(p_logic_id, 'initial_balance', v_amount::TEXT, 'money');
+
+    RETURN v_amount;
+END;
+$$;
+
+COMMENT ON FUNCTION logic_apply_real_account_balances(INTEGER, BOOLEAN) IS
+'Real: initial+current = T-Bank cash или 0. Fake: no-op (остатки из параметров).';
+
+CREATE OR REPLACE FUNCTION logic_sync_all_real_account_balances()
+RETURNS INTEGER
+LANGUAGE plpgsql AS $$
+DECLARE
+    r RECORD;
+    v_n INTEGER := 0;
+BEGIN
+    FOR r IN
+        SELECT l.id
+        FROM logics l
+        JOIN accounts a ON a.id = l.account_id
+        WHERE lower(COALESCE(a.account_type, 'fake')) <> 'fake'
+    LOOP
+        PERFORM logic_apply_real_account_balances(r.id, TRUE);
+        v_n := v_n + 1;
+    END LOOP;
+    RETURN v_n;
+END;
+$$;
+
+COMMENT ON FUNCTION logic_sync_all_real_account_balances() IS
+'Upgrade/install: для всех real-логик выставить остатки с брокера (или 0).';
+
 CREATE OR REPLACE FUNCTION logic_ensure_balance(p_logic_id INTEGER)
 RETURNS NUMERIC
 LANGUAGE plpgsql AS $$
 DECLARE
+    v_account_type VARCHAR;
     v_current NUMERIC;
     v_initial NUMERIC;
 BEGIN
+    SELECT lower(COALESCE(a.account_type, 'fake'))
+    INTO v_account_type
+    FROM logics l
+    JOIN accounts a ON a.id = l.account_id
+    WHERE l.id = p_logic_id;
+
+    -- Реальный счёт: начальный и текущий — с брокера (или 0), не из параметров теста.
+    IF FOUND AND v_account_type <> 'fake' THEN
+        RETURN COALESCE(logic_apply_real_account_balances(p_logic_id, TRUE), 0);
+    END IF;
+
     v_current := get_logic_param_numeric(p_logic_id, 'current_balance', NULL);
     IF v_current IS NOT NULL THEN
         RETURN v_current;
@@ -436,6 +727,9 @@ BEGIN
     RETURN v_initial;
 END;
 $$;
+
+COMMENT ON FUNCTION logic_ensure_balance(INTEGER) IS
+'Fake: параметры initial/current. Real: оба с T-Bank (или 0).';
 
 CREATE OR REPLACE FUNCTION logic_trade_load_date_from(
     p_tf_sec INTEGER,
@@ -747,6 +1041,8 @@ DECLARE
     v_tf_sec INTEGER;
     v_position_size_pct NUMERIC;
     v_max_positions INTEGER;
+    v_max_order_amount NUMERIC;
+    v_sizing_base NUMERIC;
     v_balance NUMERIC;
     v_open_positions INTEGER;
     v_created INTEGER := 0;
@@ -784,10 +1080,13 @@ DECLARE
     v_signal_kind TEXT;
     v_ind_dt TIMESTAMP;
     v_lot_size INTEGER;
+    v_is_futures BOOLEAN;
     v_inversion BOOLEAN;
+    v_eff_inversion BOOLEAN;
     v_eff_side TEXT;
 BEGIN
-    SELECT l.id, l.account_id, a.account_type
+    SELECT l.id, l.account_id, a.account_type,
+           COALESCE(l.portfolio_trading_paused, FALSE) AS portfolio_trading_paused
     INTO v_logic
     FROM logics l
     JOIN accounts a ON a.id = l.account_id
@@ -847,8 +1146,10 @@ BEGIN
 
     v_position_size_pct := get_logic_param_numeric(p_logic_id, 'position_size_pct', 10);
     v_max_positions := GREATEST(1, get_logic_param_numeric(p_logic_id, 'max_open_positions', 5)::INTEGER);
+    v_max_order_amount := get_logic_param_numeric(p_logic_id, 'max_order_amount', NULL);
     v_inversion := get_logic_param_boolean(p_logic_id, 'inversion', FALSE);
     v_balance := logic_ensure_balance(p_logic_id);
+    v_sizing_base := logic_position_sizing_base(p_logic_id, v_tf_id);
     v_open_positions := logic_count_open_positions(p_logic_id);
 
     IF NOT EXISTS (
@@ -867,6 +1168,45 @@ BEGIN
     -- Рейтинг сигнала на логике: проверить прошлые срабатывания на следующей свече
     PERFORM logic_signal_rating_resolve_pending(p_logic_id, v_tf_id, v_closed_bar_dt);
 
+    PERFORM logic_ensure_non_trading_periods(p_logic_id);
+
+    -- EOD: закрыть позиции (кроме фондов) на первой свече вечернего окна / последней свече дня
+    IF logic_is_eod_close_bar(
+        p_logic_id,
+        v_closed_bar_dt,
+        v_last_bar_dt,
+        v_closed_bar_dt + make_interval(secs => v_tf_sec)
+    ) THEN
+        PERFORM logic_close_positions_eod_except_funds(p_logic_id);
+        v_balance := logic_ensure_balance(p_logic_id);
+        v_sizing_base := logic_position_sizing_base(p_logic_id, v_tf_id);
+        v_open_positions := logic_count_open_positions(p_logic_id);
+    END IF;
+
+    IF logic_is_non_trading_dt(p_logic_id, v_closed_bar_dt) THEN
+        PERFORM logic_trade_log(
+            p_logic_id,
+            'trade.non_trading_skip',
+            format('Неторговый период: свеча %s — сигналы пропущены', v_closed_bar_dt),
+            jsonb_build_object('closed_bar', v_closed_bar_dt),
+            NULL,
+            v_tf_id
+        );
+        PERFORM logic_upsert_param(
+            p_logic_id,
+            'last_trade_check_at',
+            to_char(CURRENT_TIMESTAMP, 'YYYY-MM-DD"T"HH24:MI:SS'),
+            'text'
+        );
+        PERFORM logic_upsert_param(
+            p_logic_id,
+            'last_trade_bar_dt',
+            to_char(v_closed_bar_dt, 'YYYY-MM-DD"T"HH24:MI:SS'),
+            'text'
+        );
+        RETURN 0;
+    END IF;
+
     PERFORM logic_trade_log(
         p_logic_id,
         'trade.bar_check',
@@ -877,12 +1217,20 @@ BEGIN
     );
 
     FOR v_sec IN
-        SELECT ls.security_id, COALESCE(ls.real_trading_paused, FALSE) AS real_trading_paused
+        SELECT
+            ls.security_id,
+            COALESCE(ls.real_trading_paused, FALSE) AS real_trading_paused,
+            COALESCE(ls.real_trading_paused_long, FALSE) AS real_trading_paused_long,
+            COALESCE(ls.real_trading_paused_short, FALSE) AS real_trading_paused_short,
+            COALESCE(ls.real_trading_inverted, FALSE) AS real_trading_inverted
         FROM logic_securities ls
         WHERE ls.logic_id = p_logic_id AND ls.is_active = TRUE
+          -- Денежный фонд только для парковки кэша, не для сигналов
+          AND NOT logic_is_cash_fund_security(ls.security_id)
     LOOP
-        v_is_shadow := v_sec.real_trading_paused;
+        v_eff_inversion := (v_inversion <> COALESCE(v_sec.real_trading_inverted, FALSE));
         v_lot_size := logic_security_lot_size(v_sec.security_id);
+        v_is_futures := logic_security_is_futures(v_sec.security_id);
 
         FOR v_grp IN
             SELECT lis.position_event, lis.position_side
@@ -891,6 +1239,19 @@ BEGIN
             GROUP BY lis.position_event, lis.position_side
             ORDER BY lis.position_event, lis.position_side
         LOOP
+            -- Shadow только для просевшей стороны; другая сторона бумаги остаётся боевой.
+            v_is_shadow := COALESCE(v_logic.portfolio_trading_paused, FALSE)
+                OR CASE lower(btrim(COALESCE(v_grp.position_side, '')))
+                    WHEN 'long' THEN v_sec.real_trading_paused_long
+                        OR (v_sec.real_trading_paused
+                            AND NOT v_sec.real_trading_paused_long
+                            AND NOT v_sec.real_trading_paused_short)
+                    WHEN 'short' THEN v_sec.real_trading_paused_short
+                        OR (v_sec.real_trading_paused
+                            AND NOT v_sec.real_trading_paused_long
+                            AND NOT v_sec.real_trading_paused_short)
+                    ELSE v_sec.real_trading_paused
+                END;
             v_all_ok := TRUE;
             v_formulas := NULL;
             v_signal_kind := NULL;
@@ -908,7 +1269,7 @@ BEGIN
             LOOP
                 SELECT * INTO v_eval
                 FROM logic_signal_evaluate_at(
-                    v_sig.id, v_sec.security_id, v_tf_id, v_closed_bar_dt, v_inversion
+                    v_sig.id, v_sec.security_id, v_tf_id, v_closed_bar_dt, v_eff_inversion
                 );
 
                 IF v_eval.close_price IS NULL THEN
@@ -995,7 +1356,7 @@ BEGIN
             END IF;
 
             v_eff_side := lower(COALESCE(v_grp.position_side, 'long'));
-            IF v_inversion THEN
+            IF v_eff_inversion THEN
                 v_eff_side := CASE WHEN v_eff_side = 'long' THEN 'short' ELSE 'long' END;
             END IF;
 
@@ -1016,14 +1377,18 @@ BEGIN
                     IF v_held_long > 0 OR (NOT v_is_shadow AND v_open_positions >= v_max_positions) THEN
                         CONTINUE;
                     END IF;
+                    v_sizing_base := logic_position_sizing_base(p_logic_id, v_tf_id);
                     v_quantity := logic_calc_open_quantity(
-                        v_balance, v_position_size_pct, v_pp, v_lot_size
+                        v_sizing_base, v_position_size_pct, v_pp, v_lot_size, v_max_order_amount
                     );
                     IF v_quantity < v_lot_size THEN
-                        IF v_logic.account_type = 'fake' THEN
+                        -- Фьючерсы: % депозита / цена контракта часто даёт 0 → 1 лот
+                        -- (только при известной базе; акции — без force 1 лот)
+                        IF v_is_futures AND v_sizing_base IS NOT NULL AND v_sizing_base > 0 THEN
+                            v_quantity := v_lot_size;
+                        ELSE
                             CONTINUE;
                         END IF;
-                        v_quantity := v_lot_size;
                     END IF;
                     v_side_id := v_side_open_id;
                     v_action_id := v_action_long_id;
@@ -1041,14 +1406,16 @@ BEGIN
                 IF v_held_short > 0 OR (NOT v_is_shadow AND v_open_positions >= v_max_positions) THEN
                     CONTINUE;
                 END IF;
+                v_sizing_base := logic_position_sizing_base(p_logic_id, v_tf_id);
                 v_quantity := logic_calc_open_quantity(
-                    v_balance, v_position_size_pct, v_pp, v_lot_size
+                    v_sizing_base, v_position_size_pct, v_pp, v_lot_size, v_max_order_amount
                 );
                 IF v_quantity < v_lot_size THEN
-                    IF v_logic.account_type = 'fake' THEN
+                    IF v_is_futures AND v_sizing_base IS NOT NULL AND v_sizing_base > 0 THEN
+                        v_quantity := v_lot_size;
+                    ELSE
                         CONTINUE;
                     END IF;
-                    v_quantity := v_lot_size;
                 END IF;
                 v_side_id := v_side_open_id;
                 v_action_id := v_action_short_id;
@@ -1132,7 +1499,7 @@ BEGIN
                 v_balance := logic_trade_finalize(v_trade_id, v_balance);
                 v_notional := v_quantity * v_pp;
                 v_is_open := v_is_open_event;
-                IF v_grp.position_side = 'long' THEN
+                IF v_eff_side = 'long' THEN
                     v_balance := v_balance + CASE WHEN v_is_open THEN -v_notional ELSE v_notional END;
                 ELSE
                     v_balance := v_balance + CASE WHEN v_is_open THEN v_notional ELSE -v_notional END;
@@ -1145,6 +1512,15 @@ BEGIN
                 PERFORM logic_upsert_param(p_logic_id, 'current_balance', v_balance::TEXT, 'money');
             ELSIF NOT v_is_shadow THEN
                 PERFORM logic_trade_finalize(v_trade_id, v_balance);
+                -- Real: перечитать остаток с брокера (не paper ± notional к миллиону)
+                IF v_logic.account_type <> 'fake' THEN
+                    v_balance := logic_ensure_balance(p_logic_id);
+                END IF;
+                IF v_is_open_event AND v_status <> 'rejected' THEN
+                    v_open_positions := v_open_positions + 1;
+                ELSIF NOT v_is_open_event AND v_status <> 'rejected' THEN
+                    v_open_positions := GREATEST(0, v_open_positions - 1);
+                END IF;
             ELSE
                 PERFORM logic_trade_finalize(v_trade_id, NULL);
             END IF;
@@ -1160,6 +1536,9 @@ BEGIN
                     'status', v_status,
                     'position_event', v_grp.position_event,
                     'position_side', v_grp.position_side,
+                    'effective_side', v_eff_side,
+                    'global_inversion', v_inversion,
+                    'security_inversion', COALESCE(v_sec.real_trading_inverted, FALSE),
                     'signal_kind', v_signal_kind,
                     'formula', v_formulas,
                     'bar_dt', v_ind_dt
@@ -1253,6 +1632,7 @@ BEGIN
         v_processed := v_processed + 1;
         v_total_stops := v_total_stops + process_logic_stops(v_logic.id);
         v_total_created := v_total_created + process_logic_trades(v_logic.id);
+        PERFORM logic_park_excess_cash(v_logic.id);
     END LOOP;
 
     PERFORM pg_advisory_unlock(hashtext('multilogictrade_run_trade_cycle'));

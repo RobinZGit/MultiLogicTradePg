@@ -1,5 +1,6 @@
 import {
   buildEquityPoints,
+  buildPortfolioStopMarkers,
   buildShadedDisabledRanges,
   buildStopMarkers,
   buildTradeMarkers,
@@ -45,6 +46,139 @@ function trade(partial: Partial<LogicTradeRow>): LogicTradeRow {
 }
 
 describe('backtest-chart-overlays', () => {
+  it('papersWithTrades pins cash fund at top even without trades', () => {
+    const rows = papersWithTrades(
+      [
+        {
+          id: 1,
+          logic_id: 1,
+          security_id: 10,
+          security_name: 'Sber',
+          security_prefix: 'SBER',
+          status: 'filled',
+          bar_dt: '2026-01-02T10:00:00',
+          executed_at: '2026-01-02T10:00:00',
+          financial_result: 1,
+          commission: 0,
+          is_shadow: false,
+          is_test: true,
+        } as never,
+      ],
+      '2026-01-01',
+      '2026-01-31',
+      {
+        security_id: 99,
+        security_name: 'TMON fund',
+        security_prefix: 'TMON',
+        pnl: 0,
+        commission: 0,
+        trade_count: 0,
+        open_qty: 0,
+        last_price: null,
+        position_value: 0,
+      }
+    );
+    expect(rows[0].security_prefix).toBe('TMON');
+    expect(rows[0].open_qty).toBe(0);
+    expect(rows[0].position_value).toBe(0);
+    expect(rows.some((r) => r.security_prefix === 'SBER')).toBeTrue();
+  });
+
+  it('papersWithTrades sums open remaining qty for cash fund parks', () => {
+    const rows = papersWithTrades(
+      [
+        trade({
+          security_id: 327,
+          security_name: 'TMON',
+          security_prefix: 'TMON',
+          side_name: 'Open',
+          action_name: 'Long',
+          quantity: 16,
+          remaining_qty: 16,
+          financial_result: null,
+          bar_dt: '2026-06-28 10:00:00',
+          executed_at: '2026-06-28 10:00:00',
+        }),
+        trade({
+          id: 2,
+          security_id: 327,
+          security_name: 'TMON',
+          security_prefix: 'TMON',
+          side_name: 'Open',
+          action_name: 'Long',
+          quantity: 5,
+          remaining_qty: 5,
+          financial_result: null,
+          bar_dt: '2026-06-28 11:00:00',
+          executed_at: '2026-06-28 11:00:00',
+        }),
+      ],
+      '2026-06-28',
+      '2026-06-28'
+    );
+    expect(rows.length).toBe(1);
+    expect(rows[0].open_qty).toBe(21);
+    expect(rows[0].pnl).toBe(0);
+    expect(rows[0].trade_count).toBe(2);
+    expect(rows[0].last_price).toBe(100);
+    expect(rows[0].position_value).toBe(2100);
+  });
+
+  it('papersWithTrades merges pin when security_id types differ (string vs number)', () => {
+    const rows = papersWithTrades(
+      [
+        trade({
+          security_id: 327 as never,
+          security_name: 'TMON',
+          security_prefix: 'TMON',
+          side_name: 'Open',
+          action_name: 'Long',
+          quantity: 70,
+          remaining_qty: 70,
+          price: 101.5,
+          financial_result: null,
+          bar_dt: '2026-06-28 10:00:00',
+          executed_at: '2026-06-28 10:00:00',
+        }),
+      ],
+      '2026-06-28',
+      '2026-06-28',
+      {
+        security_id: '327' as never,
+        security_name: 'Т-Капитал денежный рынок (TMON)',
+        security_prefix: 'TMON',
+        pnl: 0,
+        commission: 0,
+        trade_count: 0,
+        open_qty: 0,
+        last_price: null,
+        position_value: 0,
+      }
+    );
+    expect(rows.length).toBe(1);
+    expect(rows[0].open_qty).toBe(70);
+    expect(rows[0].security_prefix).toBe('TMON');
+    expect(rows[0].position_value).toBe(70 * 101.5);
+  });
+
+  it('papersWithTrades accepts ISO date_from/date_to without dropping trades', () => {
+    const rows = papersWithTrades(
+      [
+        trade({
+          security_id: 1,
+          security_name: 'A',
+          security_prefix: 'A',
+          bar_dt: '2026-06-28 02:00:00',
+          financial_result: 10,
+        }),
+      ],
+      '2026-06-28T00:00:00.000Z',
+      '2026-06-28T00:00:00.000Z'
+    );
+    expect(rows.length).toBe(1);
+    expect(rows[0].security_prefix).toBe('A');
+  });
+
   it('papersWithTrades returns only securities with trades in period', () => {
     const rows = papersWithTrades(
       [
@@ -101,6 +235,43 @@ describe('backtest-chart-overlays', () => {
     ]);
     expect(markers.length).toBe(2);
     expect(markers[0].ruleKind).toBe('stop_loss');
+    expect(markers[1].ruleKind).toBe('take_profit');
+  });
+
+  it('buildPortfolioStopMarkers keeps only portfolio SL/TP and dedupes by bar', () => {
+    const markers = buildPortfolioStopMarkers([
+      trade({
+        side_name: 'Close',
+        trade_reason: 'stop_loss:security (2%)',
+        price: 95,
+      }),
+      trade({
+        id: 2,
+        security_id: 11,
+        bar_dt: '2026-04-11 12:00:00',
+        side_name: 'Close',
+        trade_reason: 'stop_loss:portfolio (3%)',
+        price: 100,
+      }),
+      trade({
+        id: 3,
+        security_id: 12,
+        bar_dt: '2026-04-11 12:00:00',
+        side_name: 'Close',
+        trade_reason: 'stop_loss:portfolio (3%)',
+        price: 101,
+      }),
+      trade({
+        id: 4,
+        bar_dt: '2026-04-12 15:00:00',
+        side_name: 'Close',
+        trade_reason: 'take_profit:portfolio (5%)',
+        price: 120,
+      }),
+    ]);
+    expect(markers.length).toBe(2);
+    expect(markers[0].ruleKind).toBe('stop_loss');
+    expect(markers[0].label).toContain('portfolio');
     expect(markers[1].ruleKind).toBe('take_profit');
   });
 

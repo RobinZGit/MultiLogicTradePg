@@ -1,9 +1,28 @@
+/**
+ * HTTP-клиент вкладки «Торговые операции».
+ * Все методы — обёртки над Express `/api/logics*`, `/api/logic-*`, бэктестом и рейтингом.
+ * Смысл полей и сценариев — в справке (иконка книги в шапке) и в COMMENT ON SQL-функций.
+ */
 import { Injectable } from '@angular/core';
 import { HttpClient } from '@angular/common/http';
 import { Observable, map } from 'rxjs';
 import { AppConfigService } from './app-config.service';
-import { LogicIndicatorSignalRow, LogicRow, LogicParamsResponse, LogicSecurityRow, LogicStopRow, LogicTradingParamsPayload, LogicTradingParamsResponse } from '../models/logic.model';
+import {
+  LogicIndicatorSignalRow,
+  LogicNonTradingIntervalPayload,
+  LogicNonTradingPeriodsResponse,
+  LogicRow,
+  LogicParamsResponse,
+  LogicSecurityRow,
+  LogicStopRow,
+  LogicTradingParamsPayload,
+  LogicTradingParamsResponse,
+} from '../models/logic.model';
 import { LogicTradeLotRow, LogicTradeRow } from '../shared/logic-trade';
+import type {
+  LogicStopScopeType,
+  LogicStopValueUnit,
+} from '../shared/logic-stop';
 import type { BacktestRunStatus } from '../logics/logic-positions-panel.component';
 import { LogicPayload } from '../models/lookup.model';
 
@@ -20,6 +39,81 @@ export interface SignalRatingPrecalcStatus {
   finished_at: string | null;
 }
 
+export interface ProcessStatusItem {
+  type: string;
+  label: string;
+  status: string;
+  detail?: string | null;
+  wait?: string | null;
+  age?: string | null;
+  progress_pct?: number | null;
+  logic_id?: number | null;
+  started_at?: string | null;
+}
+
+/** Portable export of logics (no backtests / trades). */
+export interface LogicExportBundle {
+  format: string;
+  version: number;
+  exported_at?: string;
+  logics: Array<{
+    name: string;
+    note?: string | null;
+    is_enabled?: boolean;
+    account?: { account_code?: string; broker_code?: string };
+    params?: Array<{ param_key: string; param_value: string; value_type: string }>;
+    signals?: Array<Record<string, unknown>>;
+    stops?: Array<Record<string, unknown>>;
+    securities?: Array<{
+      prefix?: string;
+      instrument_market?: string;
+      security_name?: string;
+      display_order?: number;
+      is_active?: boolean;
+    }>;
+  }>;
+}
+
+/** Full trades + logic context dump for AI/debug (test or live). */
+export interface LogicTradesExportBundle {
+  format: string;
+  version: number;
+  exported_at: string;
+  is_test: boolean;
+  logic: {
+    id: number;
+    name: string;
+    note: string | null;
+    is_enabled: boolean;
+    account: { account_code?: string; broker_code?: string } | null;
+    params: Array<{ param_key: string; param_value: string; value_type: string }>;
+    signals: Array<Record<string, unknown>>;
+    stops: Array<Record<string, unknown>>;
+    securities: Array<Record<string, unknown>>;
+  };
+  trading_params: Record<string, unknown>;
+  non_trading_periods: {
+    use_non_trading_periods: boolean;
+    intervals: Array<Record<string, unknown>>;
+  };
+  run_id: number | null;
+  run: Record<string, unknown> | null;
+  counts: Record<string, unknown>;
+  trades: LogicTradeRow[];
+  lots: LogicTradeLotRow[];
+  note?: string;
+}
+
+export interface LogicImportResult {
+  imported: Array<{
+    id: number;
+    name: string;
+    source_name: string;
+    securities_count: number;
+  }>;
+  warnings: string[];
+}
+
 @Injectable({ providedIn: 'root' })
 export class LogicsService {
   constructor(
@@ -27,14 +121,24 @@ export class LogicsService {
     private readonly appConfig: AppConfigService
   ) {}
 
+  /** Список логик с полями счёта/брокера для главной таблицы. */
   getLogics(): Observable<LogicRow[]> {
     return this.http.get<LogicRow[]>(`${this.appConfig.apiUrl}/logics`);
   }
 
+  /** Активные процессы (бэктесты, runner, pg_stat_activity) для полоски наверху. */
+  getProcesses(): Observable<{ rows: ProcessStatusItem[] }> {
+    return this.http.get<{ rows: ProcessStatusItem[] }>(
+      `${this.appConfig.apiUrl}/processes`
+    );
+  }
+
+  /** Создать логику (редактор «+»). */
   createLogic(payload: LogicPayload): Observable<LogicRow> {
     return this.http.post<LogicRow>(`${this.appConfig.apiUrl}/logics`, payload);
   }
 
+  /** Сохранить карточку логики (имя, счёт, примечание…). */
   updateLogic(id: number, payload: LogicPayload): Observable<LogicRow> {
     return this.http.put<LogicRow>(
       `${this.appConfig.apiUrl}/logics/${id}`,
@@ -42,6 +146,39 @@ export class LogicsService {
     );
   }
 
+  /**
+   * Копия логики: params/signals/stops/securities, без сделок.
+   * Имя «… copy», is_enabled=false.
+   */
+  copyLogic(id: number): Observable<LogicRow> {
+    return this.http.post<LogicRow>(
+      `${this.appConfig.apiUrl}/logics/${id}/copy`,
+      {}
+    );
+  }
+
+  /**
+   * Экспорт выбранных логик (JSON): карточка, params, signals, stops, papers.
+   * Без тестов/сделок.
+   */
+  exportLogics(ids: number[]): Observable<LogicExportBundle> {
+    return this.http.post<LogicExportBundle>(
+      `${this.appConfig.apiUrl}/logics/export`,
+      { ids }
+    );
+  }
+
+  /** Импорт JSON-bundle: те же бумаги и настройки; тесты пустые. */
+  importLogics(bundle: LogicExportBundle): Observable<LogicImportResult> {
+    return this.http.post<LogicImportResult>(
+      `${this.appConfig.apiUrl}/logics/import`,
+      bundle
+    );
+  }
+
+  /**
+   * Вкл/выкл боя. Может запустить warmup_pretest или предрасчёт рейтинга.
+   */
   updateLogicEnabled(
     id: number,
     is_enabled: boolean
@@ -49,11 +186,23 @@ export class LogicsService {
     id: number;
     is_enabled: boolean;
     rating_precalc?: SignalRatingPrecalcStatus;
+    warmup_pretest?: {
+      started: boolean;
+      run_id: number;
+      date_from: string;
+      date_to: string;
+    };
   }> {
     return this.http.patch<{
       id: number;
       is_enabled: boolean;
       rating_precalc?: SignalRatingPrecalcStatus;
+      warmup_pretest?: {
+        started: boolean;
+        run_id: number;
+        date_from: string;
+        date_to: string;
+      };
     }>(`${this.appConfig.apiUrl}/logics/${id}`, { is_enabled });
   }
 
@@ -86,6 +235,49 @@ export class LogicsService {
   deleteLogic(id: number): Observable<{ ok: boolean; id: number }> {
     return this.http.delete<{ ok: boolean; id: number }>(
       `${this.appConfig.apiUrl}/logics/${id}`
+    );
+  }
+
+  getNonTradingPeriods(logicId: number): Observable<LogicNonTradingPeriodsResponse> {
+    return this.http.get<LogicNonTradingPeriodsResponse>(
+      `${this.appConfig.apiUrl}/logics/${logicId}/non-trading-periods`
+    );
+  }
+
+  applyMoexNonTradingPeriods(
+    logicId: number
+  ): Observable<LogicNonTradingPeriodsResponse> {
+    return this.http.post<LogicNonTradingPeriodsResponse>(
+      `${this.appConfig.apiUrl}/logics/${logicId}/non-trading-periods/moex-defaults`,
+      {}
+    );
+  }
+
+  addNonTradingPeriod(
+    logicId: number,
+    payload: LogicNonTradingIntervalPayload
+  ): Observable<LogicNonTradingPeriodsResponse> {
+    return this.http.post<LogicNonTradingPeriodsResponse>(
+      `${this.appConfig.apiUrl}/logics/${logicId}/non-trading-periods`,
+      payload
+    );
+  }
+
+  updateNonTradingPeriod(
+    intervalId: number,
+    payload: LogicNonTradingIntervalPayload
+  ): Observable<LogicNonTradingPeriodsResponse> {
+    return this.http.patch<LogicNonTradingPeriodsResponse>(
+      `${this.appConfig.apiUrl}/logic-non-trading-intervals/${intervalId}`,
+      payload
+    );
+  }
+
+  deleteNonTradingPeriod(
+    intervalId: number
+  ): Observable<LogicNonTradingPeriodsResponse & { ok?: boolean }> {
+    return this.http.delete<LogicNonTradingPeriodsResponse & { ok?: boolean }>(
+      `${this.appConfig.apiUrl}/logic-non-trading-intervals/${intervalId}`
     );
   }
 
@@ -140,9 +332,9 @@ export class LogicsService {
   createLogicStop(body: {
     logic_id: number;
     rule_kind: 'stop_loss' | 'take_profit';
-    scope_type: 'security' | 'security_resume' | 'portfolio';
+    scope_type: LogicStopScopeType;
     value: number;
-    value_unit: 'percent' | 'atr';
+    value_unit: LogicStopValueUnit;
   }): Observable<LogicStopRow> {
     return this.http.post<LogicStopRow>(
       `${this.appConfig.apiUrl}/logic-stops`,
@@ -153,9 +345,9 @@ export class LogicsService {
   updateLogicStop(
     id: number,
     body: {
-      scope_type?: 'security' | 'security_resume' | 'portfolio';
+      scope_type?: LogicStopScopeType;
       value?: number;
-      value_unit?: 'percent' | 'atr';
+      value_unit?: LogicStopValueUnit;
       is_active?: boolean;
     }
   ): Observable<LogicStopRow> {
@@ -194,16 +386,43 @@ export class LogicsService {
     );
   }
 
-  getLogicTrades(logicId: number, limit = 100, isTest?: boolean): Observable<LogicTradeRow[]> {
+  getLogicTrades(
+    logicId: number,
+    limit = 100,
+    isTest?: boolean,
+    runId?: number | null
+  ): Observable<LogicTradeRow[]> {
     const params: Record<string, string> = {
       logic_id: String(logicId),
       limit: String(limit),
     };
     if (isTest === true) params['is_test'] = '1';
     if (isTest === false) params['is_test'] = '0';
+    if (runId != null && Number.isFinite(Number(runId)) && Number(runId) > 0) {
+      params['run_id'] = String(runId);
+    }
     return this.http.get<LogicTradeRow[]>(`${this.appConfig.apiUrl}/logic-trades`, {
       params,
     });
+  }
+
+  /** Full dump for analysis: open/close/shadow/all statuses + lots. */
+  exportLogicTrades(
+    logicId: number,
+    isTest: boolean,
+    runId?: number | null
+  ): Observable<LogicTradesExportBundle> {
+    const params: Record<string, string> = {
+      logic_id: String(logicId),
+      is_test: isTest ? '1' : '0',
+    };
+    if (runId != null && Number.isFinite(Number(runId)) && Number(runId) > 0) {
+      params['run_id'] = String(runId);
+    }
+    return this.http.get<LogicTradesExportBundle>(
+      `${this.appConfig.apiUrl}/logic-trades/export`,
+      { params }
+    );
   }
 
   getLogicTradesPnlSummary(isTest = true): Observable<{
@@ -213,6 +432,8 @@ export class LogicsService {
       financial_result: number;
       commission: number;
       trade_count: number;
+      date_from?: string | null;
+      date_to?: string | null;
     }>;
   }> {
     return this.http.get<{
@@ -222,6 +443,8 @@ export class LogicsService {
         financial_result: number;
         commission: number;
         trade_count: number;
+        date_from?: string | null;
+        date_to?: string | null;
       }>;
     }>(`${this.appConfig.apiUrl}/logic-trades/pnl-summary`, {
       params: { is_test: isTest ? '1' : '0' },
@@ -268,6 +491,13 @@ export class LogicsService {
     return this.http.get<BacktestRunStatus | null>(
       `${this.appConfig.apiUrl}/logic-backtest/status`,
       { params }
+    );
+  }
+
+  /** In-progress backtests (recover UI after leaving the operations tab). */
+  getActiveBacktests(): Observable<{ rows: BacktestRunStatus[] }> {
+    return this.http.get<{ rows: BacktestRunStatus[] }>(
+      `${this.appConfig.apiUrl}/logic-backtest/active`
     );
   }
 

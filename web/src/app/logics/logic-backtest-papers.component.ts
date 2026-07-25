@@ -28,25 +28,20 @@ import { SecuritiesService } from '../services/securities.service';
 import { TechLogService } from '../services/tech-log.service';
 import { LogicTradeRow } from '../shared/logic-trade';
 import {
+  applyPaperMarkValue,
   buildEquityPoints,
   buildShadedDisabledRanges,
   buildStopMarkers,
   buildTradeMarkers,
   clipCandlesForBacktest,
   dtKey,
+  PaperListRow,
   papersWithTrades,
   tradeDtWindow,
   tradesForSecurity,
 } from './backtest-chart-overlays';
 
-export interface BacktestPaperRow {
-  security_id: number;
-  security_name: string;
-  security_prefix: string | null;
-  pnl: number;
-  commission: number;
-  trade_count: number;
-}
+export type BacktestPaperRow = PaperListRow;
 
 function humanizeChartLoadError(err: unknown): string {
   const e = err as { name?: string; message?: string; error?: { error?: string } };
@@ -65,7 +60,10 @@ function paperTradesFingerprint(trades: LogicTradeRow[]): string {
   if (trades.length === 0) return '0';
   const first = trades[0];
   const last = trades[trades.length - 1];
-  return `${trades.length}:${first.id}:${last.id}:${last.bar_dt}:${last.financial_result ?? ''}`;
+  const remHint = trades
+    .filter((t) => t.side_name === 'Open')
+    .reduce((s, t) => s + Number(t.remaining_qty ?? t.quantity ?? 0), 0);
+  return `${trades.length}:${first.id}:${last.id}:${last.bar_dt}:${last.financial_result ?? ''}:${remHint}`;
 }
 
 interface PaperOverlays {
@@ -122,6 +120,8 @@ export class LogicBacktestPapersComponent implements OnChanges, OnDestroy {
   private readonly cdr = inject(ChangeDetectorRef);
   private readonly techLog = inject(TechLogService);
 
+  /** test — бэктест; live — боевые сделки (те же lazy/OnPush ограничения). */
+  @Input() mode: 'test' | 'live' = 'test';
   @Input() logicId: number | null = null;
   @Input() runId: number | null = null;
   @Input() reloadToken: string | number | null = null;
@@ -132,6 +132,12 @@ export class LogicBacktestPapersComponent implements OnChanges, OnDestroy {
   @Input() signalIndicatorIds: number[] = [];
   /** Начальный депозит логики — для % у PnL бумаги. */
   @Input() initialBalance: number | null = null;
+  /** Денежный фонд (TMON/LQDT/SBMM) — всегда первой строкой в списке бумаг. */
+  @Input() pinnedPaper: BacktestPaperRow | null = null;
+
+  get isLive(): boolean {
+    return this.mode === 'live';
+  }
 
   expandedPapers = false;
   /** Режим разворота: свечной график или эквити. */
@@ -147,6 +153,7 @@ export class LogicBacktestPapersComponent implements OnChanges, OnDestroy {
   private rangeTimers = new Map<number, ReturnType<typeof setTimeout>>();
   private chartLoadSubs = new Map<number, Subscription>();
   private subs = new Subscription();
+  private markPriceSubs = new Subscription();
   private uniqueIndicatorIds: number[] = [];
 
   ngOnChanges(changes: SimpleChanges): void {
@@ -157,13 +164,17 @@ export class LogicBacktestPapersComponent implements OnChanges, OnDestroy {
     }
     const periodChanged =
       !!changes['dateFrom'] || !!changes['dateTo'] || !!changes['runId'];
-    if (changes['trades'] || periodChanged) {
+    if (changes['trades'] || periodChanged || changes['pinnedPaper']) {
       this.rebuildPaperCache({ reloadCharts: periodChanged });
+    } else if (changes['reloadToken'] && this.expandedPapers) {
+      // Бой: poll обновляет token — подтянуть текущие цены для «сум.» / «цена».
+      this.refreshOpenMarkValues();
     }
   }
 
   ngOnDestroy(): void {
     this.subs.unsubscribe();
+    this.markPriceSubs.unsubscribe();
     for (const t of this.rangeTimers.values()) clearTimeout(t);
   }
 
@@ -173,6 +184,8 @@ export class LogicBacktestPapersComponent implements OnChanges, OnDestroy {
     this.expandedPapers = !this.expandedPapers;
     if (this.expandedPapers && this.paperRows.length === 0) {
       this.rebuildPaperCache({ reloadCharts: false });
+    } else if (this.expandedPapers) {
+      this.refreshOpenMarkValues();
     }
   }
 
@@ -332,6 +345,15 @@ export class LogicBacktestPapersComponent implements OnChanges, OnDestroy {
     return n.toFixed(2);
   }
 
+  formatOpenQty(value: number | null | undefined): string {
+    const n = Number(value);
+    if (!Number.isFinite(n) || n === 0) return '0';
+    const sign = n > 0 ? '+' : '−';
+    const abs = Math.abs(n);
+    const text = Number.isInteger(abs) ? String(abs) : abs.toFixed(4).replace(/\.?0+$/, '');
+    return `${sign}${text}`;
+  }
+
   onLoadOlder(securityId: number): void {
     const tfId = this.resolveTimeframeId(securityId);
     const st = this.chartState(securityId);
@@ -394,7 +416,15 @@ export class LogicBacktestPapersComponent implements OnChanges, OnDestroy {
   }
 
   private rebuildPaperCache(opts: { reloadCharts: boolean } = { reloadCharts: false }): void {
-    this.paperRows = papersWithTrades(this.trades, this.dateFrom, this.dateTo);
+    this.paperRows = papersWithTrades(
+      this.trades,
+      this.dateFrom,
+      this.dateTo,
+      this.pinnedPaper
+    );
+    if (this.expandedPapers) {
+      this.refreshOpenMarkValues();
+    }
     for (const paper of this.paperRows) {
       const secTrades = tradesForSecurity(
         this.trades,
@@ -454,6 +484,46 @@ export class LogicBacktestPapersComponent implements OnChanges, OnDestroy {
         st.status = `${st.candles.length} свечей · сделок: ${ov.markers.length} · стопов: ${ov.stops.length}`;
       }
     }
+  }
+
+  /** Подтянуть close свечи периода/рынка → «в портф.» = |ост.| × цена. */
+  private refreshOpenMarkValues(): void {
+    this.markPriceSubs.unsubscribe();
+    this.markPriceSubs = new Subscription();
+    const before = this.markPriceBeforeExclusive();
+    for (const paper of this.paperRows) {
+      if (paper.open_qty === 0) continue;
+      const secId = paper.security_id;
+      const tfId = this.resolveTimeframeId(secId);
+      if (tfId == null) continue;
+      const sub = this.securitiesApi
+        .getPrices(secId, tfId, 1, before ?? undefined)
+        .pipe(catchError(() => of([] as PriceCandle[])))
+        .subscribe((candles) => {
+          const px = Number(candles[candles.length - 1]?.close_price);
+          if (!Number.isFinite(px) || px <= 0) return;
+          const row = this.paperRows.find((r) => r.security_id === secId);
+          if (!row || row.open_qty === 0) return;
+          applyPaperMarkValue(row, px);
+          this.cdr.markForCheck();
+        });
+      this.markPriceSubs.add(sub);
+    }
+  }
+
+  /** Upper bound for GET /prices (dt < before): конец периода теста или null (live/latest). */
+  private markPriceBeforeExclusive(): string | null {
+    if (!this.isLive && this.dateTo) {
+      const day = String(this.dateTo).trim().slice(0, 10);
+      if (/^\d{4}-\d{2}-\d{2}$/.test(day)) {
+        const d = new Date(`${day}T00:00:00.000Z`);
+        if (!Number.isNaN(d.getTime())) {
+          d.setUTCDate(d.getUTCDate() + 1);
+          return `${d.toISOString().slice(0, 10)} 00:00:00`;
+        }
+      }
+    }
+    return null;
   }
 
   private ensureChartLoaded(securityId: number): void {

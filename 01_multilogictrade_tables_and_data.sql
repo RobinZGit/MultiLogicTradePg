@@ -1,6 +1,9 @@
 -- ============================================
 -- MultiLogicTrade — шаг 1: таблицы и справочники
--- Версия: v44 (идемпотентный запуск)
+-- Версия: v47 (идемпотентный запуск)
+-- v47: +8 контртренд OsEngine Custom (прокси на calc-индикаторы; без DELETE)
+-- v46: неторговые периоды MOEX; close_positions_eod; use_non_trading_periods
+-- v45: +5 тренд +10 контртренд OsEngine; seed без DELETE (INSERT IF NOT EXISTS / DO NOTHING)
 -- v44: logics.note — примечание; +5 контртрендовых OsEngine; подписи типа стратегии у seed
 -- v43c: logic_trades.run_id — привязка тестовых сделок к прогону (изоляция финреза)
 -- v43: комиссия default 0.03; L1–L4 из MultiLogicTradeA; LINREG/ADX/CCI calc
@@ -41,7 +44,10 @@ DO $$
 BEGIN
     ALTER TABLE logic_stops DROP CONSTRAINT IF EXISTS logic_stops_scope_type_check;
     ALTER TABLE logic_stops ADD CONSTRAINT logic_stops_scope_type_check
-        CHECK (scope_type IN ('security', 'security_resume', 'portfolio'));
+        CHECK (scope_type IN (
+            'security', 'security_resume', 'security_inversion', 'portfolio', 'portfolio_resume',
+            'portfolio_ltp_renew', 'security_ltp_renew'
+        ));
 EXCEPTION
     WHEN undefined_table THEN NULL;
     WHEN duplicate_object THEN NULL;
@@ -74,7 +80,10 @@ DO $$
 BEGIN
     ALTER TABLE logic_stops DROP CONSTRAINT IF EXISTS logic_stops_scope_type_check;
     ALTER TABLE logic_stops ADD CONSTRAINT logic_stops_scope_type_check
-        CHECK (scope_type IN ('security', 'security_resume', 'portfolio'));
+        CHECK (scope_type IN (
+            'security', 'security_resume', 'security_inversion', 'portfolio', 'portfolio_resume',
+            'portfolio_ltp_renew', 'security_ltp_renew'
+        ));
 EXCEPTION
     WHEN undefined_table THEN NULL;
     WHEN duplicate_object THEN NULL;
@@ -117,6 +126,13 @@ CREATE TABLE IF NOT EXISTS security_types (
     id SERIAL PRIMARY KEY,
     name VARCHAR(50) NOT NULL UNIQUE
 );
+-- Upgrade existing DBs: CREATE IF NOT EXISTS does not add columns; keep in sync with CREATE above.
+ALTER TABLE security_types ADD COLUMN IF NOT EXISTS name VARCHAR(50);
+
+-- Upgrade existing DBs: CREATE IF NOT EXISTS does not add columns; keep in sync with CREATE above.
+
+
+
 
 INSERT INTO security_types (name) VALUES
     ('Stock'),
@@ -146,6 +162,13 @@ CREATE TABLE IF NOT EXISTS exchanges (
     id SERIAL PRIMARY KEY,
     name VARCHAR(50) NOT NULL UNIQUE
 );
+-- Upgrade existing DBs: CREATE IF NOT EXISTS does not add columns; keep in sync with CREATE above.
+ALTER TABLE exchanges ADD COLUMN IF NOT EXISTS name VARCHAR(50);
+
+-- Upgrade existing DBs: CREATE IF NOT EXISTS does not add columns; keep in sync with CREATE above.
+
+
+
 
 INSERT INTO exchanges (name) VALUES ('MOEX'), ('SPB')
 ON CONFLICT (name) DO NOTHING;
@@ -161,8 +184,16 @@ CREATE TABLE IF NOT EXISTS securities (
     security_type_id INTEGER REFERENCES security_types(id),
     lot_size INTEGER NOT NULL DEFAULT 1 CHECK (lot_size >= 1)
 );
+-- Upgrade existing DBs: CREATE IF NOT EXISTS does not add columns; keep in sync with CREATE above.
+ALTER TABLE securities ADD COLUMN IF NOT EXISTS name VARCHAR(200);
+ALTER TABLE securities ADD COLUMN IF NOT EXISTS security_type_id INTEGER REFERENCES security_types(id);
+ALTER TABLE securities ADD COLUMN IF NOT EXISTS lot_size INTEGER NOT NULL DEFAULT 1 CHECK (lot_size >= 1);
 
-ALTER TABLE securities ADD COLUMN IF NOT EXISTS lot_size INTEGER NOT NULL DEFAULT 1;
+-- Upgrade existing DBs: CREATE IF NOT EXISTS does not add columns; keep in sync with CREATE above.
+
+
+
+
 ALTER TABLE securities DROP CONSTRAINT IF EXISTS securities_lot_size_check;
 ALTER TABLE securities ADD CONSTRAINT securities_lot_size_check CHECK (lot_size >= 1);
 
@@ -190,6 +221,18 @@ CREATE TABLE IF NOT EXISTS security_prefixes (
     tbank_figi VARCHAR(50),
     note VARCHAR(200)
 );
+-- Upgrade existing DBs: CREATE IF NOT EXISTS does not add columns; keep in sync with CREATE above.
+ALTER TABLE security_prefixes ADD COLUMN IF NOT EXISTS security_id INTEGER REFERENCES securities(id) ON DELETE CASCADE;
+ALTER TABLE security_prefixes ADD COLUMN IF NOT EXISTS exchange_id INTEGER REFERENCES exchanges(id) ON DELETE CASCADE;
+ALTER TABLE security_prefixes ADD COLUMN IF NOT EXISTS prefix VARCHAR(50);
+ALTER TABLE security_prefixes ADD COLUMN IF NOT EXISTS instrument_market VARCHAR(20) NOT NULL DEFAULT 'stock' CHECK (instrument_market IN ('stock', 'futures', 'bonds', 'index', 'other'));
+ALTER TABLE security_prefixes ADD COLUMN IF NOT EXISTS tbank_figi VARCHAR(50);
+ALTER TABLE security_prefixes ADD COLUMN IF NOT EXISTS note VARCHAR(200);
+
+-- Upgrade existing DBs: CREATE IF NOT EXISTS does not add columns; keep in sync with CREATE above.
+
+
+
 
 UPDATE security_prefixes SET instrument_market = 'stock' WHERE instrument_market IS NULL;
 
@@ -347,6 +390,34 @@ ON CONFLICT (security_id, exchange_id) DO UPDATE SET
     tbank_figi = COALESCE(EXCLUDED.tbank_figi, security_prefixes.tbank_figi),
     note = EXCLUDED.note;
 
+-- ============================================
+-- Денежные фонды (парк кэша): TMON / LQDT / SBMM
+-- ============================================
+INSERT INTO securities (name, security_type_id, lot_size)
+SELECT v.name, st.id, 1
+FROM (VALUES
+    ('Т-Капитал денежный рынок (TMON)', 'ETF'),
+    ('ВИМ Ликвидность (LQDT)', 'ETF'),
+    ('Сбер Первый / Сберегательный (SBMM)', 'ETF')
+) AS v(name, type_name)
+JOIN security_types st ON st.name = v.type_name
+ON CONFLICT (name) DO NOTHING;
+
+INSERT INTO security_prefixes (security_id, exchange_id, prefix, instrument_market, tbank_figi, note)
+SELECT s.id, e.id, v.prefix, 'other', NULL, v.note
+FROM exchanges e
+CROSS JOIN (VALUES
+    ('Т-Капитал денежный рынок (TMON)', 'TMON', 'БПИФ денежного рынка; парковка кэша'),
+    ('ВИМ Ликвидность (LQDT)', 'LQDT', 'БПИФ денежного рынка; парковка кэша'),
+    ('Сбер Первый / Сберегательный (SBMM)', 'SBMM', 'БПИФ денежного рынка; парковка кэша')
+) AS v(security_name, prefix, note)
+JOIN securities s ON s.name = v.security_name
+WHERE e.name = 'MOEX'
+ON CONFLICT (security_id, exchange_id) DO UPDATE SET
+    prefix = EXCLUDED.prefix,
+    instrument_market = EXCLUDED.instrument_market,
+    note = EXCLUDED.note;
+
 -- Лотность акций MOEX (штук в лоте TQBR; фьючерсы — 1 контракт)
 UPDATE securities s
 SET lot_size = v.lot
@@ -375,6 +446,16 @@ CREATE TABLE IF NOT EXISTS timeframes (
     sec INTEGER NOT NULL CHECK (sec > 0),
     is_active BOOLEAN NOT NULL DEFAULT TRUE
 );
+-- Upgrade existing DBs: CREATE IF NOT EXISTS does not add columns; keep in sync with CREATE above.
+ALTER TABLE timeframes ADD COLUMN IF NOT EXISTS tf VARCHAR(20);
+ALTER TABLE timeframes ADD COLUMN IF NOT EXISTS full_name VARCHAR(50);
+ALTER TABLE timeframes ADD COLUMN IF NOT EXISTS sec INTEGER CHECK (sec > 0);
+ALTER TABLE timeframes ADD COLUMN IF NOT EXISTS is_active BOOLEAN NOT NULL DEFAULT TRUE;
+
+-- Upgrade existing DBs: CREATE IF NOT EXISTS does not add columns; keep in sync with CREATE above.
+
+
+
 
 INSERT INTO timeframes (tf, full_name, sec, is_active) VALUES
     ('M1', '1 минута', 60, TRUE), ('M2', '2 минуты', 120, TRUE), ('M3', '3 минуты', 180, TRUE),
@@ -404,6 +485,16 @@ CREATE TABLE IF NOT EXISTS brokers (
     api_url VARCHAR(255),
     is_active BOOLEAN NOT NULL DEFAULT TRUE
 );
+-- Upgrade existing DBs: CREATE IF NOT EXISTS does not add columns; keep in sync with CREATE above.
+ALTER TABLE brokers ADD COLUMN IF NOT EXISTS code VARCHAR(50);
+ALTER TABLE brokers ADD COLUMN IF NOT EXISTS name VARCHAR(100);
+ALTER TABLE brokers ADD COLUMN IF NOT EXISTS api_url VARCHAR(255);
+ALTER TABLE brokers ADD COLUMN IF NOT EXISTS is_active BOOLEAN NOT NULL DEFAULT TRUE;
+
+-- Upgrade existing DBs: CREATE IF NOT EXISTS does not add columns; keep in sync with CREATE above.
+
+
+
 
 ALTER TABLE brokers DROP COLUMN IF EXISTS created_at;
 
@@ -426,6 +517,21 @@ CREATE TABLE IF NOT EXISTS accounts (
     is_active BOOLEAN NOT NULL DEFAULT TRUE,
     updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
+-- Upgrade existing DBs: CREATE IF NOT EXISTS does not add columns; keep in sync with CREATE above.
+ALTER TABLE accounts ADD COLUMN IF NOT EXISTS broker_id INTEGER REFERENCES brokers(id) ON DELETE CASCADE;
+ALTER TABLE accounts ADD COLUMN IF NOT EXISTS account_code VARCHAR(100);
+ALTER TABLE accounts ADD COLUMN IF NOT EXISTS name VARCHAR(100);
+ALTER TABLE accounts ADD COLUMN IF NOT EXISTS account_type VARCHAR(20) CHECK (account_type IN ('real', 'fake'));
+ALTER TABLE accounts ADD COLUMN IF NOT EXISTS is_efficient BOOLEAN NOT NULL DEFAULT FALSE;
+ALTER TABLE accounts ADD COLUMN IF NOT EXISTS token_encrypted TEXT;
+ALTER TABLE accounts ADD COLUMN IF NOT EXISTS token_hash VARCHAR(64);
+ALTER TABLE accounts ADD COLUMN IF NOT EXISTS is_active BOOLEAN NOT NULL DEFAULT TRUE;
+ALTER TABLE accounts ADD COLUMN IF NOT EXISTS updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP;
+
+-- Upgrade existing DBs: CREATE IF NOT EXISTS does not add columns; keep in sync with CREATE above.
+
+
+
 
 ALTER TABLE accounts DROP COLUMN IF EXISTS created_at;
 
@@ -452,9 +558,24 @@ CREATE TABLE IF NOT EXISTS prices (
     value NUMERIC(20, 2),
     contract_prefix VARCHAR(50)
 );
+-- Upgrade existing DBs: CREATE IF NOT EXISTS does not add columns; keep in sync with CREATE above.
+ALTER TABLE prices ADD COLUMN IF NOT EXISTS security_id INTEGER REFERENCES securities(id) ON DELETE CASCADE;
+ALTER TABLE prices ADD COLUMN IF NOT EXISTS timeframe_id INTEGER REFERENCES timeframes(id) ON DELETE CASCADE;
+ALTER TABLE prices ADD COLUMN IF NOT EXISTS dt TIMESTAMP;
+ALTER TABLE prices ADD COLUMN IF NOT EXISTS open_price NUMERIC(18, 6);
+ALTER TABLE prices ADD COLUMN IF NOT EXISTS high_price NUMERIC(18, 6);
+ALTER TABLE prices ADD COLUMN IF NOT EXISTS low_price NUMERIC(18, 6);
+ALTER TABLE prices ADD COLUMN IF NOT EXISTS close_price NUMERIC(18, 6);
+ALTER TABLE prices ADD COLUMN IF NOT EXISTS volume NUMERIC(20, 2);
+ALTER TABLE prices ADD COLUMN IF NOT EXISTS value NUMERIC(20, 2);
+ALTER TABLE prices ADD COLUMN IF NOT EXISTS contract_prefix VARCHAR(50);
+
+-- Upgrade existing DBs: CREATE IF NOT EXISTS does not add columns; keep in sync with CREATE above.
+
+
+
 
 -- Существующие БД: CREATE TABLE IF NOT EXISTS не добавляет новые колонки
-ALTER TABLE prices ADD COLUMN IF NOT EXISTS contract_prefix VARCHAR(50);
 ALTER TABLE prices DROP COLUMN IF EXISTS trades;
 ALTER TABLE prices DROP COLUMN IF EXISTS created_at;
 
@@ -480,6 +601,16 @@ CREATE TABLE IF NOT EXISTS parameter_types (
     value_type VARCHAR(20) NOT NULL,
     default_value TEXT
 );
+-- Upgrade existing DBs: CREATE IF NOT EXISTS does not add columns; keep in sync with CREATE above.
+ALTER TABLE parameter_types ADD COLUMN IF NOT EXISTS name VARCHAR(100);
+ALTER TABLE parameter_types ADD COLUMN IF NOT EXISTS short_name VARCHAR(20);
+ALTER TABLE parameter_types ADD COLUMN IF NOT EXISTS value_type VARCHAR(20);
+ALTER TABLE parameter_types ADD COLUMN IF NOT EXISTS default_value TEXT;
+
+-- Upgrade existing DBs: CREATE IF NOT EXISTS does not add columns; keep in sync with CREATE above.
+
+
+
 
 ALTER TABLE parameter_types DROP COLUMN IF EXISTS is_control;
 ALTER TABLE parameter_types DROP COLUMN IF EXISTS is_fake_only;
@@ -499,6 +630,8 @@ INSERT INTO parameter_types (name, short_name, value_type, default_value) VALUES
     ('STOCH период K', 'STOCH_PERIOD', 'integer', '14'),
     ('T-Bank API токен', 'TBANK_API_TOKEN', 'secret', ''),
     ('Техническое логирование', 'APP_TECH_LOGGING', 'boolean', '0'),
+    ('Очистка лишних данных (диск)', 'APP_CLEANUP_DISK', 'boolean', '0'),
+    ('Последняя автоочистка диска', 'APP_CLEANUP_LAST_AT', 'text', ''),
     ('Heartbeat UI trade runner', 'APP_TRADE_RUNNER_HB', 'text', '')
 ON CONFLICT (short_name) DO NOTHING;
 
@@ -509,6 +642,13 @@ CREATE TABLE IF NOT EXISTS parameter_sets (
     id SERIAL PRIMARY KEY,
     name VARCHAR(100) NOT NULL
 );
+-- Upgrade existing DBs: CREATE IF NOT EXISTS does not add columns; keep in sync with CREATE above.
+ALTER TABLE parameter_sets ADD COLUMN IF NOT EXISTS name VARCHAR(100);
+
+-- Upgrade existing DBs: CREATE IF NOT EXISTS does not add columns; keep in sync with CREATE above.
+
+
+
 
 ALTER TABLE parameter_sets DROP COLUMN IF EXISTS description;
 ALTER TABLE parameter_sets DROP COLUMN IF EXISTS is_active;
@@ -529,6 +669,15 @@ CREATE TABLE IF NOT EXISTS parameter_values (
     parameter_type_id INTEGER NOT NULL REFERENCES parameter_types(id) ON DELETE CASCADE,
     value TEXT NOT NULL
 );
+-- Upgrade existing DBs: CREATE IF NOT EXISTS does not add columns; keep in sync with CREATE above.
+ALTER TABLE parameter_values ADD COLUMN IF NOT EXISTS parameter_set_id INTEGER REFERENCES parameter_sets(id) ON DELETE CASCADE;
+ALTER TABLE parameter_values ADD COLUMN IF NOT EXISTS parameter_type_id INTEGER REFERENCES parameter_types(id) ON DELETE CASCADE;
+ALTER TABLE parameter_values ADD COLUMN IF NOT EXISTS value TEXT;
+
+-- Upgrade existing DBs: CREATE IF NOT EXISTS does not add columns; keep in sync with CREATE above.
+
+
+
 
 ALTER TABLE parameter_values DROP COLUMN IF EXISTS record_date;
 ALTER TABLE parameter_values DROP COLUMN IF EXISTS created_at;
@@ -567,9 +716,31 @@ CREATE TABLE IF NOT EXISTS indicators (
     -- Подробное описание: полное название, расчёт, сигналы, применение (многострочный TEXT).
     description TEXT,
     category VARCHAR(50),
+    -- Шаблоны follow/fade и профиль двоичности сигнала (logic_indicator_signals).
+    sig_trend_def TEXT,
+    sig_ct_def TEXT,
+    sig_profile VARCHAR(20),
     is_active BOOLEAN NOT NULL DEFAULT TRUE,
     created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
+-- Upgrade existing DBs: CREATE IF NOT EXISTS does not add columns; keep in sync with CREATE above.
+ALTER TABLE indicators ADD COLUMN IF NOT EXISTS code VARCHAR(20);
+ALTER TABLE indicators ADD COLUMN IF NOT EXISTS name VARCHAR(100);
+ALTER TABLE indicators ADD COLUMN IF NOT EXISTS script TEXT;
+ALTER TABLE indicators ADD COLUMN IF NOT EXISTS formula TEXT;
+ALTER TABLE indicators ADD COLUMN IF NOT EXISTS is_custom BOOLEAN NOT NULL DEFAULT FALSE;
+ALTER TABLE indicators ADD COLUMN IF NOT EXISTS description TEXT;
+ALTER TABLE indicators ADD COLUMN IF NOT EXISTS category VARCHAR(50);
+ALTER TABLE indicators ADD COLUMN IF NOT EXISTS sig_trend_def TEXT;
+ALTER TABLE indicators ADD COLUMN IF NOT EXISTS sig_ct_def TEXT;
+ALTER TABLE indicators ADD COLUMN IF NOT EXISTS sig_profile VARCHAR(20);
+ALTER TABLE indicators ADD COLUMN IF NOT EXISTS is_active BOOLEAN NOT NULL DEFAULT TRUE;
+ALTER TABLE indicators ADD COLUMN IF NOT EXISTS created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP;
+
+-- Upgrade existing DBs: CREATE IF NOT EXISTS does not add columns; keep in sync with CREATE above.
+
+
+
 
 COMMENT ON COLUMN indicators.script IS
 'Устаревший per-bar шаблон SELECT calc_ind_*(…). Для новых индикаторов — поле formula.';
@@ -616,7 +787,8 @@ INSERT INTO indicators (code, name, description, category) VALUES
     ('HMA', 'Hull Moving Average', 'Скользящее среднее Халла', 'trend'),
     ('ZLEMA', 'Zero Lag EMA', 'EMA с нулевым запаздыванием', 'trend'),
     ('SMAT3', 'SMA Triple', 'Тройное SMA (тройная свёртка)', 'trend'),
-    ('LINREG', 'Linear Regression Channel', 'Канал линейной регрессии (mid ± Dev·σ остатков)', 'trend')
+    ('LINREG', 'Linear Regression Channel', 'Канал линейной регрессии (mid ± Dev·σ остатков)', 'trend'),
+    ('SQUARE', 'Quadratic Regression Channel', 'Квадратичный канал (b+a·x+c·x²; mid ± Dev·σ остатков)', 'trend')
 ON CONFLICT (code) DO NOTHING;
 
 -- Шаблоны расчёта (функция + параметры; :series подставляется для каждой линии индикатора)
@@ -630,13 +802,9 @@ UPDATE indicators SET script = 'SELECT calc_ind_stoch(:k_period, :d_period, :smo
 UPDATE indicators SET script = 'SELECT calc_ind_cci(:period, :series, :security_id, :timeframe_id, :dt, :indicator_id)' WHERE code = 'CCI';
 UPDATE indicators SET script = 'SELECT calc_ind_adx(:period, :series, :security_id, :timeframe_id, :dt, :indicator_id)' WHERE code = 'ADX';
 UPDATE indicators SET script = 'SELECT calc_ind_linreg(:period, :std_dev, :series, :security_id, :timeframe_id, :dt, :indicator_id)' WHERE code = 'LINREG';
+UPDATE indicators SET script = 'SELECT calc_ind_square(:period, :std_dev, :series, :security_id, :timeframe_id, :dt, :indicator_id)' WHERE code = 'SQUARE';
 
-ALTER TABLE indicators ADD COLUMN IF NOT EXISTS formula TEXT;
-ALTER TABLE indicators ADD COLUMN IF NOT EXISTS is_custom BOOLEAN NOT NULL DEFAULT FALSE;
-ALTER TABLE indicators ADD COLUMN IF NOT EXISTS sig_trend_def TEXT;
-ALTER TABLE indicators ADD COLUMN IF NOT EXISTS sig_ct_def TEXT;
 -- Профиль шаблонов сигнала: какие двоичные смыслы «по течению / против» типичны для индикатора
-ALTER TABLE indicators ADD COLUMN IF NOT EXISTS sig_profile VARCHAR(20);
 
 COMMENT ON COLUMN indicators.sig_trend_def IS
 'Шаблон follow («по течению»): пробой/импульс/бычья половина. В logic_indicator_signals.signal_kind=trend';
@@ -653,7 +821,7 @@ UPDATE indicators SET formula = 'ema', is_custom = FALSE WHERE code = 'EMA';
 UPDATE indicators SET formula = 'pp * (1; -2; 1)', is_custom = TRUE WHERE code = 'PACC';
 UPDATE indicators SET formula = 'sma(period=20, series=VALUE) * sma(period=20, series=VALUE) * sma(period=20, series=VALUE)', is_custom = TRUE WHERE code = 'SMAT3';
 -- Как у STOCH/ATR/MACD: пустая formula → calc_indicator_series_array / calc_ind_*_array (не poly)
-UPDATE indicators SET formula = NULL, is_custom = FALSE WHERE code IN ('CCI', 'ADX', 'LINREG', 'ATR', 'STOCH', 'MACD', 'BB', 'RSI');
+UPDATE indicators SET formula = NULL, is_custom = FALSE WHERE code IN ('CCI', 'ADX', 'LINREG', 'SQUARE', 'ATR', 'STOCH', 'MACD', 'BB', 'RSI');
 
 -- Профили + шаблоны follow(trend) / fade(counter)
 -- trend_line: цена относительно линии
@@ -661,7 +829,7 @@ UPDATE indicators SET
     sig_profile = 'trend_line',
     sig_trend_def = 'pp > VALUE',
     sig_ct_def = 'pp < VALUE'
-WHERE code IN ('SMA', 'EMA', 'WMA', 'HMA', 'ZLEMA', 'SMAT3', 'ICHIMOKU', 'PSAR', 'SAR', 'LINREG');
+WHERE code IN ('SMA', 'EMA', 'WMA', 'HMA', 'ZLEMA', 'SMAT3', 'ICHIMOKU', 'PSAR', 'SAR', 'LINREG', 'SQUARE');
 
 -- oscillator 0..100: follow = бычья половина / кросс; fade = зона перепроданности
 UPDATE indicators SET
@@ -822,6 +990,21 @@ CREATE TABLE IF NOT EXISTS indicator_value_types (
     display_order INTEGER NOT NULL DEFAULT 0,
     created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
+-- Upgrade existing DBs: CREATE IF NOT EXISTS does not add columns; keep in sync with CREATE above.
+ALTER TABLE indicator_value_types ADD COLUMN IF NOT EXISTS indicator_id INTEGER REFERENCES indicators(id) ON DELETE CASCADE;
+ALTER TABLE indicator_value_types ADD COLUMN IF NOT EXISTS code VARCHAR(20);
+ALTER TABLE indicator_value_types ADD COLUMN IF NOT EXISTS name VARCHAR(50);
+ALTER TABLE indicator_value_types ADD COLUMN IF NOT EXISTS value_type VARCHAR(20) NOT NULL DEFAULT 'float';
+ALTER TABLE indicator_value_types ADD COLUMN IF NOT EXISTS is_threshold BOOLEAN NOT NULL DEFAULT FALSE;
+ALTER TABLE indicator_value_types ADD COLUMN IF NOT EXISTS threshold_value NUMERIC(18, 6);
+ALTER TABLE indicator_value_types ADD COLUMN IF NOT EXISTS description TEXT;
+ALTER TABLE indicator_value_types ADD COLUMN IF NOT EXISTS display_order INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE indicator_value_types ADD COLUMN IF NOT EXISTS created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP;
+
+-- Upgrade existing DBs: CREATE IF NOT EXISTS does not add columns; keep in sync with CREATE above.
+
+
+
 
 CREATE UNIQUE INDEX IF NOT EXISTS idx_indicator_value_types_unique ON indicator_value_types(indicator_id, code);
 
@@ -857,6 +1040,11 @@ JOIN (VALUES
     ('LINREG', 'UPPER', 'Верхняя граница', 'float', FALSE, NULL, 'mid + Dev·σ', 2),
     ('LINREG', 'LOWER', 'Нижняя граница', 'float', FALSE, NULL, 'mid − Dev·σ', 3),
     ('LINREG', 'SLOPE', 'Наклон LinReg', 'float', FALSE, NULL, 'Наклон регрессии', 4),
+    ('SQUARE', 'MIDDLE', 'Линия Square', 'float', FALSE, NULL, 'Середина квадратичного канала', 1),
+    ('SQUARE', 'UPPER', 'Верхняя граница', 'float', FALSE, NULL, 'mid + Dev·σ', 2),
+    ('SQUARE', 'LOWER', 'Нижняя граница', 'float', FALSE, NULL, 'mid − Dev·σ', 3),
+    ('SQUARE', 'SLOPE', 'Наклон Square', 'float', FALSE, NULL, 'Мгновенный наклон a+2·c·x на конце окна', 4),
+    ('SQUARE', 'C', 'Коэффициент C', 'float', FALSE, NULL, 'Квадратичный коэффициент c в b+a·x+c·x²', 5),
     ('PACC', 'VALUE', 'Ускорение цены', 'float', FALSE, NULL, 'pp * (1;-2;1)', 1),
     ('SMAT3', 'VALUE', 'SMA³ свёртка', 'float', FALSE, NULL, 'sma(period=20,series=VALUE)*3', 1),
     ('SMA', 'VALUE', 'Значение MA', 'float', FALSE, NULL, 'SMA value', 1),
@@ -889,6 +1077,28 @@ CREATE TABLE IF NOT EXISTS security_indicator_series (
     is_active BOOLEAN NOT NULL DEFAULT TRUE,
     created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
+-- Upgrade existing DBs: CREATE IF NOT EXISTS does not add columns; keep in sync with CREATE above.
+ALTER TABLE security_indicator_series ADD COLUMN IF NOT EXISTS security_id INTEGER REFERENCES securities(id) ON DELETE CASCADE;
+ALTER TABLE security_indicator_series ADD COLUMN IF NOT EXISTS indicator_id INTEGER REFERENCES indicators(id) ON DELETE CASCADE;
+ALTER TABLE security_indicator_series ADD COLUMN IF NOT EXISTS series_code VARCHAR(20);
+ALTER TABLE security_indicator_series ADD COLUMN IF NOT EXISTS invoke_formula TEXT;
+ALTER TABLE security_indicator_series ADD COLUMN IF NOT EXISTS param_period INTEGER;
+ALTER TABLE security_indicator_series ADD COLUMN IF NOT EXISTS param_fast_period INTEGER;
+ALTER TABLE security_indicator_series ADD COLUMN IF NOT EXISTS param_slow_period INTEGER;
+ALTER TABLE security_indicator_series ADD COLUMN IF NOT EXISTS param_signal_period INTEGER;
+ALTER TABLE security_indicator_series ADD COLUMN IF NOT EXISTS param_std_dev NUMERIC(10, 4) DEFAULT 2.0;
+ALTER TABLE security_indicator_series ADD COLUMN IF NOT EXISTS param_k_period INTEGER;
+ALTER TABLE security_indicator_series ADD COLUMN IF NOT EXISTS param_d_period INTEGER;
+ALTER TABLE security_indicator_series ADD COLUMN IF NOT EXISTS param_smooth INTEGER;
+ALTER TABLE security_indicator_series ADD COLUMN IF NOT EXISTS point_count INTEGER NOT NULL DEFAULT 100;
+ALTER TABLE security_indicator_series ADD COLUMN IF NOT EXISTS display_order INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE security_indicator_series ADD COLUMN IF NOT EXISTS is_active BOOLEAN NOT NULL DEFAULT TRUE;
+ALTER TABLE security_indicator_series ADD COLUMN IF NOT EXISTS created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP;
+
+-- Upgrade existing DBs: CREATE IF NOT EXISTS does not add columns; keep in sync with CREATE above.
+
+
+
 
 CREATE UNIQUE INDEX IF NOT EXISTS idx_security_indicator_series_unique
     ON security_indicator_series(security_id, indicator_id, series_code);
@@ -939,6 +1149,18 @@ CREATE TABLE IF NOT EXISTS indicator_values (
     dt TIMESTAMP NOT NULL,
     value NUMERIC(18, 6)
 );
+-- Upgrade existing DBs: CREATE IF NOT EXISTS does not add columns; keep in sync with CREATE above.
+ALTER TABLE indicator_values ADD COLUMN IF NOT EXISTS indicator_id INTEGER REFERENCES indicators(id) ON DELETE CASCADE;
+ALTER TABLE indicator_values ADD COLUMN IF NOT EXISTS indicator_value_type_id INTEGER REFERENCES indicator_value_types(id) ON DELETE CASCADE;
+ALTER TABLE indicator_values ADD COLUMN IF NOT EXISTS security_id INTEGER REFERENCES securities(id) ON DELETE CASCADE;
+ALTER TABLE indicator_values ADD COLUMN IF NOT EXISTS timeframe_id INTEGER REFERENCES timeframes(id) ON DELETE CASCADE;
+ALTER TABLE indicator_values ADD COLUMN IF NOT EXISTS dt TIMESTAMP;
+ALTER TABLE indicator_values ADD COLUMN IF NOT EXISTS value NUMERIC(18, 6);
+
+-- Upgrade existing DBs: CREATE IF NOT EXISTS does not add columns; keep in sync with CREATE above.
+
+
+
 
 ALTER TABLE indicator_values DROP COLUMN IF EXISTS is_signal;
 ALTER TABLE indicator_values DROP COLUMN IF EXISTS signal_type;
@@ -962,8 +1184,37 @@ CREATE TABLE IF NOT EXISTS logics (
     is_enabled BOOLEAN NOT NULL DEFAULT TRUE,
     note TEXT
 );
-
+-- Upgrade existing DBs: CREATE IF NOT EXISTS does not add columns; keep in sync with CREATE above.
+ALTER TABLE logics ADD COLUMN IF NOT EXISTS name VARCHAR(100);
+ALTER TABLE logics ADD COLUMN IF NOT EXISTS account_id INTEGER REFERENCES accounts(id) ON DELETE RESTRICT;
+ALTER TABLE logics ADD COLUMN IF NOT EXISTS is_enabled BOOLEAN NOT NULL DEFAULT TRUE;
 ALTER TABLE logics ADD COLUMN IF NOT EXISTS note TEXT;
+ALTER TABLE logics ADD COLUMN IF NOT EXISTS portfolio_trading_paused BOOLEAN NOT NULL DEFAULT FALSE;
+ALTER TABLE logics ADD COLUMN IF NOT EXISTS portfolio_equity_peak NUMERIC(20, 6);
+ALTER TABLE logics ADD COLUMN IF NOT EXISTS portfolio_stop_resume_equity NUMERIC(20, 6);
+ALTER TABLE logics ADD COLUMN IF NOT EXISTS portfolio_stop_resume_baseline NUMERIC(20, 6);
+ALTER TABLE logics ADD COLUMN IF NOT EXISTS portfolio_stop_resume_at TIMESTAMP;
+ALTER TABLE logics ADD COLUMN IF NOT EXISTS portfolio_linear_tp_armed BOOLEAN NOT NULL DEFAULT FALSE;
+ALTER TABLE logics ADD COLUMN IF NOT EXISTS portfolio_linear_tp_peak_equity NUMERIC(20, 6);
+ALTER TABLE logics ADD COLUMN IF NOT EXISTS portfolio_linear_tp_arm_bar_dt TIMESTAMP;
+ALTER TABLE logics ADD COLUMN IF NOT EXISTS portfolio_linear_tp_latched BOOLEAN NOT NULL DEFAULT FALSE;
+COMMENT ON COLUMN logics.portfolio_linear_tp_latched IS
+'После срабатывания portfolio_ltp_renew: не взводить снова, пока track% не уйдёт ниже arm% (анти-чоп)';
+
+COMMENT ON COLUMN logics.portfolio_trading_paused IS
+'portfolio_resume SL: реал остановлен, сделки идут в shadow до восстановления equity';
+COMMENT ON COLUMN logics.portfolio_equity_peak IS
+'Пик equity портфеля (обновляется на баре, пока нет portfolio pause)';
+COMMENT ON COLUMN logics.portfolio_stop_resume_equity IS
+'Цель возобновления реальной торговли (уровень до срабатывания portfolio_resume)';
+COMMENT ON COLUMN logics.portfolio_stop_resume_baseline IS
+'Equity после закрытия реальных позиций при portfolio_resume';
+
+-- Upgrade existing DBs: CREATE IF NOT EXISTS does not add columns; keep in sync with CREATE above.
+
+
+
+
 
 CREATE INDEX IF NOT EXISTS idx_logics_account_id ON logics(account_id);
 
@@ -995,30 +1246,58 @@ CREATE TABLE IF NOT EXISTS logic_param_defs (
     description TEXT,
     display_order INTEGER NOT NULL DEFAULT 0
 );
+-- Upgrade existing DBs: CREATE IF NOT EXISTS does not add columns; keep in sync with CREATE above.
+ALTER TABLE logic_param_defs ADD COLUMN IF NOT EXISTS param_key VARCHAR(64);
+ALTER TABLE logic_param_defs ADD COLUMN IF NOT EXISTS name_ru VARCHAR(200);
+ALTER TABLE logic_param_defs ADD COLUMN IF NOT EXISTS value_type VARCHAR(20) CHECK (value_type IN ('number', 'integer', 'money', 'boolean', 'text'));
+ALTER TABLE logic_param_defs ADD COLUMN IF NOT EXISTS default_value TEXT NOT NULL DEFAULT '';
+ALTER TABLE logic_param_defs ADD COLUMN IF NOT EXISTS description TEXT;
+ALTER TABLE logic_param_defs ADD COLUMN IF NOT EXISTS display_order INTEGER NOT NULL DEFAULT 0;
+
+-- Upgrade existing DBs: CREATE IF NOT EXISTS does not add columns; keep in sync with CREATE above.
+
+
+
 
 INSERT INTO logic_param_defs (param_key, name_ru, value_type, default_value, description, display_order) VALUES
     ('timeframe', 'Таймфрейм', 'text', 'M15',
      'Таймфрейм цен, индикаторов и цикла сделок (M15, H1, D1 …)', 0),
+    ('position_size_base', 'База расчёта лота', 'text', 'portfolio',
+     'portfolio (по умолчанию) — % от портфеля без ден. фонда; portfolio_incl_fund — весь портфель с фондом; free_cash — % от свободных денег', 1),
     ('position_size_pct', '% депозита на сделку', 'number', '10',
-     'Доля текущего остатка на одну покупку (1–100)', 1),
+     'Доля выбранной базы (портфель или свободные) на одну покупку (1–100)', 2),
     ('max_open_positions', 'Макс. открытых позиций', 'integer', '5',
-     'Long/Short позиции по разным бумагам одновременно', 2),
+     'Число одновременных позиций; плечо ≈ (макс × % / 100)', 3),
+    ('max_order_amount', 'Макс. сумма на сделку, ₽', 'money', '',
+     'Потолок номинала одной покупки (пусто = без лимита), после расчёта %', 4),
     ('initial_balance', 'Начальный остаток', 'money', '',
-     'Стартовый депозит бумажной торговли / эталон для расчёта лота', 3),
+     'Тест (fake): значение из параметров. Real: всегда с брокера (или 0), не из формы/теста', 5),
     ('current_balance', 'Текущий остаток', 'money', '',
-     'Обновляется trade runner после симулированных сделок', 4),
+     'Тест (fake): свободный кэш. Real: свободный кэш T-Bank (или 0). Не база лота при режиме portfolio', 6),
     ('commission_pct', '% комиссии от сделки', 'number', '0.03',
-     'Фейковый счёт: комиссия = цена × количество × % / 100 (на каждую сделку)', 5),
+     'Фейковый счёт: комиссия = цена × количество × % / 100 (на каждую сделку)', 7),
     ('cost_method', 'Метод расчёта PnL', 'text', 'FIFO',
-     'FIFO — по очереди покупок; AVERAGE — по средней цене остатка', 6),
+     'FIFO — по очереди покупок; AVERAGE — по средней цене остатка', 8),
     ('stop_loss_timeframe', 'Таймфрейм стоп-лосса', 'text', 'M5',
-     'TF для проверки стоп-лоссов (по умолчанию M5)', 7),
+     'TF для проверки стоп-лоссов (по умолчанию M5)', 9),
     ('base_annual_rate_pct', 'Базовая ставка (% годовых)', 'number', '20',
-     'Порог для рейтинга сигнала: ход цены на следующей свече в годовых ≥ этой ставки', 8),
+     'Порог для рейтинга сигнала: ход цены на следующей свече в годовых ≥ этой ставки', 10),
     ('rating_lookback_days', 'Дней предрасчёта рейтинга', 'integer', '7',
-     'При включении боя: предрасчёт боевых рейтингов сигналов по свечам за N дней (фон)', 9),
+     'При включении боя: предрасчёт боевых рейтингов сигналов по свечам за N дней (фон)', 11),
     ('inversion', 'Инверсия', 'boolean', 'false',
-     'Инверсия логики: условия наоборот (≥↔≤, >↔<) и сделки в противоположную сторону (Long↔Short)', 10),
+     'Инверсия логики: условия наоборот (≥↔≤, >↔<) и сделки в противоположную сторону (Long↔Short)', 12),
+    ('warmup_pretest', 'Прогрев (предварительное тестирование)', 'boolean', 'true',
+     'Перед включением боя: прогнать тест за rating_lookback_days и перенести состояния бумаг для security_resume/security_inversion', 13),
+    ('cash_fund_code', 'Денежный фонд (парк кэша)', 'text', '',
+     'Пусто = не покупать. TMON / LQDT / SBMM — runner паркует избыток кэша на реальном счёте (1 раз на закрытую свечу TF)', 14),
+    ('cash_fund_threshold', 'Порог портфеля (equity), ₽', 'money', '1000000',
+     'Если equity выше порога и выбран фонд — парковать избыток (buy-only). По умолчанию = начальный остаток теста (1 000 000)', 15),
+    ('use_non_trading_periods', 'Учитывать неторговые периоды', 'boolean', 'true',
+     'Не открывать сделки в интервалах из блока «Торговые периоды» (шаблон MOEX TQBR по умолчанию)', 16),
+    ('close_positions_eod', 'Закрывать позиции в конце дня (кроме фондов)', 'boolean', 'false',
+     'В конце торговой сессии (или на последней свече дня) закрыть все позиции, кроме денежного фонда TMON/LQDT/SBMM', 17),
+    ('last_cash_fund_bar_dt', 'Последняя парковка кэша', 'text', '',
+     'Служебный: open time закрытой свечи TF последней попытки парковки в фонд', 96),
     ('last_stop_bar_dt', 'Последняя свеча стоп-лосса', 'text', '',
      'Служебный: open time закрытой свечи TF стоп-лосса', 97),
     ('last_trade_check_at', 'Последняя проверка сигналов', 'text', '',
@@ -1041,6 +1320,25 @@ CREATE TABLE IF NOT EXISTS logic_params (
     updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
     UNIQUE (logic_id, param_key)
 );
+-- Upgrade existing DBs: CREATE IF NOT EXISTS does not add columns; keep in sync with CREATE above.
+ALTER TABLE logic_params ADD COLUMN IF NOT EXISTS logic_id INTEGER REFERENCES logics(id) ON DELETE CASCADE;
+ALTER TABLE logic_params ADD COLUMN IF NOT EXISTS param_key VARCHAR(64) REFERENCES logic_param_defs(param_key) ON DELETE RESTRICT;
+ALTER TABLE logic_params ADD COLUMN IF NOT EXISTS param_value TEXT NOT NULL DEFAULT '';
+ALTER TABLE logic_params ADD COLUMN IF NOT EXISTS value_type VARCHAR(20) CHECK (value_type IN ('number', 'integer', 'money', 'boolean', 'text'));
+ALTER TABLE logic_params ADD COLUMN IF NOT EXISTS updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP;
+
+-- Upgrade: старый дефолт порога TMON 100000 → 1000000 (= initial_balance теста)
+-- Must run AFTER CREATE logic_params (fresh DBs / wipe recreate public schema).
+UPDATE logic_params
+SET param_value = '1000000',
+    updated_at = CURRENT_TIMESTAMP
+WHERE param_key = 'cash_fund_threshold'
+  AND replace(replace(btrim(param_value), ' ', ''), ',', '.') IN ('100000', '100000.0', '100000.00');
+
+-- Upgrade existing DBs: CREATE IF NOT EXISTS does not add columns; keep in sync with CREATE above.
+
+
+
 
 CREATE INDEX IF NOT EXISTS idx_logic_params_logic_id ON logic_params(logic_id);
 
@@ -1060,32 +1358,24 @@ BEGIN
         INSERT INTO logic_params (logic_id, param_key, param_value, value_type)
         SELECT l.id, 'position_size_pct', l.position_size_pct::text, 'number'
         FROM logics l
-        ON CONFLICT (logic_id, param_key) DO UPDATE SET
-            param_value = EXCLUDED.param_value,
-            updated_at = CURRENT_TIMESTAMP;
+        ON CONFLICT (logic_id, param_key) DO NOTHING;
 
         INSERT INTO logic_params (logic_id, param_key, param_value, value_type)
         SELECT l.id, 'max_open_positions', l.max_open_positions::text, 'integer'
         FROM logics l
-        ON CONFLICT (logic_id, param_key) DO UPDATE SET
-            param_value = EXCLUDED.param_value,
-            updated_at = CURRENT_TIMESTAMP;
+        ON CONFLICT (logic_id, param_key) DO NOTHING;
 
         INSERT INTO logic_params (logic_id, param_key, param_value, value_type)
         SELECT l.id, 'initial_balance', l.initial_balance::text, 'money'
         FROM logics l
         WHERE l.initial_balance IS NOT NULL
-        ON CONFLICT (logic_id, param_key) DO UPDATE SET
-            param_value = EXCLUDED.param_value,
-            updated_at = CURRENT_TIMESTAMP;
+        ON CONFLICT (logic_id, param_key) DO NOTHING;
 
         INSERT INTO logic_params (logic_id, param_key, param_value, value_type)
         SELECT l.id, 'current_balance', l.current_balance::text, 'money'
         FROM logics l
         WHERE l.current_balance IS NOT NULL
-        ON CONFLICT (logic_id, param_key) DO UPDATE SET
-            param_value = EXCLUDED.param_value,
-            updated_at = CURRENT_TIMESTAMP;
+        ON CONFLICT (logic_id, param_key) DO NOTHING;
     END IF;
 END $$;
 
@@ -1102,6 +1392,17 @@ SELECT l.id, d.param_key, d.default_value, d.value_type
 FROM logics l
 CROSS JOIN logic_param_defs d
 ON CONFLICT (logic_id, param_key) DO NOTHING;
+
+-- Upgrade / install-over: на real — сбросить paper-остатки в 0 (в т.ч. «миллион» после теста).
+-- Затем 02 вызовет logic_sync_all_real_account_balances() → кэш брокера или 0.
+UPDATE logic_params lp
+SET param_value = '0',
+    updated_at = CURRENT_TIMESTAMP
+FROM logics l
+JOIN accounts a ON a.id = l.account_id
+WHERE lp.logic_id = l.id
+  AND lower(COALESCE(a.account_type, 'fake')) <> 'fake'
+  AND lp.param_key IN ('initial_balance', 'current_balance');
 
 -- Демо SMA: параметры в logic_params
 INSERT INTO logic_params (logic_id, param_key, param_value, value_type)
@@ -1120,14 +1421,19 @@ CROSS JOIN (VALUES
     ('rating_lookback_days', '7', 'integer')
 ) AS v(param_key, param_value, value_type)
 WHERE l.name = 'SMA Price Cross Demo'
-ON CONFLICT (logic_id, param_key) DO UPDATE SET
-    param_value = EXCLUDED.param_value,
-    updated_at = CURRENT_TIMESTAMP;
+ON CONFLICT (logic_id, param_key) DO NOTHING;
 
 CREATE TABLE IF NOT EXISTS sides (
     id SERIAL PRIMARY KEY,
     name VARCHAR(20) NOT NULL UNIQUE
 );
+-- Upgrade existing DBs: CREATE IF NOT EXISTS does not add columns; keep in sync with CREATE above.
+ALTER TABLE sides ADD COLUMN IF NOT EXISTS name VARCHAR(20);
+
+-- Upgrade existing DBs: CREATE IF NOT EXISTS does not add columns; keep in sync with CREATE above.
+
+
+
 
 INSERT INTO sides (name) VALUES ('Open'), ('Close') ON CONFLICT (name) DO NOTHING;
 
@@ -1135,6 +1441,13 @@ CREATE TABLE IF NOT EXISTS actions (
     id SERIAL PRIMARY KEY,
     name VARCHAR(20) NOT NULL UNIQUE
 );
+-- Upgrade existing DBs: CREATE IF NOT EXISTS does not add columns; keep in sync with CREATE above.
+ALTER TABLE actions ADD COLUMN IF NOT EXISTS name VARCHAR(20);
+
+-- Upgrade existing DBs: CREATE IF NOT EXISTS does not add columns; keep in sync with CREATE above.
+
+
+
 
 INSERT INTO actions (name) VALUES ('Long'), ('Short') ON CONFLICT (name) DO NOTHING;
 
@@ -1157,9 +1470,24 @@ CREATE TABLE IF NOT EXISTS logic_indicator_signals (
     created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
     UNIQUE (logic_id, indicator_id, position_event, position_side, signal_kind)
 );
-
+-- Upgrade existing DBs: CREATE IF NOT EXISTS does not add columns; keep in sync with CREATE above.
+ALTER TABLE logic_indicator_signals ADD COLUMN IF NOT EXISTS logic_id INTEGER REFERENCES logics(id) ON DELETE CASCADE;
+ALTER TABLE logic_indicator_signals ADD COLUMN IF NOT EXISTS indicator_id INTEGER REFERENCES indicators(id) ON DELETE RESTRICT;
+ALTER TABLE logic_indicator_signals ADD COLUMN IF NOT EXISTS position_event VARCHAR(10) NOT NULL DEFAULT 'open' CHECK (position_event IN ('open', 'close'));
+ALTER TABLE logic_indicator_signals ADD COLUMN IF NOT EXISTS position_side VARCHAR(10) NOT NULL DEFAULT 'long' CHECK (position_side IN ('long', 'short'));
+ALTER TABLE logic_indicator_signals ADD COLUMN IF NOT EXISTS signal_kind VARCHAR(10) CHECK (signal_kind IN ('trend', 'counter'));
+ALTER TABLE logic_indicator_signals ADD COLUMN IF NOT EXISTS formula TEXT;
 ALTER TABLE logic_indicator_signals ADD COLUMN IF NOT EXISTS rating INTEGER NOT NULL DEFAULT 0;
 ALTER TABLE logic_indicator_signals ADD COLUMN IF NOT EXISTS rating_test INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE logic_indicator_signals ADD COLUMN IF NOT EXISTS display_order INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE logic_indicator_signals ADD COLUMN IF NOT EXISTS is_active BOOLEAN NOT NULL DEFAULT TRUE;
+ALTER TABLE logic_indicator_signals ADD COLUMN IF NOT EXISTS created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP;
+
+-- Upgrade existing DBs: CREATE IF NOT EXISTS does not add columns; keep in sync with CREATE above.
+
+
+
+
 -- Рейтинг может быть отрицательным (успех +1 / неуспех −1 по следующей свече)
 ALTER TABLE logic_indicator_signals DROP CONSTRAINT IF EXISTS logic_indicator_signals_rating_check;
 ALTER TABLE logic_indicator_signals DROP CONSTRAINT IF EXISTS logic_indicator_signals_rating_test_check;
@@ -1167,10 +1495,8 @@ UPDATE logic_indicator_signals SET rating = 0 WHERE rating IS NULL;
 UPDATE logic_indicator_signals SET rating_test = 0 WHERE rating_test IS NULL;
 
 -- Миграция v18 → v19: position_side (long | short)
-ALTER TABLE logic_indicator_signals ADD COLUMN IF NOT EXISTS position_side VARCHAR(10) NOT NULL DEFAULT 'long';
 
 -- Миграция v38: position_event (open | close) — явно открытие/закрытие
-ALTER TABLE logic_indicator_signals ADD COLUMN IF NOT EXISTS position_event VARCHAR(10) NOT NULL DEFAULT 'open';
 
 DO $$
 BEGIN
@@ -1246,9 +1572,24 @@ CREATE TABLE IF NOT EXISTS logic_signal_rating_pending (
     run_id BIGINT,
     created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
-
+-- Upgrade existing DBs: CREATE IF NOT EXISTS does not add columns; keep in sync with CREATE above.
+ALTER TABLE logic_signal_rating_pending ADD COLUMN IF NOT EXISTS signal_id INTEGER REFERENCES logic_indicator_signals(id) ON DELETE CASCADE;
+ALTER TABLE logic_signal_rating_pending ADD COLUMN IF NOT EXISTS logic_id INTEGER REFERENCES logics(id) ON DELETE CASCADE;
+ALTER TABLE logic_signal_rating_pending ADD COLUMN IF NOT EXISTS security_id INTEGER REFERENCES securities(id) ON DELETE CASCADE;
+ALTER TABLE logic_signal_rating_pending ADD COLUMN IF NOT EXISTS timeframe_id INTEGER REFERENCES timeframes(id) ON DELETE RESTRICT;
+ALTER TABLE logic_signal_rating_pending ADD COLUMN IF NOT EXISTS bar_dt TIMESTAMP;
+ALTER TABLE logic_signal_rating_pending ADD COLUMN IF NOT EXISTS price NUMERIC(18, 6) CHECK (price > 0);
+ALTER TABLE logic_signal_rating_pending ADD COLUMN IF NOT EXISTS position_side VARCHAR(10) CHECK (position_side IN ('long', 'short'));
+ALTER TABLE logic_signal_rating_pending ADD COLUMN IF NOT EXISTS signal_kind VARCHAR(10) CHECK (signal_kind IN ('trend', 'counter'));
 ALTER TABLE logic_signal_rating_pending ADD COLUMN IF NOT EXISTS is_test BOOLEAN NOT NULL DEFAULT FALSE;
 ALTER TABLE logic_signal_rating_pending ADD COLUMN IF NOT EXISTS run_id BIGINT;
+ALTER TABLE logic_signal_rating_pending ADD COLUMN IF NOT EXISTS created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP;
+
+-- Upgrade existing DBs: CREATE IF NOT EXISTS does not add columns; keep in sync with CREATE above.
+
+
+
+
 
 ALTER TABLE logic_signal_rating_pending
     DROP CONSTRAINT IF EXISTS logic_signal_rating_pending_signal_id_security_id_bar_dt_key;
@@ -1275,6 +1616,21 @@ CREATE TABLE IF NOT EXISTS logic_signal_rating_history (
     is_test BOOLEAN NOT NULL DEFAULT FALSE,
     created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
+-- Upgrade existing DBs: CREATE IF NOT EXISTS does not add columns; keep in sync with CREATE above.
+ALTER TABLE logic_signal_rating_history ADD COLUMN IF NOT EXISTS signal_id INTEGER REFERENCES logic_indicator_signals(id) ON DELETE CASCADE;
+ALTER TABLE logic_signal_rating_history ADD COLUMN IF NOT EXISTS logic_id INTEGER REFERENCES logics(id) ON DELETE CASCADE;
+ALTER TABLE logic_signal_rating_history ADD COLUMN IF NOT EXISTS security_id INTEGER REFERENCES securities(id) ON DELETE SET NULL;
+ALTER TABLE logic_signal_rating_history ADD COLUMN IF NOT EXISTS run_id BIGINT;
+ALTER TABLE logic_signal_rating_history ADD COLUMN IF NOT EXISTS bar_dt TIMESTAMP;
+ALTER TABLE logic_signal_rating_history ADD COLUMN IF NOT EXISTS rating INTEGER;
+ALTER TABLE logic_signal_rating_history ADD COLUMN IF NOT EXISTS delta SMALLINT CHECK (delta IN (-1, 1));
+ALTER TABLE logic_signal_rating_history ADD COLUMN IF NOT EXISTS is_test BOOLEAN NOT NULL DEFAULT FALSE;
+ALTER TABLE logic_signal_rating_history ADD COLUMN IF NOT EXISTS created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP;
+
+-- Upgrade existing DBs: CREATE IF NOT EXISTS does not add columns; keep in sync with CREATE above.
+
+
+
 
 ALTER TABLE logic_signal_rating_history DROP CONSTRAINT IF EXISTS logic_signal_rating_history_rating_check;
 
@@ -1296,13 +1652,30 @@ CREATE TABLE IF NOT EXISTS logic_stops (
     id SERIAL PRIMARY KEY,
     logic_id INTEGER NOT NULL REFERENCES logics(id) ON DELETE CASCADE,
     rule_kind VARCHAR(20) NOT NULL CHECK (rule_kind IN ('stop_loss', 'take_profit')),
-    scope_type VARCHAR(20) NOT NULL CHECK (scope_type IN ('security', 'security_resume', 'portfolio')),
+    scope_type VARCHAR(40) NOT NULL CHECK (scope_type IN (
+        'security', 'security_resume', 'security_inversion', 'portfolio', 'portfolio_resume',
+        'portfolio_ltp_renew', 'security_ltp_renew'
+    )),
     value NUMERIC(18, 6) NOT NULL CHECK (value > 0),
     value_unit VARCHAR(10) NOT NULL CHECK (value_unit IN ('percent', 'atr')),
     display_order INTEGER NOT NULL DEFAULT 0,
     is_active BOOLEAN NOT NULL DEFAULT TRUE,
     created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
+-- Upgrade existing DBs: CREATE IF NOT EXISTS does not add columns; keep in sync with CREATE above.
+ALTER TABLE logic_stops ADD COLUMN IF NOT EXISTS logic_id INTEGER REFERENCES logics(id) ON DELETE CASCADE;
+ALTER TABLE logic_stops ADD COLUMN IF NOT EXISTS rule_kind VARCHAR(20) CHECK (rule_kind IN ('stop_loss', 'take_profit'));
+ALTER TABLE logic_stops ADD COLUMN IF NOT EXISTS scope_type VARCHAR(40);
+ALTER TABLE logic_stops ADD COLUMN IF NOT EXISTS value NUMERIC(18, 6) CHECK (value > 0);
+ALTER TABLE logic_stops ADD COLUMN IF NOT EXISTS value_unit VARCHAR(10) CHECK (value_unit IN ('percent', 'atr'));
+ALTER TABLE logic_stops ADD COLUMN IF NOT EXISTS display_order INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE logic_stops ADD COLUMN IF NOT EXISTS is_active BOOLEAN NOT NULL DEFAULT TRUE;
+ALTER TABLE logic_stops ADD COLUMN IF NOT EXISTS created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP;
+
+-- Upgrade existing DBs: CREATE IF NOT EXISTS does not add columns; keep in sync with CREATE above.
+
+
+
 
 CREATE INDEX IF NOT EXISTS idx_logic_stops_logic_id ON logic_stops(logic_id);
 CREATE INDEX IF NOT EXISTS idx_logic_stops_rule_kind ON logic_stops(logic_id, rule_kind);
@@ -1311,21 +1684,86 @@ COMMENT ON TABLE logic_stops IS
 'Стоп-лосс и тейк-профит для logics: security (по бумаге) или portfolio (портфель логики)';
 COMMENT ON COLUMN logic_stops.rule_kind IS 'stop_loss | take_profit';
 COMMENT ON COLUMN logic_stops.scope_type IS
-'stop_loss: security | security_resume | portfolio; take_profit: security | portfolio';
+'stop_loss: security|security_resume|security_inversion|portfolio|portfolio_resume; take_profit: security|portfolio|portfolio_ltp_renew';
+
+-- v48: portfolio_ltp_renew (replaces security_ltp_renew)
+ALTER TABLE logic_stops ALTER COLUMN scope_type TYPE VARCHAR(40);
+ALTER TABLE logic_stops DROP CONSTRAINT IF EXISTS logic_stops_scope_type_check;
+DO $mlt$
+BEGIN
+    ALTER TABLE logic_stops ADD CONSTRAINT logic_stops_scope_type_check
+        CHECK (scope_type IN (
+            'security', 'security_resume', 'security_inversion', 'portfolio', 'portfolio_resume',
+            'portfolio_ltp_renew', 'security_ltp_renew'
+        ));
+EXCEPTION
+    WHEN duplicate_object THEN NULL;
+END $mlt$;
+
+UPDATE logic_stops
+SET scope_type = 'portfolio_ltp_renew'
+WHERE scope_type = 'security_ltp_renew';
 
 UPDATE logic_stops
 SET scope_type = 'security'
-WHERE rule_kind = 'take_profit' AND scope_type = 'security_resume';
+WHERE rule_kind = 'take_profit'
+  AND scope_type IN ('security_resume', 'security_inversion', 'portfolio_resume');
 
-DO $$
+DO $mlt$
 BEGIN
     ALTER TABLE logic_stops DROP CONSTRAINT IF EXISTS logic_stops_tp_scope_check;
     ALTER TABLE logic_stops ADD CONSTRAINT logic_stops_tp_scope_check
-        CHECK (rule_kind = 'stop_loss' OR scope_type IN ('security', 'portfolio'));
+        CHECK (
+            rule_kind = 'stop_loss'
+            OR scope_type IN ('security', 'portfolio', 'portfolio_ltp_renew')
+        );
 EXCEPTION
     WHEN duplicate_object THEN NULL;
-END $$;
+END $mlt$;
+
+-- Drop legacy name from scope check after migrate
+ALTER TABLE logic_stops DROP CONSTRAINT IF EXISTS logic_stops_scope_type_check;
+DO $mlt$
+BEGIN
+    ALTER TABLE logic_stops ADD CONSTRAINT logic_stops_scope_type_check
+        CHECK (scope_type IN (
+            'security', 'security_resume', 'security_inversion', 'portfolio', 'portfolio_resume',
+            'portfolio_ltp_renew'
+        ));
+EXCEPTION
+    WHEN duplicate_object THEN NULL;
+END $mlt$;
+
 COMMENT ON COLUMN logic_stops.value_unit IS 'percent | atr';
+
+-- Неторговые интервалы логики (MSK): сделки в эти окна не открываются при use_non_trading_periods
+CREATE TABLE IF NOT EXISTS logic_non_trading_intervals (
+    id SERIAL PRIMARY KEY,
+    logic_id INTEGER NOT NULL REFERENCES logics(id) ON DELETE CASCADE,
+    day_of_week SMALLINT NOT NULL CHECK (day_of_week BETWEEN 1 AND 7),
+    time_from TIME NOT NULL,
+    time_to TIME NOT NULL,
+    is_active BOOLEAN NOT NULL DEFAULT TRUE,
+    display_order INTEGER NOT NULL DEFAULT 0,
+    note TEXT,
+    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    CHECK (time_from <= time_to)
+);
+ALTER TABLE logic_non_trading_intervals ADD COLUMN IF NOT EXISTS logic_id INTEGER REFERENCES logics(id) ON DELETE CASCADE;
+ALTER TABLE logic_non_trading_intervals ADD COLUMN IF NOT EXISTS day_of_week SMALLINT;
+ALTER TABLE logic_non_trading_intervals ADD COLUMN IF NOT EXISTS time_from TIME;
+ALTER TABLE logic_non_trading_intervals ADD COLUMN IF NOT EXISTS time_to TIME;
+ALTER TABLE logic_non_trading_intervals ADD COLUMN IF NOT EXISTS is_active BOOLEAN NOT NULL DEFAULT TRUE;
+ALTER TABLE logic_non_trading_intervals ADD COLUMN IF NOT EXISTS display_order INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE logic_non_trading_intervals ADD COLUMN IF NOT EXISTS note TEXT;
+ALTER TABLE logic_non_trading_intervals ADD COLUMN IF NOT EXISTS created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP;
+
+CREATE INDEX IF NOT EXISTS idx_logic_non_trading_logic_id
+    ON logic_non_trading_intervals(logic_id);
+
+COMMENT ON TABLE logic_non_trading_intervals IS
+'Неторговые окна логики (день недели ISO 1=Пн…7=Вс + интервал времени MSK)';
+COMMENT ON COLUMN logic_non_trading_intervals.day_of_week IS '1=понедельник … 7=воскресенье (ISO)';
 
 -- Ценные бумаги, привязанные к торговой логике (портфель логики)
 CREATE TABLE IF NOT EXISTS logic_securities (
@@ -1335,12 +1773,66 @@ CREATE TABLE IF NOT EXISTS logic_securities (
     display_order INTEGER NOT NULL DEFAULT 0,
     is_active BOOLEAN NOT NULL DEFAULT TRUE,
     real_trading_paused BOOLEAN NOT NULL DEFAULT FALSE,
+    real_trading_paused_long BOOLEAN NOT NULL DEFAULT FALSE,
+    real_trading_paused_short BOOLEAN NOT NULL DEFAULT FALSE,
+    real_trading_inverted BOOLEAN NOT NULL DEFAULT FALSE,
     stop_resume_equity NUMERIC(20, 6),
     stop_resume_baseline NUMERIC(20, 6),
     stop_resume_triggered_at TIMESTAMP,
+    stop_resume_equity_long NUMERIC(20, 6),
+    stop_resume_baseline_long NUMERIC(20, 6),
+    stop_resume_triggered_at_long TIMESTAMP,
+    stop_resume_equity_short NUMERIC(20, 6),
+    stop_resume_baseline_short NUMERIC(20, 6),
+    stop_resume_triggered_at_short TIMESTAMP,
+    linear_tp_armed BOOLEAN NOT NULL DEFAULT FALSE,
+    linear_tp_last_price NUMERIC(18, 6),
+    linear_tp_arm_bar_dt TIMESTAMP,
     created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
     UNIQUE (logic_id, security_id)
 );
+-- Upgrade existing DBs: CREATE IF NOT EXISTS does not add columns; keep in sync with CREATE above.
+ALTER TABLE logic_securities ADD COLUMN IF NOT EXISTS logic_id INTEGER REFERENCES logics(id) ON DELETE CASCADE;
+ALTER TABLE logic_securities ADD COLUMN IF NOT EXISTS security_id INTEGER REFERENCES securities(id) ON DELETE RESTRICT;
+ALTER TABLE logic_securities ADD COLUMN IF NOT EXISTS display_order INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE logic_securities ADD COLUMN IF NOT EXISTS is_active BOOLEAN NOT NULL DEFAULT TRUE;
+ALTER TABLE logic_securities ADD COLUMN IF NOT EXISTS real_trading_paused BOOLEAN NOT NULL DEFAULT FALSE;
+ALTER TABLE logic_securities ADD COLUMN IF NOT EXISTS real_trading_paused_long BOOLEAN NOT NULL DEFAULT FALSE;
+ALTER TABLE logic_securities ADD COLUMN IF NOT EXISTS real_trading_paused_short BOOLEAN NOT NULL DEFAULT FALSE;
+ALTER TABLE logic_securities ADD COLUMN IF NOT EXISTS real_trading_inverted BOOLEAN NOT NULL DEFAULT FALSE;
+ALTER TABLE logic_securities ADD COLUMN IF NOT EXISTS stop_resume_equity NUMERIC(20, 6);
+ALTER TABLE logic_securities ADD COLUMN IF NOT EXISTS stop_resume_baseline NUMERIC(20, 6);
+ALTER TABLE logic_securities ADD COLUMN IF NOT EXISTS stop_resume_triggered_at TIMESTAMP;
+ALTER TABLE logic_securities ADD COLUMN IF NOT EXISTS stop_resume_equity_long NUMERIC(20, 6);
+ALTER TABLE logic_securities ADD COLUMN IF NOT EXISTS stop_resume_baseline_long NUMERIC(20, 6);
+ALTER TABLE logic_securities ADD COLUMN IF NOT EXISTS stop_resume_triggered_at_long TIMESTAMP;
+ALTER TABLE logic_securities ADD COLUMN IF NOT EXISTS stop_resume_equity_short NUMERIC(20, 6);
+ALTER TABLE logic_securities ADD COLUMN IF NOT EXISTS stop_resume_baseline_short NUMERIC(20, 6);
+ALTER TABLE logic_securities ADD COLUMN IF NOT EXISTS stop_resume_triggered_at_short TIMESTAMP;
+ALTER TABLE logic_securities ADD COLUMN IF NOT EXISTS linear_tp_armed BOOLEAN NOT NULL DEFAULT FALSE;
+ALTER TABLE logic_securities ADD COLUMN IF NOT EXISTS linear_tp_last_price NUMERIC(18, 6);
+ALTER TABLE logic_securities ADD COLUMN IF NOT EXISTS linear_tp_arm_bar_dt TIMESTAMP;
+ALTER TABLE logic_securities ADD COLUMN IF NOT EXISTS created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP;
+
+-- v48: migrate paper-level security_resume pause → both sides (once)
+UPDATE logic_securities
+SET
+    real_trading_paused_long = TRUE,
+    real_trading_paused_short = TRUE,
+    stop_resume_equity_long = COALESCE(stop_resume_equity_long, stop_resume_equity),
+    stop_resume_baseline_long = COALESCE(stop_resume_baseline_long, stop_resume_baseline),
+    stop_resume_triggered_at_long = COALESCE(stop_resume_triggered_at_long, stop_resume_triggered_at),
+    stop_resume_equity_short = COALESCE(stop_resume_equity_short, stop_resume_equity),
+    stop_resume_baseline_short = COALESCE(stop_resume_baseline_short, stop_resume_baseline),
+    stop_resume_triggered_at_short = COALESCE(stop_resume_triggered_at_short, stop_resume_triggered_at)
+WHERE COALESCE(real_trading_paused, FALSE)
+  AND NOT COALESCE(real_trading_paused_long, FALSE)
+  AND NOT COALESCE(real_trading_paused_short, FALSE);
+
+-- Upgrade existing DBs: CREATE IF NOT EXISTS does not add columns; keep in sync with CREATE above.
+
+
+
 
 CREATE INDEX IF NOT EXISTS idx_logic_securities_logic_id ON logic_securities(logic_id);
 CREATE INDEX IF NOT EXISTS idx_logic_securities_security_id ON logic_securities(security_id);
@@ -1349,23 +1841,36 @@ COMMENT ON TABLE logic_securities IS
 'Портфель ценных бумаг торговой логики: одна строка — одна бумага в logics';
 COMMENT ON COLUMN logic_securities.display_order IS 'Порядок отображения в UI';
 COMMENT ON COLUMN logic_securities.real_trading_paused IS
-'TRUE — реальная торговля по бумаге приостановлена (теневой режим после security_resume SL)';
+'TRUE если пауза long и/или short (OR); теневой режим security_resume по сторонам — см. *_long/*_short';
+COMMENT ON COLUMN logic_securities.real_trading_paused_long IS
+'TRUE — реальная торговля Long по бумаге в тени после security_resume (Short может оставаться боевой)';
+COMMENT ON COLUMN logic_securities.real_trading_paused_short IS
+'TRUE — реальная торговля Short по бумаге в тени после security_resume (Long может оставаться боевой)';
+COMMENT ON COLUMN logic_securities.real_trading_inverted IS
+'TRUE — по этой бумаге включена локальная инверсия логики после security_inversion SL';
 COMMENT ON COLUMN logic_securities.stop_resume_equity IS
-'Целевая стоимость трека бумаги для возобновления реальной торговли';
+'Устарело: цель resume по бумаге целиком; актуальные — stop_resume_equity_long/short';
 COMMENT ON COLUMN logic_securities.stop_resume_baseline IS
-'Стоимость трека сразу после срабатывания SL (база для теневого восстановления)';
+'Устарело: база resume по бумаге; актуальные — stop_resume_baseline_long/short';
+COMMENT ON COLUMN logic_securities.stop_resume_equity_long IS
+'Цель возобновления реальной Long-торговли (track до SL по стороне)';
+COMMENT ON COLUMN logic_securities.stop_resume_baseline_long IS
+'Track Long сразу после SL (база для теневого восстановления)';
+COMMENT ON COLUMN logic_securities.stop_resume_equity_short IS
+'Цель возобновления реальной Short-торговли (track до SL по стороне)';
+COMMENT ON COLUMN logic_securities.stop_resume_baseline_short IS
+'Track Short сразу после SL (база для теневого восстановления)';
+COMMENT ON COLUMN logic_securities.linear_tp_armed IS
+'TRUE — линейный TP (security_ltp_renew) взведён: ждём снижения цены для продажи';
+COMMENT ON COLUMN logic_securities.linear_tp_last_price IS
+'Цена закрытия бара при взведении / последняя цена пока TP взведён (для детекта падения)';
+COMMENT ON COLUMN logic_securities.linear_tp_arm_bar_dt IS
+'Бар, на котором взвели линейный TP';
 
-ALTER TABLE logic_securities ADD COLUMN IF NOT EXISTS real_trading_paused BOOLEAN NOT NULL DEFAULT FALSE;
-ALTER TABLE logic_securities ADD COLUMN IF NOT EXISTS stop_resume_equity NUMERIC(20, 6);
-ALTER TABLE logic_securities ADD COLUMN IF NOT EXISTS stop_resume_baseline NUMERIC(20, 6);
-ALTER TABLE logic_securities ADD COLUMN IF NOT EXISTS stop_resume_triggered_at TIMESTAMP;
 
 -- Демо (v40b): follow/breakout — SMA + подтверждение BB/STOCH на OPEN; CLOSE только по SMA
 -- (mean-reversion BB/STOCH вместе с SMA в AND почти никогда не срабатывает)
-DELETE FROM logic_indicator_signals lis
-USING logics l
-WHERE lis.logic_id = l.id
-  AND l.name = 'SMA Price Cross Demo';
+-- Демо-сигналы: не удаляем при upgrade; вставка только если сигналов ещё нет
 
 INSERT INTO logic_indicator_signals (
     logic_id, indicator_id, position_event, position_side, signal_kind, formula, display_order
@@ -1388,10 +1893,8 @@ CROSS JOIN (VALUES
 ) AS v(ind_code, position_event, position_side, signal_kind, formula, display_order)
 JOIN indicators i ON i.code = v.ind_code
 WHERE l.name = 'SMA Price Cross Demo'
-ON CONFLICT (logic_id, indicator_id, position_event, position_side, signal_kind) DO UPDATE SET
-    formula = EXCLUDED.formula,
-    display_order = EXCLUDED.display_order,
-    is_active = TRUE;
+  AND NOT EXISTS (SELECT 1 FROM logic_indicator_signals z WHERE z.logic_id = l.id)
+ON CONFLICT (logic_id, indicator_id, position_event, position_side, signal_kind) DO NOTHING;
 
 -- Все акции (stock) в портфель демо-логики (без дублей при нескольких prefix)
 INSERT INTO logic_securities (logic_id, security_id, display_order)
@@ -1406,27 +1909,25 @@ CROSS JOIN LATERAL (
     ORDER BY s.id, sp.prefix
 ) q
 WHERE l.name = 'SMA Price Cross Demo'
-ON CONFLICT (logic_id, security_id) DO UPDATE SET is_active = TRUE;
+ON CONFLICT (logic_id, security_id) DO NOTHING;
 
--- Стоп-лосс 1% по бумаге с возобновлением (security_resume) и тейк-профит 3% по бумаге
-DELETE FROM logic_stops ls
-USING logics l
-WHERE ls.logic_id = l.id
-  AND l.name = 'SMA Price Cross Demo';
+-- Стоп-лосс 1% по всему портфелю логики (portfolio) и тейк-профит 3% по бумаге
+-- Демо-стопы: insert only if empty
 
 INSERT INTO logic_stops (logic_id, rule_kind, scope_type, value, value_unit, display_order, is_active)
 SELECT l.id, v.rule_kind, v.scope_type, v.value, v.value_unit, v.display_order, TRUE
 FROM logics l
 CROSS JOIN (VALUES
-    ('stop_loss',    'security_resume', 1.0, 'percent', 0),
+    ('stop_loss',    'portfolio', 1.0, 'percent', 0),
     ('take_profit',  'security', 3.0, 'percent', 1)
 ) AS v(rule_kind, scope_type, value, value_unit, display_order)
-WHERE l.name = 'SMA Price Cross Demo';
+WHERE l.name = 'SMA Price Cross Demo'
+  AND NOT EXISTS (SELECT 1 FROM logic_stops z WHERE z.logic_id = l.id);
 
 -- =====================================================================
 -- v41: классические стратегии (по мотивам OsEngine Robots / Custom)
 -- Демо «SMA Price Cross Demo» выше не трогаем.
--- Все на FAKE-EFF-001, выключены, все акции, SL 1% resume / TP 3%.
+-- Все на FAKE-EFF-001, выключены, все акции, SL 1% portfolio / TP 3%.
 -- =====================================================================
 
 INSERT INTO logics (name, account_id, is_enabled)
@@ -1469,9 +1970,7 @@ WHERE l.name IN (
     'Stochastic Levels', 'EMA Price Cross', 'Dual MA Trend', 'SMA Stoch Pullback',
     'BB Stoch Bounce', 'SMAT3 Trend'
 )
-ON CONFLICT (logic_id, param_key) DO UPDATE SET
-    param_value = EXCLUDED.param_value,
-    updated_at = CURRENT_TIMESTAMP;
+ON CONFLICT (logic_id, param_key) DO NOTHING;
 
 -- Дозаполнение любых отсутствующих ключей из справочника
 INSERT INTO logic_params (logic_id, param_key, param_value, value_type)
@@ -1485,15 +1984,7 @@ WHERE l.name IN (
 )
 ON CONFLICT (logic_id, param_key) DO NOTHING;
 
--- Сброс сигналов seed-логик перед повторной вставкой
-DELETE FROM logic_indicator_signals lis
-USING logics l
-WHERE lis.logic_id = l.id
-  AND l.name IN (
-    'RSI Mean Reversion', 'Bollinger Bounce', 'Bollinger Breakout', 'MACD Zero Line',
-    'Stochastic Levels', 'EMA Price Cross', 'Dual MA Trend', 'SMA Stoch Pullback',
-    'BB Stoch Bounce', 'SMAT3 Trend'
-  );
+-- Сигналы seed: только если у логики ещё нет сигналов (не затираем копии и правки)
 
 -- RSI Mean Reversion (OsEngine RsiTrade)
 INSERT INTO logic_indicator_signals (
@@ -1508,7 +1999,8 @@ CROSS JOIN (VALUES
     ('RSI', 'close', 'short', 'trend',   '@RSI(period=14,series=VALUE) VALUE < 50', 3)
 ) AS v(ind_code, position_event, position_side, signal_kind, formula, display_order)
 JOIN indicators i ON i.code = v.ind_code
-WHERE l.name = 'RSI Mean Reversion';
+WHERE l.name = 'RSI Mean Reversion'
+  AND NOT EXISTS (SELECT 1 FROM logic_indicator_signals z WHERE z.logic_id = l.id);
 
 -- Bollinger Bounce (OsEngine StrategyBollinger)
 INSERT INTO logic_indicator_signals (
@@ -1523,7 +2015,8 @@ CROSS JOIN (VALUES
     ('BB',  'close', 'short', 'trend',   '@BB(period=20,series=MIDDLE) pp < VALUE', 3)
 ) AS v(ind_code, position_event, position_side, signal_kind, formula, display_order)
 JOIN indicators i ON i.code = v.ind_code
-WHERE l.name = 'Bollinger Bounce';
+WHERE l.name = 'Bollinger Bounce'
+  AND NOT EXISTS (SELECT 1 FROM logic_indicator_signals z WHERE z.logic_id = l.id);
 
 -- Bollinger Breakout (OsEngine BollingerRevers)
 INSERT INTO logic_indicator_signals (
@@ -1538,7 +2031,8 @@ CROSS JOIN (VALUES
     ('BB',  'close', 'short', 'counter', '@BB(period=20,series=MIDDLE) pp > VALUE', 3)
 ) AS v(ind_code, position_event, position_side, signal_kind, formula, display_order)
 JOIN indicators i ON i.code = v.ind_code
-WHERE l.name = 'Bollinger Breakout';
+WHERE l.name = 'Bollinger Breakout'
+  AND NOT EXISTS (SELECT 1 FROM logic_indicator_signals z WHERE z.logic_id = l.id);
 
 -- MACD Zero Line (OsEngine MacdRevers упрощённо: пересечение нуля)
 INSERT INTO logic_indicator_signals (
@@ -1553,7 +2047,8 @@ CROSS JOIN (VALUES
     ('MACD', 'close', 'short', 'counter', '@MACD(series=MACD) VALUE > 0', 3)
 ) AS v(ind_code, position_event, position_side, signal_kind, formula, display_order)
 JOIN indicators i ON i.code = v.ind_code
-WHERE l.name = 'MACD Zero Line';
+WHERE l.name = 'MACD Zero Line'
+  AND NOT EXISTS (SELECT 1 FROM logic_indicator_signals z WHERE z.logic_id = l.id);
 
 -- Stochastic Levels (контртренд по уровням, как RsiTrade для Stoch)
 INSERT INTO logic_indicator_signals (
@@ -1568,7 +2063,8 @@ CROSS JOIN (VALUES
     ('STOCH', 'close', 'short', 'trend',   '@STOCH(series=K) VALUE < 50', 3)
 ) AS v(ind_code, position_event, position_side, signal_kind, formula, display_order)
 JOIN indicators i ON i.code = v.ind_code
-WHERE l.name = 'Stochastic Levels';
+WHERE l.name = 'Stochastic Levels'
+  AND NOT EXISTS (SELECT 1 FROM logic_indicator_signals z WHERE z.logic_id = l.id);
 
 -- EMA Price Cross (OsEngine SmaTrendSample на EMA)
 INSERT INTO logic_indicator_signals (
@@ -1583,7 +2079,8 @@ CROSS JOIN (VALUES
     ('EMA', 'close', 'short', 'counter', '@EMA(period=20,series=VALUE) pp > VALUE', 3)
 ) AS v(ind_code, position_event, position_side, signal_kind, formula, display_order)
 JOIN indicators i ON i.code = v.ind_code
-WHERE l.name = 'EMA Price Cross';
+WHERE l.name = 'EMA Price Cross'
+  AND NOT EXISTS (SELECT 1 FROM logic_indicator_signals z WHERE z.logic_id = l.id);
 
 -- Dual MA Trend (SMA+EMA как в SmaWithAShift: фильтр «цена выше/ниже обеих»)
 INSERT INTO logic_indicator_signals (
@@ -1600,7 +2097,8 @@ CROSS JOIN (VALUES
     ('SMA', 'close', 'short', 'counter', '@SMA(period=20,series=VALUE) pp > VALUE', 5)
 ) AS v(ind_code, position_event, position_side, signal_kind, formula, display_order)
 JOIN indicators i ON i.code = v.ind_code
-WHERE l.name = 'Dual MA Trend';
+WHERE l.name = 'Dual MA Trend'
+  AND NOT EXISTS (SELECT 1 FROM logic_indicator_signals z WHERE z.logic_id = l.id);
 
 -- SMA Stoch Pullback (OsEngine SmaStochastic: тренд SMA + откат Stoch)
 INSERT INTO logic_indicator_signals (
@@ -1617,7 +2115,8 @@ CROSS JOIN (VALUES
     ('SMA',   'close', 'short', 'counter', '@SMA(period=20,series=VALUE) pp > VALUE', 5)
 ) AS v(ind_code, position_event, position_side, signal_kind, formula, display_order)
 JOIN indicators i ON i.code = v.ind_code
-WHERE l.name = 'SMA Stoch Pullback';
+WHERE l.name = 'SMA Stoch Pullback'
+  AND NOT EXISTS (SELECT 1 FROM logic_indicator_signals z WHERE z.logic_id = l.id);
 
 -- BB Stoch Bounce (OsEngine StrategyBollingerAndStochastic)
 INSERT INTO logic_indicator_signals (
@@ -1634,7 +2133,8 @@ CROSS JOIN (VALUES
     ('BB',    'close', 'short', 'trend',   '@BB(period=20,series=MIDDLE) pp < VALUE', 5)
 ) AS v(ind_code, position_event, position_side, signal_kind, formula, display_order)
 JOIN indicators i ON i.code = v.ind_code
-WHERE l.name = 'BB Stoch Bounce';
+WHERE l.name = 'BB Stoch Bounce'
+  AND NOT EXISTS (SELECT 1 FROM logic_indicator_signals z WHERE z.logic_id = l.id);
 
 -- SMAT3 Trend (тройное SMA как сглаженный тренд)
 INSERT INTO logic_indicator_signals (
@@ -1649,7 +2149,8 @@ CROSS JOIN (VALUES
     ('SMAT3', 'close', 'short', 'counter', '@SMAT3(series=VALUE) pp > VALUE', 3)
 ) AS v(ind_code, position_event, position_side, signal_kind, formula, display_order)
 JOIN indicators i ON i.code = v.ind_code
-WHERE l.name = 'SMAT3 Trend';
+WHERE l.name = 'SMAT3 Trend'
+  AND NOT EXISTS (SELECT 1 FROM logic_indicator_signals z WHERE z.logic_id = l.id);
 
 -- Все акции во все seed-логики (включая уже существующие строки)
 INSERT INTO logic_securities (logic_id, security_id, display_order)
@@ -1668,30 +2169,24 @@ WHERE l.name IN (
     'Stochastic Levels', 'EMA Price Cross', 'Dual MA Trend', 'SMA Stoch Pullback',
     'BB Stoch Bounce', 'SMAT3 Trend'
 )
-ON CONFLICT (logic_id, security_id) DO UPDATE SET is_active = TRUE;
+ON CONFLICT (logic_id, security_id) DO NOTHING;
 
 -- SL/TP как у демо
-DELETE FROM logic_stops ls
-USING logics l
-WHERE ls.logic_id = l.id
-  AND l.name IN (
-    'RSI Mean Reversion', 'Bollinger Bounce', 'Bollinger Breakout', 'MACD Zero Line',
-    'Stochastic Levels', 'EMA Price Cross', 'Dual MA Trend', 'SMA Stoch Pullback',
-    'BB Stoch Bounce', 'SMAT3 Trend'
-  );
+-- Стопы seed: insert only if empty
 
 INSERT INTO logic_stops (logic_id, rule_kind, scope_type, value, value_unit, display_order, is_active)
 SELECT l.id, v.rule_kind, v.scope_type, v.value, v.value_unit, v.display_order, TRUE
 FROM logics l
 CROSS JOIN (VALUES
-    ('stop_loss',   'security_resume', 1.0, 'percent', 0),
+    ('stop_loss',   'portfolio', 1.0, 'percent', 0),
     ('take_profit', 'security',        3.0, 'percent', 1)
 ) AS v(rule_kind, scope_type, value, value_unit, display_order)
 WHERE l.name IN (
     'RSI Mean Reversion', 'Bollinger Bounce', 'Bollinger Breakout', 'MACD Zero Line',
     'Stochastic Levels', 'EMA Price Cross', 'Dual MA Trend', 'SMA Stoch Pullback',
     'BB Stoch Bounce', 'SMAT3 Trend'
-);
+)
+  AND NOT EXISTS (SELECT 1 FROM logic_stops z WHERE z.logic_id = l.id);
 
 -- =====================================================================
 -- v43: L1–L4 из MultiLogicTradeA (FINRESP) — AND-сигналы, без Strict/Regime/OnFlip
@@ -1729,9 +2224,7 @@ CROSS JOIN (VALUES
 WHERE l.name IN (
     'L1 — лонг, тренд', 'L2 — лонг, боковик', 'L3 — шорт, тренд', 'L4 — шорт, боковик'
 )
-ON CONFLICT (logic_id, param_key) DO UPDATE SET
-    param_value = EXCLUDED.param_value,
-    updated_at = CURRENT_TIMESTAMP;
+ON CONFLICT (logic_id, param_key) DO NOTHING;
 
 INSERT INTO logic_params (logic_id, param_key, param_value, value_type)
 SELECT l.id, d.param_key, d.default_value, d.value_type
@@ -1742,12 +2235,7 @@ WHERE l.name IN (
 )
 ON CONFLICT (logic_id, param_key) DO NOTHING;
 
-DELETE FROM logic_indicator_signals lis
-USING logics l
-WHERE lis.logic_id = l.id
-  AND l.name IN (
-    'L1 — лонг, тренд', 'L2 — лонг, боковик', 'L3 — шорт, тренд', 'L4 — шорт, боковик'
-  );
+-- Сигналы seed: insert only if empty (см. AND NOT EXISTS ниже)
 
 -- L1 long trend: Op SMA Ab + LinReg AbUp + ATR GrOk + ADX TrOk + CCI>=100 + MACD>Sig
 INSERT INTO logic_indicator_signals (
@@ -1768,7 +2256,8 @@ CROSS JOIN (VALUES
     ('MACD',   'close', 'long', 'counter', '@MACD(fast_period=12,slow_period=26,signal_period=9,series=HISTOGRAM) VALUE < 0', 9)
 ) AS v(ind_code, position_event, position_side, signal_kind, formula, display_order)
 JOIN indicators i ON i.code = v.ind_code
-WHERE l.name = 'L1 — лонг, тренд';
+WHERE l.name = 'L1 — лонг, тренд'
+  AND NOT EXISTS (SELECT 1 FROM logic_indicator_signals z WHERE z.logic_id = l.id);
 
 -- L2 long flat: Stoch oversold + ADX weak + ATR growth + SMA Ab + MACD
 INSERT INTO logic_indicator_signals (
@@ -1787,7 +2276,8 @@ CROSS JOIN (VALUES
     ('MACD',  'close', 'long', 'counter', '@MACD(fast_period=12,slow_period=26,signal_period=9,series=HISTOGRAM) VALUE < 0', 7)
 ) AS v(ind_code, position_event, position_side, signal_kind, formula, display_order)
 JOIN indicators i ON i.code = v.ind_code
-WHERE l.name = 'L2 — лонг, боковик';
+WHERE l.name = 'L2 — лонг, боковик'
+  AND NOT EXISTS (SELECT 1 FROM logic_indicator_signals z WHERE z.logic_id = l.id);
 
 -- L3 short trend
 INSERT INTO logic_indicator_signals (
@@ -1808,7 +2298,8 @@ CROSS JOIN (VALUES
     ('MACD',   'close', 'short', 'counter', '@MACD(fast_period=12,slow_period=26,signal_period=9,series=HISTOGRAM) VALUE > 0', 9)
 ) AS v(ind_code, position_event, position_side, signal_kind, formula, display_order)
 JOIN indicators i ON i.code = v.ind_code
-WHERE l.name = 'L3 — шорт, тренд';
+WHERE l.name = 'L3 — шорт, тренд'
+  AND NOT EXISTS (SELECT 1 FROM logic_indicator_signals z WHERE z.logic_id = l.id);
 
 -- L4 short flat
 INSERT INTO logic_indicator_signals (
@@ -1827,7 +2318,8 @@ CROSS JOIN (VALUES
     ('MACD',  'close', 'short', 'counter', '@MACD(fast_period=12,slow_period=26,signal_period=9,series=HISTOGRAM) VALUE > 0', 7)
 ) AS v(ind_code, position_event, position_side, signal_kind, formula, display_order)
 JOIN indicators i ON i.code = v.ind_code
-WHERE l.name = 'L4 — шорт, боковик';
+WHERE l.name = 'L4 — шорт, боковик'
+  AND NOT EXISTS (SELECT 1 FROM logic_indicator_signals z WHERE z.logic_id = l.id);
 
 INSERT INTO logic_securities (logic_id, security_id, display_order)
 SELECT l.id, q.security_id, ROW_NUMBER() OVER (PARTITION BY l.id ORDER BY q.sort_key) - 1
@@ -1843,29 +2335,25 @@ CROSS JOIN LATERAL (
 WHERE l.name IN (
     'L1 — лонг, тренд', 'L2 — лонг, боковик', 'L3 — шорт, тренд', 'L4 — шорт, боковик'
 )
-ON CONFLICT (logic_id, security_id) DO UPDATE SET is_active = TRUE;
+ON CONFLICT (logic_id, security_id) DO NOTHING;
 
-DELETE FROM logic_stops ls
-USING logics l
-WHERE ls.logic_id = l.id
-  AND l.name IN (
-    'L1 — лонг, тренд', 'L2 — лонг, боковик', 'L3 — шорт, тренд', 'L4 — шорт, боковик'
-  );
+-- Стопы seed: insert only if empty
 
 INSERT INTO logic_stops (logic_id, rule_kind, scope_type, value, value_unit, display_order, is_active)
 SELECT l.id, v.rule_kind, v.scope_type, v.value, v.value_unit, v.display_order, TRUE
 FROM logics l
 CROSS JOIN (VALUES
-    ('stop_loss',   'security_resume', 1.0, 'percent', 0),
+    ('stop_loss',   'portfolio', 1.0, 'percent', 0),
     ('take_profit', 'security',        3.0, 'percent', 1)
 ) AS v(rule_kind, scope_type, value, value_unit, display_order)
 WHERE l.name IN (
     'L1 — лонг, тренд', 'L2 — лонг, боковик', 'L3 — шорт, тренд', 'L4 — шорт, боковик'
-);
+)
+  AND NOT EXISTS (SELECT 1 FROM logic_stops z WHERE z.logic_id = l.id);
 
 -- =====================================================================
 -- v44: ещё 5 контртрендовых стратегий (OsEngine-style)
--- FAKE, выключены, все акции, SL 1% resume / TP 3%.
+-- FAKE, выключены, все акции, SL 1% portfolio / TP 3%.
 -- =====================================================================
 
 INSERT INTO logics (name, account_id, is_enabled, note)
@@ -1882,6 +2370,10 @@ CROSS JOIN (VALUES
         'Контртрендовая. OsEngine-style fade по каналу LinReg: отскок от нижней/верхней границы к середине канала.'
     ),
     (
+        'Square Fade',
+        'Контртрендовая. Как LinReg Fade, но канал SQUARE (квадратичная регрессия b+a·x+c·x²): отскок от границ к середине.'
+    ),
+    (
         'ADX Range RSI',
         'Контртрендовая (боковик). Слабый тренд ADX < 25 + перепроданность/перекупленность RSI — OsEngine range-trading.'
     ),
@@ -1895,7 +2387,7 @@ CROSS JOIN (VALUES
     )
 ) AS v(name, note)
 WHERE b.code = 'T-BANK' AND a.account_code = 'FAKE-EFF-001'
-ON CONFLICT (name) DO UPDATE SET note = EXCLUDED.note;
+ON CONFLICT (name) DO NOTHING;
 
 INSERT INTO logic_params (logic_id, param_key, param_value, value_type)
 SELECT l.id, v.param_key, v.param_value, v.value_type
@@ -1913,27 +2405,20 @@ CROSS JOIN (VALUES
     ('rating_lookback_days', '7', 'integer')
 ) AS v(param_key, param_value, value_type)
 WHERE l.name IN (
-    'CCI Countertrade', 'LinReg Fade', 'ADX Range RSI', 'MACD Hist Fade', 'ATR Spike Reversal'
+    'CCI Countertrade', 'LinReg Fade', 'Square Fade', 'ADX Range RSI', 'MACD Hist Fade', 'ATR Spike Reversal'
 )
-ON CONFLICT (logic_id, param_key) DO UPDATE SET
-    param_value = EXCLUDED.param_value,
-    updated_at = CURRENT_TIMESTAMP;
+ON CONFLICT (logic_id, param_key) DO NOTHING;
 
 INSERT INTO logic_params (logic_id, param_key, param_value, value_type)
 SELECT l.id, d.param_key, d.default_value, d.value_type
 FROM logics l
 CROSS JOIN logic_param_defs d
 WHERE l.name IN (
-    'CCI Countertrade', 'LinReg Fade', 'ADX Range RSI', 'MACD Hist Fade', 'ATR Spike Reversal'
+    'CCI Countertrade', 'LinReg Fade', 'Square Fade', 'ADX Range RSI', 'MACD Hist Fade', 'ATR Spike Reversal'
 )
 ON CONFLICT (logic_id, param_key) DO NOTHING;
 
-DELETE FROM logic_indicator_signals lis
-USING logics l
-WHERE lis.logic_id = l.id
-  AND l.name IN (
-    'CCI Countertrade', 'LinReg Fade', 'ADX Range RSI', 'MACD Hist Fade', 'ATR Spike Reversal'
-  );
+-- Сигналы seed: insert only if empty (см. AND NOT EXISTS ниже)
 
 INSERT INTO logic_indicator_signals (
     logic_id, indicator_id, position_event, position_side, signal_kind, formula, display_order
@@ -1947,7 +2432,8 @@ CROSS JOIN (VALUES
     ('CCI', 'close', 'short', 'trend',   '@CCI(period=20,series=VALUE) VALUE <= 0', 3)
 ) AS v(ind_code, position_event, position_side, signal_kind, formula, display_order)
 JOIN indicators i ON i.code = v.ind_code
-WHERE l.name = 'CCI Countertrade';
+WHERE l.name = 'CCI Countertrade'
+  AND NOT EXISTS (SELECT 1 FROM logic_indicator_signals z WHERE z.logic_id = l.id);
 
 INSERT INTO logic_indicator_signals (
     logic_id, indicator_id, position_event, position_side, signal_kind, formula, display_order
@@ -1961,12 +2447,48 @@ CROSS JOIN (VALUES
     ('LINREG', 'close', 'short', 'trend',   '@LINREG(period=20,std_dev=2,series=MIDDLE) pp <= VALUE', 3)
 ) AS v(ind_code, position_event, position_side, signal_kind, formula, display_order)
 JOIN indicators i ON i.code = v.ind_code
-WHERE l.name = 'LinReg Fade';
+WHERE l.name = 'LinReg Fade'
+  AND NOT EXISTS (SELECT 1 FROM logic_indicator_signals z WHERE z.logic_id = l.id);
 
 INSERT INTO logic_indicator_signals (
     logic_id, indicator_id, position_event, position_side, signal_kind, formula, display_order
 )
-SELECT l.id, i.id, v.position_event, v.position_side, v.signal_kind, v.formula, display_order
+SELECT l.id, i.id, v.position_event, v.position_side, v.signal_kind, v.formula, v.display_order
+FROM logics l
+CROSS JOIN (VALUES
+    ('SQUARE', 'open',  'long',  'counter', '@SQUARE(period=20,std_dev=2,series=LOWER) pp <= VALUE', 0),
+    ('SQUARE', 'close', 'long',  'trend',   '@SQUARE(period=20,std_dev=2,series=MIDDLE) pp >= VALUE', 1),
+    ('SQUARE', 'open',  'short', 'counter', '@SQUARE(period=20,std_dev=2,series=UPPER) pp >= VALUE', 2),
+    ('SQUARE', 'close', 'short', 'trend',   '@SQUARE(period=20,std_dev=2,series=MIDDLE) pp <= VALUE', 3)
+) AS v(ind_code, position_event, position_side, signal_kind, formula, display_order)
+JOIN indicators i ON i.code = v.ind_code
+WHERE l.name = 'Square Fade'
+  AND NOT EXISTS (SELECT 1 FROM logic_indicator_signals z WHERE z.logic_id = l.id);
+
+-- Upgrade: убрать неудачный LINREGV / LinRegV Fade (если ставили раньше).
+-- Tables logic_trades / logic_trade_lots are created later in this script — guard with to_regclass.
+DO $$
+BEGIN
+    IF to_regclass('public.logic_trade_lots') IS NOT NULL THEN
+        DELETE FROM logic_trade_lots
+        WHERE logic_id IN (SELECT id FROM logics WHERE name = 'LinRegV Fade');
+    END IF;
+    IF to_regclass('public.logic_trades') IS NOT NULL THEN
+        DELETE FROM logic_trades
+        WHERE logic_id IN (SELECT id FROM logics WHERE name = 'LinRegV Fade');
+    END IF;
+    DELETE FROM logics WHERE name = 'LinRegV Fade';
+    IF to_regclass('public.logic_indicator_signals') IS NOT NULL THEN
+        DELETE FROM logic_indicator_signals
+        WHERE indicator_id IN (SELECT id FROM indicators WHERE code = 'LINREGV');
+    END IF;
+    DELETE FROM indicators WHERE code = 'LINREGV';
+END $$;
+
+INSERT INTO logic_indicator_signals (
+    logic_id, indicator_id, position_event, position_side, signal_kind, formula, display_order
+)
+SELECT l.id, i.id, v.position_event, v.position_side, v.signal_kind, v.formula, v.display_order
 FROM logics l
 CROSS JOIN (VALUES
     ('ADX', 'open',  'long',  'counter', '@ADX(period=14,series=ADX) VALUE < 25', 0),
@@ -1977,7 +2499,8 @@ CROSS JOIN (VALUES
     ('RSI', 'close', 'short', 'trend',   '@RSI(period=14,series=VALUE) VALUE < 50', 5)
 ) AS v(ind_code, position_event, position_side, signal_kind, formula, display_order)
 JOIN indicators i ON i.code = v.ind_code
-WHERE l.name = 'ADX Range RSI';
+WHERE l.name = 'ADX Range RSI'
+  AND NOT EXISTS (SELECT 1 FROM logic_indicator_signals z WHERE z.logic_id = l.id);
 
 INSERT INTO logic_indicator_signals (
     logic_id, indicator_id, position_event, position_side, signal_kind, formula, display_order
@@ -1991,7 +2514,8 @@ CROSS JOIN (VALUES
     ('MACD', 'close', 'short', 'trend',   '@MACD(fast_period=12,slow_period=26,signal_period=9,series=HISTOGRAM) VALUE < 0', 3)
 ) AS v(ind_code, position_event, position_side, signal_kind, formula, display_order)
 JOIN indicators i ON i.code = v.ind_code
-WHERE l.name = 'MACD Hist Fade';
+WHERE l.name = 'MACD Hist Fade'
+  AND NOT EXISTS (SELECT 1 FROM logic_indicator_signals z WHERE z.logic_id = l.id);
 
 INSERT INTO logic_indicator_signals (
     logic_id, indicator_id, position_event, position_side, signal_kind, formula, display_order
@@ -2007,7 +2531,8 @@ CROSS JOIN (VALUES
     ('RSI', 'close', 'short', 'trend',   '@RSI(period=14,series=VALUE) VALUE < 45', 5)
 ) AS v(ind_code, position_event, position_side, signal_kind, formula, display_order)
 JOIN indicators i ON i.code = v.ind_code
-WHERE l.name = 'ATR Spike Reversal';
+WHERE l.name = 'ATR Spike Reversal'
+  AND NOT EXISTS (SELECT 1 FROM logic_indicator_signals z WHERE z.logic_id = l.id);
 
 INSERT INTO logic_securities (logic_id, security_id, display_order)
 SELECT l.id, q.security_id, ROW_NUMBER() OVER (PARTITION BY l.id ORDER BY q.sort_key) - 1
@@ -2021,27 +2546,627 @@ CROSS JOIN LATERAL (
     ORDER BY s.id, sp.prefix
 ) q
 WHERE l.name IN (
-    'CCI Countertrade', 'LinReg Fade', 'ADX Range RSI', 'MACD Hist Fade', 'ATR Spike Reversal'
+    'CCI Countertrade', 'LinReg Fade', 'Square Fade', 'ADX Range RSI', 'MACD Hist Fade', 'ATR Spike Reversal'
 )
-ON CONFLICT (logic_id, security_id) DO UPDATE SET is_active = TRUE;
+ON CONFLICT (logic_id, security_id) DO NOTHING;
 
-DELETE FROM logic_stops ls
-USING logics l
-WHERE ls.logic_id = l.id
-  AND l.name IN (
-    'CCI Countertrade', 'LinReg Fade', 'ADX Range RSI', 'MACD Hist Fade', 'ATR Spike Reversal'
-  );
+-- Стопы seed: insert only if empty
 
 INSERT INTO logic_stops (logic_id, rule_kind, scope_type, value, value_unit, display_order, is_active)
 SELECT l.id, v.rule_kind, v.scope_type, v.value, v.value_unit, v.display_order, TRUE
 FROM logics l
 CROSS JOIN (VALUES
-    ('stop_loss',   'security_resume', 1.0, 'percent', 0),
+    ('stop_loss',   'portfolio', 1.0, 'percent', 0),
     ('take_profit', 'security',        3.0, 'percent', 1)
 ) AS v(rule_kind, scope_type, value, value_unit, display_order)
 WHERE l.name IN (
-    'CCI Countertrade', 'LinReg Fade', 'ADX Range RSI', 'MACD Hist Fade', 'ATR Spike Reversal'
-);
+    'CCI Countertrade', 'LinReg Fade', 'Square Fade', 'ADX Range RSI', 'MACD Hist Fade', 'ATR Spike Reversal'
+)
+  AND NOT EXISTS (SELECT 1 FROM logic_stops z WHERE z.logic_id = l.id);
+
+-- =====================================================================
+-- v45: +5 трендовых и +10 контртрендовых (OsEngine-style), ещё не в seed
+-- FAKE, выключены, все акции, SL 1% portfolio / TP 3%.
+-- Только INSERT IF NOT EXISTS — копии пользователя и правки не затираются.
+-- =====================================================================
+
+INSERT INTO logics (name, account_id, is_enabled, note)
+SELECT v.name, a.id, FALSE, v.note
+FROM accounts a
+JOIN brokers b ON b.id = a.broker_id
+CROSS JOIN (VALUES
+    -- 5 trend
+    ('MACD Signal Cross', 'Трендовая. OsEngine MacdLine: long при HISTOGRAM>0 (MACD выше Signal), short при HISTOGRAM<0.'),
+    ('ADX DI Trend', 'Трендовая. OsEngine AdxTrade: ADX>25 и направление +DI/−DI; выход при ослаблении ADX.'),
+    ('SMA100 Trend', 'Трендовая. OsEngine SmaTrendSample (долгая SMA): long выше SMA(100), short ниже.'),
+    ('LinReg Slope Trend', 'Трендовая. Следование наклону LinReg: long при SLOPE>0 и цене выше mid, short зеркально.'),
+    ('PACC Momentum Trend', 'Трендовая. OsEngine-style по ускорению цены PACC: long при PACC>0, short при PACC<0.'),
+    -- 10 counter-trend
+    ('RSI Extreme 20/80', 'Контртрендовая. OsEngine RsiTrade (жёсткие уровни): long RSI<20, short RSI>80.'),
+    ('Stoch D Fade', 'Контртрендовая. OsEngine Stochastic по %D: long %D<20, short %D>80.'),
+    ('CCI Extreme 200', 'Контртрендовая. OsEngine CciTrade (экстремум ±200): вход на перегибе, выход к нулю.'),
+    ('MACD Signal Fade', 'Контртрендовая. Fade против гистограммы MACD (зеркало MacdLine): long при HISTOGRAM<0.'),
+    ('ADX Exhaustion Fade', 'Контртрендовая. Сильный ADX>40 + RSI-экстремум — усталость тренда (OsEngine exhaustion).'),
+    ('ATR Quiet RSI', 'Контртрендовая. Низкая волатильность ATR GROWTH5<1 + RSI fade — боковик.'),
+    ('SMA Stretch Fade', 'Контртрендовая. Сильный отрыв цены от SMA(20) + RSI — возврат к средней (OsEngine stretch).'),
+    ('Stoch RSI Combo', 'Контртрендовая (комбо). OsEngine-style: одновременно Stoch и RSI в экстремуме.'),
+    ('PACC Reversal', 'Контртрендовая. Разворот ускорения PACC против цены/RSI — fade после импульса.'),
+    ('EMA RSI Fade', 'Контртрендовая. Цена у EMA + RSI перепродан/перекуп — откат к EMA (OsEngine pullback fade).')
+) AS v(name, note)
+WHERE b.code = 'T-BANK' AND a.account_code = 'FAKE-EFF-001'
+ON CONFLICT (name) DO NOTHING;
+
+INSERT INTO logic_params (logic_id, param_key, param_value, value_type)
+SELECT l.id, v.param_key, v.param_value, v.value_type
+FROM logics l
+CROSS JOIN (VALUES
+    ('timeframe', 'M15', 'text'),
+    ('position_size_pct', '10', 'number'),
+    ('max_open_positions', '3', 'integer'),
+    ('initial_balance', '1000000', 'money'),
+    ('current_balance', '1000000', 'money'),
+    ('commission_pct', '0.03', 'number'),
+    ('cost_method', 'FIFO', 'text'),
+    ('stop_loss_timeframe', 'M5', 'text'),
+    ('base_annual_rate_pct', '20', 'number'),
+    ('rating_lookback_days', '7', 'integer')
+) AS v(param_key, param_value, value_type)
+WHERE l.name IN (
+    'MACD Signal Cross', 'ADX DI Trend', 'SMA100 Trend', 'LinReg Slope Trend', 'PACC Momentum Trend',
+    'RSI Extreme 20/80', 'Stoch D Fade', 'CCI Extreme 200', 'MACD Signal Fade', 'ADX Exhaustion Fade',
+    'ATR Quiet RSI', 'SMA Stretch Fade', 'Stoch RSI Combo', 'PACC Reversal', 'EMA RSI Fade'
+)
+ON CONFLICT (logic_id, param_key) DO NOTHING;
+
+INSERT INTO logic_params (logic_id, param_key, param_value, value_type)
+SELECT l.id, d.param_key, d.default_value, d.value_type
+FROM logics l
+CROSS JOIN logic_param_defs d
+WHERE l.name IN (
+    'MACD Signal Cross', 'ADX DI Trend', 'SMA100 Trend', 'LinReg Slope Trend', 'PACC Momentum Trend',
+    'RSI Extreme 20/80', 'Stoch D Fade', 'CCI Extreme 200', 'MACD Signal Fade', 'ADX Exhaustion Fade',
+    'ATR Quiet RSI', 'SMA Stretch Fade', 'Stoch RSI Combo', 'PACC Reversal', 'EMA RSI Fade'
+)
+ON CONFLICT (logic_id, param_key) DO NOTHING;
+
+-- --- trend signals ---
+INSERT INTO logic_indicator_signals (
+    logic_id, indicator_id, position_event, position_side, signal_kind, formula, display_order
+)
+SELECT l.id, i.id, v.position_event, v.position_side, v.signal_kind, v.formula, v.display_order
+FROM logics l
+CROSS JOIN (VALUES
+    ('MACD', 'open',  'long',  'trend',   '@MACD(fast_period=12,slow_period=26,signal_period=9,series=HISTOGRAM) VALUE > 0', 0),
+    ('MACD', 'close', 'long',  'trend',   '@MACD(fast_period=12,slow_period=26,signal_period=9,series=HISTOGRAM) VALUE < 0', 1),
+    ('MACD', 'open',  'short', 'trend',   '@MACD(fast_period=12,slow_period=26,signal_period=9,series=HISTOGRAM) VALUE < 0', 2),
+    ('MACD', 'close', 'short', 'trend',   '@MACD(fast_period=12,slow_period=26,signal_period=9,series=HISTOGRAM) VALUE > 0', 3)
+) AS v(ind_code, position_event, position_side, signal_kind, formula, display_order)
+JOIN indicators i ON i.code = v.ind_code
+WHERE l.name = 'MACD Signal Cross'
+  AND NOT EXISTS (SELECT 1 FROM logic_indicator_signals z WHERE z.logic_id = l.id);
+
+INSERT INTO logic_indicator_signals (
+    logic_id, indicator_id, position_event, position_side, signal_kind, formula, display_order
+)
+SELECT l.id, i.id, v.position_event, v.position_side, v.signal_kind, v.formula, v.display_order
+FROM logics l
+CROSS JOIN (VALUES
+    ('ADX', 'open',  'long',  'trend',   '@ADX(period=14,series=ADX) VALUE > 25', 0),
+    ('SMA', 'open',  'long',  'trend',   '@SMA(period=50,series=VALUE) pp > VALUE', 1),
+    ('ADX', 'close', 'long',  'trend',   '@ADX(period=14,series=ADX) VALUE < 20', 2),
+    ('ADX', 'open',  'short', 'trend',   '@ADX(period=14,series=ADX) VALUE > 25', 3),
+    ('SMA', 'open',  'short', 'trend',   '@SMA(period=50,series=VALUE) pp < VALUE', 4),
+    ('ADX', 'close', 'short', 'trend',   '@ADX(period=14,series=ADX) VALUE < 20', 5)
+) AS v(ind_code, position_event, position_side, signal_kind, formula, display_order)
+JOIN indicators i ON i.code = v.ind_code
+WHERE l.name = 'ADX DI Trend'
+  AND NOT EXISTS (SELECT 1 FROM logic_indicator_signals z WHERE z.logic_id = l.id);
+
+INSERT INTO logic_indicator_signals (
+    logic_id, indicator_id, position_event, position_side, signal_kind, formula, display_order
+)
+SELECT l.id, i.id, v.position_event, v.position_side, v.signal_kind, v.formula, v.display_order
+FROM logics l
+CROSS JOIN (VALUES
+    ('SMA', 'open',  'long',  'trend',   '@SMA(period=100,series=VALUE) pp > VALUE', 0),
+    ('SMA', 'close', 'long',  'trend',   '@SMA(period=100,series=VALUE) pp < VALUE', 1),
+    ('SMA', 'open',  'short', 'trend',   '@SMA(period=100,series=VALUE) pp < VALUE', 2),
+    ('SMA', 'close', 'short', 'trend',   '@SMA(period=100,series=VALUE) pp > VALUE', 3)
+) AS v(ind_code, position_event, position_side, signal_kind, formula, display_order)
+JOIN indicators i ON i.code = v.ind_code
+WHERE l.name = 'SMA100 Trend'
+  AND NOT EXISTS (SELECT 1 FROM logic_indicator_signals z WHERE z.logic_id = l.id);
+
+INSERT INTO logic_indicator_signals (
+    logic_id, indicator_id, position_event, position_side, signal_kind, formula, display_order
+)
+SELECT l.id, i.id, v.position_event, v.position_side, v.signal_kind, v.formula, v.display_order
+FROM logics l
+CROSS JOIN (VALUES
+    ('LINREG', 'open',  'long',  'trend',   '@LINREG(period=20,std_dev=2,series=SLOPE) VALUE > 0', 0),
+    ('SMA',    'open',  'long',  'trend',   '@SMA(period=20,series=VALUE) pp > VALUE', 1),
+    ('LINREG', 'close', 'long',  'trend',   '@LINREG(period=20,std_dev=2,series=SLOPE) VALUE < 0', 2),
+    ('LINREG', 'open',  'short', 'trend',   '@LINREG(period=20,std_dev=2,series=SLOPE) VALUE < 0', 3),
+    ('SMA',    'open',  'short', 'trend',   '@SMA(period=20,series=VALUE) pp < VALUE', 4),
+    ('LINREG', 'close', 'short', 'trend',   '@LINREG(period=20,std_dev=2,series=SLOPE) VALUE > 0', 5)
+) AS v(ind_code, position_event, position_side, signal_kind, formula, display_order)
+JOIN indicators i ON i.code = v.ind_code
+WHERE l.name = 'LinReg Slope Trend'
+  AND NOT EXISTS (SELECT 1 FROM logic_indicator_signals z WHERE z.logic_id = l.id);
+
+INSERT INTO logic_indicator_signals (
+    logic_id, indicator_id, position_event, position_side, signal_kind, formula, display_order
+)
+SELECT l.id, i.id, v.position_event, v.position_side, v.signal_kind, v.formula, v.display_order
+FROM logics l
+CROSS JOIN (VALUES
+    ('PACC', 'open',  'long',  'trend',   '@PACC(series=VALUE) VALUE > 0', 0),
+    ('PACC', 'close', 'long',  'trend',   '@PACC(series=VALUE) VALUE < 0', 1),
+    ('PACC', 'open',  'short', 'trend',   '@PACC(series=VALUE) VALUE < 0', 2),
+    ('PACC', 'close', 'short', 'trend',   '@PACC(series=VALUE) VALUE > 0', 3)
+) AS v(ind_code, position_event, position_side, signal_kind, formula, display_order)
+JOIN indicators i ON i.code = v.ind_code
+WHERE l.name = 'PACC Momentum Trend'
+  AND NOT EXISTS (SELECT 1 FROM logic_indicator_signals z WHERE z.logic_id = l.id);
+
+-- --- counter-trend signals ---
+INSERT INTO logic_indicator_signals (
+    logic_id, indicator_id, position_event, position_side, signal_kind, formula, display_order
+)
+SELECT l.id, i.id, v.position_event, v.position_side, v.signal_kind, v.formula, v.display_order
+FROM logics l
+CROSS JOIN (VALUES
+    ('RSI', 'open',  'long',  'counter', '@RSI(period=14,series=VALUE) VALUE < 20', 0),
+    ('RSI', 'close', 'long',  'trend',   '@RSI(period=14,series=VALUE) VALUE > 50', 1),
+    ('RSI', 'open',  'short', 'counter', '@RSI(period=14,series=VALUE) VALUE > 80', 2),
+    ('RSI', 'close', 'short', 'trend',   '@RSI(period=14,series=VALUE) VALUE < 50', 3)
+) AS v(ind_code, position_event, position_side, signal_kind, formula, display_order)
+JOIN indicators i ON i.code = v.ind_code
+WHERE l.name = 'RSI Extreme 20/80'
+  AND NOT EXISTS (SELECT 1 FROM logic_indicator_signals z WHERE z.logic_id = l.id);
+
+INSERT INTO logic_indicator_signals (
+    logic_id, indicator_id, position_event, position_side, signal_kind, formula, display_order
+)
+SELECT l.id, i.id, v.position_event, v.position_side, v.signal_kind, v.formula, v.display_order
+FROM logics l
+CROSS JOIN (VALUES
+    ('STOCH', 'open',  'long',  'counter', '@STOCH(series=D) VALUE < 20', 0),
+    ('STOCH', 'close', 'long',  'trend',   '@STOCH(series=D) VALUE > 50', 1),
+    ('STOCH', 'open',  'short', 'counter', '@STOCH(series=D) VALUE > 80', 2),
+    ('STOCH', 'close', 'short', 'trend',   '@STOCH(series=D) VALUE < 50', 3)
+) AS v(ind_code, position_event, position_side, signal_kind, formula, display_order)
+JOIN indicators i ON i.code = v.ind_code
+WHERE l.name = 'Stoch D Fade'
+  AND NOT EXISTS (SELECT 1 FROM logic_indicator_signals z WHERE z.logic_id = l.id);
+
+INSERT INTO logic_indicator_signals (
+    logic_id, indicator_id, position_event, position_side, signal_kind, formula, display_order
+)
+SELECT l.id, i.id, v.position_event, v.position_side, v.signal_kind, v.formula, v.display_order
+FROM logics l
+CROSS JOIN (VALUES
+    ('CCI', 'open',  'long',  'counter', '@CCI(period=20,series=VALUE) VALUE <= -200', 0),
+    ('CCI', 'close', 'long',  'trend',   '@CCI(period=20,series=VALUE) VALUE >= 0', 1),
+    ('CCI', 'open',  'short', 'counter', '@CCI(period=20,series=VALUE) VALUE >= 200', 2),
+    ('CCI', 'close', 'short', 'trend',   '@CCI(period=20,series=VALUE) VALUE <= 0', 3)
+) AS v(ind_code, position_event, position_side, signal_kind, formula, display_order)
+JOIN indicators i ON i.code = v.ind_code
+WHERE l.name = 'CCI Extreme 200'
+  AND NOT EXISTS (SELECT 1 FROM logic_indicator_signals z WHERE z.logic_id = l.id);
+
+INSERT INTO logic_indicator_signals (
+    logic_id, indicator_id, position_event, position_side, signal_kind, formula, display_order
+)
+SELECT l.id, i.id, v.position_event, v.position_side, v.signal_kind, v.formula, v.display_order
+FROM logics l
+CROSS JOIN (VALUES
+    ('MACD', 'open',  'long',  'counter', '@MACD(fast_period=12,slow_period=26,signal_period=9,series=HISTOGRAM) VALUE < 0', 0),
+    ('MACD', 'close', 'long',  'trend',   '@MACD(fast_period=12,slow_period=26,signal_period=9,series=HISTOGRAM) VALUE > 0', 1),
+    ('MACD', 'open',  'short', 'counter', '@MACD(fast_period=12,slow_period=26,signal_period=9,series=HISTOGRAM) VALUE > 0', 2),
+    ('MACD', 'close', 'short', 'trend',   '@MACD(fast_period=12,slow_period=26,signal_period=9,series=HISTOGRAM) VALUE < 0', 3)
+) AS v(ind_code, position_event, position_side, signal_kind, formula, display_order)
+JOIN indicators i ON i.code = v.ind_code
+WHERE l.name = 'MACD Signal Fade'
+  AND NOT EXISTS (SELECT 1 FROM logic_indicator_signals z WHERE z.logic_id = l.id);
+
+INSERT INTO logic_indicator_signals (
+    logic_id, indicator_id, position_event, position_side, signal_kind, formula, display_order
+)
+SELECT l.id, i.id, v.position_event, v.position_side, v.signal_kind, v.formula, v.display_order
+FROM logics l
+CROSS JOIN (VALUES
+    ('ADX', 'open',  'long',  'counter', '@ADX(period=14,series=ADX) VALUE > 40', 0),
+    ('RSI', 'open',  'long',  'counter', '@RSI(period=14,series=VALUE) VALUE < 30', 1),
+    ('RSI', 'close', 'long',  'trend',   '@RSI(period=14,series=VALUE) VALUE > 50', 2),
+    ('ADX', 'open',  'short', 'counter', '@ADX(period=14,series=ADX) VALUE > 40', 3),
+    ('RSI', 'open',  'short', 'counter', '@RSI(period=14,series=VALUE) VALUE > 70', 4),
+    ('RSI', 'close', 'short', 'trend',   '@RSI(period=14,series=VALUE) VALUE < 50', 5)
+) AS v(ind_code, position_event, position_side, signal_kind, formula, display_order)
+JOIN indicators i ON i.code = v.ind_code
+WHERE l.name = 'ADX Exhaustion Fade'
+  AND NOT EXISTS (SELECT 1 FROM logic_indicator_signals z WHERE z.logic_id = l.id);
+
+INSERT INTO logic_indicator_signals (
+    logic_id, indicator_id, position_event, position_side, signal_kind, formula, display_order
+)
+SELECT l.id, i.id, v.position_event, v.position_side, v.signal_kind, v.formula, v.display_order
+FROM logics l
+CROSS JOIN (VALUES
+    ('ATR', 'open',  'long',  'counter', '@ATR(period=14,series=GROWTH5) VALUE < 1', 0),
+    ('RSI', 'open',  'long',  'counter', '@RSI(period=14,series=VALUE) VALUE < 35', 1),
+    ('RSI', 'close', 'long',  'trend',   '@RSI(period=14,series=VALUE) VALUE > 55', 2),
+    ('ATR', 'open',  'short', 'counter', '@ATR(period=14,series=GROWTH5) VALUE < 1', 3),
+    ('RSI', 'open',  'short', 'counter', '@RSI(period=14,series=VALUE) VALUE > 65', 4),
+    ('RSI', 'close', 'short', 'trend',   '@RSI(period=14,series=VALUE) VALUE < 45', 5)
+) AS v(ind_code, position_event, position_side, signal_kind, formula, display_order)
+JOIN indicators i ON i.code = v.ind_code
+WHERE l.name = 'ATR Quiet RSI'
+  AND NOT EXISTS (SELECT 1 FROM logic_indicator_signals z WHERE z.logic_id = l.id);
+
+INSERT INTO logic_indicator_signals (
+    logic_id, indicator_id, position_event, position_side, signal_kind, formula, display_order
+)
+SELECT l.id, i.id, v.position_event, v.position_side, v.signal_kind, v.formula, v.display_order
+FROM logics l
+CROSS JOIN (VALUES
+    ('SMA', 'open',  'long',  'counter', '@SMA(period=20,series=VALUE) pp < VALUE', 0),
+    ('RSI', 'open',  'long',  'counter', '@RSI(period=14,series=VALUE) VALUE < 30', 1),
+    ('SMA', 'close', 'long',  'trend',   '@SMA(period=20,series=VALUE) pp >= VALUE', 2),
+    ('SMA', 'open',  'short', 'counter', '@SMA(period=20,series=VALUE) pp > VALUE', 3),
+    ('RSI', 'open',  'short', 'counter', '@RSI(period=14,series=VALUE) VALUE > 70', 4),
+    ('SMA', 'close', 'short', 'trend',   '@SMA(period=20,series=VALUE) pp <= VALUE', 5)
+) AS v(ind_code, position_event, position_side, signal_kind, formula, display_order)
+JOIN indicators i ON i.code = v.ind_code
+WHERE l.name = 'SMA Stretch Fade'
+  AND NOT EXISTS (SELECT 1 FROM logic_indicator_signals z WHERE z.logic_id = l.id);
+
+INSERT INTO logic_indicator_signals (
+    logic_id, indicator_id, position_event, position_side, signal_kind, formula, display_order
+)
+SELECT l.id, i.id, v.position_event, v.position_side, v.signal_kind, v.formula, v.display_order
+FROM logics l
+CROSS JOIN (VALUES
+    ('STOCH', 'open',  'long',  'counter', '@STOCH(series=K) VALUE < 20', 0),
+    ('RSI',   'open',  'long',  'counter', '@RSI(period=14,series=VALUE) VALUE < 30', 1),
+    ('RSI',   'close', 'long',  'trend',   '@RSI(period=14,series=VALUE) VALUE > 50', 2),
+    ('STOCH', 'open',  'short', 'counter', '@STOCH(series=K) VALUE > 80', 3),
+    ('RSI',   'open',  'short', 'counter', '@RSI(period=14,series=VALUE) VALUE > 70', 4),
+    ('RSI',   'close', 'short', 'trend',   '@RSI(period=14,series=VALUE) VALUE < 50', 5)
+) AS v(ind_code, position_event, position_side, signal_kind, formula, display_order)
+JOIN indicators i ON i.code = v.ind_code
+WHERE l.name = 'Stoch RSI Combo'
+  AND NOT EXISTS (SELECT 1 FROM logic_indicator_signals z WHERE z.logic_id = l.id);
+
+INSERT INTO logic_indicator_signals (
+    logic_id, indicator_id, position_event, position_side, signal_kind, formula, display_order
+)
+SELECT l.id, i.id, v.position_event, v.position_side, v.signal_kind, v.formula, v.display_order
+FROM logics l
+CROSS JOIN (VALUES
+    ('PACC', 'open',  'long',  'counter', '@PACC(series=VALUE) VALUE < 0', 0),
+    ('RSI',  'open',  'long',  'counter', '@RSI(period=14,series=VALUE) VALUE < 35', 1),
+    ('PACC', 'close', 'long',  'trend',   '@PACC(series=VALUE) VALUE > 0', 2),
+    ('PACC', 'open',  'short', 'counter', '@PACC(series=VALUE) VALUE > 0', 3),
+    ('RSI',  'open',  'short', 'counter', '@RSI(period=14,series=VALUE) VALUE > 65', 4),
+    ('PACC', 'close', 'short', 'trend',   '@PACC(series=VALUE) VALUE < 0', 5)
+) AS v(ind_code, position_event, position_side, signal_kind, formula, display_order)
+JOIN indicators i ON i.code = v.ind_code
+WHERE l.name = 'PACC Reversal'
+  AND NOT EXISTS (SELECT 1 FROM logic_indicator_signals z WHERE z.logic_id = l.id);
+
+INSERT INTO logic_indicator_signals (
+    logic_id, indicator_id, position_event, position_side, signal_kind, formula, display_order
+)
+SELECT l.id, i.id, v.position_event, v.position_side, v.signal_kind, v.formula, v.display_order
+FROM logics l
+CROSS JOIN (VALUES
+    ('EMA', 'open',  'long',  'counter', '@EMA(period=20,series=VALUE) pp <= VALUE', 0),
+    ('RSI', 'open',  'long',  'counter', '@RSI(period=14,series=VALUE) VALUE < 35', 1),
+    ('EMA', 'close', 'long',  'trend',   '@EMA(period=20,series=VALUE) pp > VALUE', 2),
+    ('EMA', 'open',  'short', 'counter', '@EMA(period=20,series=VALUE) pp >= VALUE', 3),
+    ('RSI', 'open',  'short', 'counter', '@RSI(period=14,series=VALUE) VALUE > 65', 4),
+    ('EMA', 'close', 'short', 'trend',   '@EMA(period=20,series=VALUE) pp < VALUE', 5)
+) AS v(ind_code, position_event, position_side, signal_kind, formula, display_order)
+JOIN indicators i ON i.code = v.ind_code
+WHERE l.name = 'EMA RSI Fade'
+  AND NOT EXISTS (SELECT 1 FROM logic_indicator_signals z WHERE z.logic_id = l.id);
+
+INSERT INTO logic_securities (logic_id, security_id, display_order)
+SELECT l.id, q.security_id, ROW_NUMBER() OVER (PARTITION BY l.id ORDER BY q.sort_key) - 1
+FROM logics l
+CROSS JOIN LATERAL (
+    SELECT DISTINCT ON (s.id)
+        s.id AS security_id,
+        COALESCE(sp.prefix, s.name) AS sort_key
+    FROM securities s
+    JOIN security_prefixes sp ON sp.security_id = s.id AND sp.instrument_market = 'stock'
+    ORDER BY s.id, sp.prefix
+) q
+WHERE l.name IN (
+    'MACD Signal Cross', 'ADX DI Trend', 'SMA100 Trend', 'LinReg Slope Trend', 'PACC Momentum Trend',
+    'RSI Extreme 20/80', 'Stoch D Fade', 'CCI Extreme 200', 'MACD Signal Fade', 'ADX Exhaustion Fade',
+    'ATR Quiet RSI', 'SMA Stretch Fade', 'Stoch RSI Combo', 'PACC Reversal', 'EMA RSI Fade'
+)
+ON CONFLICT (logic_id, security_id) DO NOTHING;
+
+INSERT INTO logic_stops (logic_id, rule_kind, scope_type, value, value_unit, display_order, is_active)
+SELECT l.id, v.rule_kind, v.scope_type, v.value, v.value_unit, v.display_order, TRUE
+FROM logics l
+CROSS JOIN (VALUES
+    ('stop_loss',   'portfolio', 1.0, 'percent', 0),
+    ('take_profit', 'security',        3.0, 'percent', 1)
+) AS v(rule_kind, scope_type, value, value_unit, display_order)
+WHERE l.name IN (
+    'MACD Signal Cross', 'ADX DI Trend', 'SMA100 Trend', 'LinReg Slope Trend', 'PACC Momentum Trend',
+    'RSI Extreme 20/80', 'Stoch D Fade', 'CCI Extreme 200', 'MACD Signal Fade', 'ADX Exhaustion Fade',
+    'ATR Quiet RSI', 'SMA Stretch Fade', 'Stoch RSI Combo', 'PACC Reversal', 'EMA RSI Fade'
+)
+  AND NOT EXISTS (SELECT 1 FROM logic_stops z WHERE z.logic_id = l.id);
+
+-- =====================================================================
+-- v47: +8 контртрендовых OsEngine Custom Robots (ещё не в seed)
+-- Прокси на индикаторы с calc в PG (NRTR/RAVI/SuperTrend/FI/MI/Aroon/CMO/StdDev нет).
+-- FAKE, выключены, все акции, SL 1% portfolio / TP 3%.
+-- Только INSERT IF NOT EXISTS — копии пользователя и правки не затираются.
+-- =====================================================================
+
+INSERT INTO logics (name, account_id, is_enabled, note)
+SELECT v.name, a.id, FALSE, v.note
+FROM accounts a
+JOIN brokers b ON b.id = a.broker_id
+CROSS JOIN (VALUES
+    (
+        'NRTR ROC Fade',
+        'Контртрендовая. OsEngine ContrTrendNrtrAndROC; прокси: SMA(24)≈NRTR, RSI≈ROC — long ниже SMA+RSI<30, short выше SMA+RSI>70.'
+    ),
+    (
+        'RAVI BB Fade',
+        'Контртрендовая. OsEngine ContrtrendRaviAndBollinger; прокси: ADX<25≈слабый RAVI + отскок BB к середине.'
+    ),
+    (
+        'Stoch Aroon Fade',
+        'Контртрендовая. OsEngine ContrtrendStochAndAroon; прокси: ADX≈Aroon strength + Stoch %K экстремум.'
+    ),
+    (
+        'MI SMA Reversal',
+        'Контртрендовая. OsEngine ContrtrendStrategyMiAndSma; прокси: ATR GROWTH5≈Mass Index bulge + направление SMA(20).'
+    ),
+    (
+        'SuperTrend CMO Fade',
+        'Контртрендовая. OsEngine ContrtrendSuperTrendAndCMO; прокси: EMA(10)≈SuperTrend, RSI≈CMO ±50.'
+    ),
+    (
+        'Force Index Fade',
+        'Контртрендовая. OsEngine CounterTrendFI; прокси: MACD HISTOGRAM (знак силы) + RSI.'
+    ),
+    (
+        'BB StdDev Fade',
+        'Контртрендовая. OsEngine CountertrendBollingerAndStdDev; прокси: BB + ATR GROWTH5>1 как фильтр StdDev.'
+    ),
+    (
+        'BB Volume Fade',
+        'Контртрендовая. OsEngine CountertrendBollingerAndVolumes; прокси: BB + ADX<30 как объёмный/режимный фильтр.'
+    )
+) AS v(name, note)
+WHERE b.code = 'T-BANK' AND a.account_code = 'FAKE-EFF-001'
+ON CONFLICT (name) DO NOTHING;
+
+INSERT INTO logic_params (logic_id, param_key, param_value, value_type)
+SELECT l.id, v.param_key, v.param_value, v.value_type
+FROM logics l
+CROSS JOIN (VALUES
+    ('timeframe', 'M15', 'text'),
+    ('position_size_pct', '10', 'number'),
+    ('max_open_positions', '3', 'integer'),
+    ('initial_balance', '1000000', 'money'),
+    ('current_balance', '1000000', 'money'),
+    ('commission_pct', '0.03', 'number'),
+    ('cost_method', 'FIFO', 'text'),
+    ('stop_loss_timeframe', 'M5', 'text'),
+    ('base_annual_rate_pct', '20', 'number'),
+    ('rating_lookback_days', '7', 'integer')
+) AS v(param_key, param_value, value_type)
+WHERE l.name IN (
+    'NRTR ROC Fade', 'RAVI BB Fade', 'Stoch Aroon Fade', 'MI SMA Reversal',
+    'SuperTrend CMO Fade', 'Force Index Fade', 'BB StdDev Fade', 'BB Volume Fade'
+)
+ON CONFLICT (logic_id, param_key) DO NOTHING;
+
+INSERT INTO logic_params (logic_id, param_key, param_value, value_type)
+SELECT l.id, d.param_key, d.default_value, d.value_type
+FROM logics l
+CROSS JOIN logic_param_defs d
+WHERE l.name IN (
+    'NRTR ROC Fade', 'RAVI BB Fade', 'Stoch Aroon Fade', 'MI SMA Reversal',
+    'SuperTrend CMO Fade', 'Force Index Fade', 'BB StdDev Fade', 'BB Volume Fade'
+)
+ON CONFLICT (logic_id, param_key) DO NOTHING;
+
+-- NRTR ROC Fade (ContrTrendNrtrAndROC)
+INSERT INTO logic_indicator_signals (
+    logic_id, indicator_id, position_event, position_side, signal_kind, formula, display_order
+)
+SELECT l.id, i.id, v.position_event, v.position_side, v.signal_kind, v.formula, v.display_order
+FROM logics l
+CROSS JOIN (VALUES
+    ('SMA', 'open',  'long',  'counter', '@SMA(period=24,series=VALUE) pp < VALUE', 0),
+    ('RSI', 'open',  'long',  'counter', '@RSI(period=14,series=VALUE) VALUE < 30', 1),
+    ('SMA', 'close', 'long',  'trend',   '@SMA(period=24,series=VALUE) pp > VALUE', 2),
+    ('SMA', 'open',  'short', 'counter', '@SMA(period=24,series=VALUE) pp > VALUE', 3),
+    ('RSI', 'open',  'short', 'counter', '@RSI(period=14,series=VALUE) VALUE > 70', 4),
+    ('SMA', 'close', 'short', 'trend',   '@SMA(period=24,series=VALUE) pp < VALUE', 5)
+) AS v(ind_code, position_event, position_side, signal_kind, formula, display_order)
+JOIN indicators i ON i.code = v.ind_code
+WHERE l.name = 'NRTR ROC Fade'
+  AND NOT EXISTS (SELECT 1 FROM logic_indicator_signals z WHERE z.logic_id = l.id);
+
+-- RAVI BB Fade (ContrtrendRaviAndBollinger)
+INSERT INTO logic_indicator_signals (
+    logic_id, indicator_id, position_event, position_side, signal_kind, formula, display_order
+)
+SELECT l.id, i.id, v.position_event, v.position_side, v.signal_kind, v.formula, v.display_order
+FROM logics l
+CROSS JOIN (VALUES
+    ('ADX', 'open',  'long',  'counter', '@ADX(period=14,series=ADX) VALUE < 25', 0),
+    ('BB',  'open',  'long',  'counter', '@BB(period=21,std_dev=1,series=LOWER) pp < VALUE', 1),
+    ('BB',  'close', 'long',  'trend',   '@BB(period=21,std_dev=1,series=MIDDLE) pp > VALUE', 2),
+    ('ADX', 'open',  'short', 'counter', '@ADX(period=14,series=ADX) VALUE < 25', 3),
+    ('BB',  'open',  'short', 'counter', '@BB(period=21,std_dev=1,series=UPPER) pp > VALUE', 4),
+    ('BB',  'close', 'short', 'trend',   '@BB(period=21,std_dev=1,series=MIDDLE) pp < VALUE', 5)
+) AS v(ind_code, position_event, position_side, signal_kind, formula, display_order)
+JOIN indicators i ON i.code = v.ind_code
+WHERE l.name = 'RAVI BB Fade'
+  AND NOT EXISTS (SELECT 1 FROM logic_indicator_signals z WHERE z.logic_id = l.id);
+
+-- Stoch Aroon Fade (ContrtrendStochAndAroon)
+INSERT INTO logic_indicator_signals (
+    logic_id, indicator_id, position_event, position_side, signal_kind, formula, display_order
+)
+SELECT l.id, i.id, v.position_event, v.position_side, v.signal_kind, v.formula, v.display_order
+FROM logics l
+CROSS JOIN (VALUES
+    ('ADX',   'open',  'long',  'counter', '@ADX(period=14,series=ADX) VALUE > 25', 0),
+    ('STOCH', 'open',  'long',  'counter', '@STOCH(k_period=9,d_period=5,smooth=3,series=K) VALUE < 30', 1),
+    ('ADX',   'close', 'long',  'trend',   '@ADX(period=14,series=ADX) VALUE < 20', 2),
+    ('ADX',   'open',  'short', 'counter', '@ADX(period=14,series=ADX) VALUE > 25', 3),
+    ('STOCH', 'open',  'short', 'counter', '@STOCH(k_period=9,d_period=5,smooth=3,series=K) VALUE > 80', 4),
+    ('ADX',   'close', 'short', 'trend',   '@ADX(period=14,series=ADX) VALUE < 20', 5)
+) AS v(ind_code, position_event, position_side, signal_kind, formula, display_order)
+JOIN indicators i ON i.code = v.ind_code
+WHERE l.name = 'Stoch Aroon Fade'
+  AND NOT EXISTS (SELECT 1 FROM logic_indicator_signals z WHERE z.logic_id = l.id);
+
+-- MI SMA Reversal (ContrtrendStrategyMiAndSma)
+INSERT INTO logic_indicator_signals (
+    logic_id, indicator_id, position_event, position_side, signal_kind, formula, display_order
+)
+SELECT l.id, i.id, v.position_event, v.position_side, v.signal_kind, v.formula, v.display_order
+FROM logics l
+CROSS JOIN (VALUES
+    ('ATR', 'open',  'long',  'counter', '@ATR(period=14,series=GROWTH5) VALUE >= 2', 0),
+    ('SMA', 'open',  'long',  'counter', '@SMA(period=20,series=VALUE) pp < VALUE', 1),
+    ('SMA', 'close', 'long',  'trend',   '@SMA(period=20,series=VALUE) pp > VALUE', 2),
+    ('ATR', 'open',  'short', 'counter', '@ATR(period=14,series=GROWTH5) VALUE >= 2', 3),
+    ('SMA', 'open',  'short', 'counter', '@SMA(period=20,series=VALUE) pp > VALUE', 4),
+    ('SMA', 'close', 'short', 'trend',   '@SMA(period=20,series=VALUE) pp < VALUE', 5)
+) AS v(ind_code, position_event, position_side, signal_kind, formula, display_order)
+JOIN indicators i ON i.code = v.ind_code
+WHERE l.name = 'MI SMA Reversal'
+  AND NOT EXISTS (SELECT 1 FROM logic_indicator_signals z WHERE z.logic_id = l.id);
+
+-- SuperTrend CMO Fade (ContrtrendSuperTrendAndCMO)
+INSERT INTO logic_indicator_signals (
+    logic_id, indicator_id, position_event, position_side, signal_kind, formula, display_order
+)
+SELECT l.id, i.id, v.position_event, v.position_side, v.signal_kind, v.formula, v.display_order
+FROM logics l
+CROSS JOIN (VALUES
+    ('EMA', 'open',  'long',  'counter', '@EMA(period=10,series=VALUE) pp > VALUE', 0),
+    ('RSI', 'open',  'long',  'counter', '@RSI(period=14,series=VALUE) VALUE < 30', 1),
+    ('EMA', 'close', 'long',  'trend',   '@EMA(period=10,series=VALUE) pp < VALUE', 2),
+    ('EMA', 'open',  'short', 'counter', '@EMA(period=10,series=VALUE) pp < VALUE', 3),
+    ('RSI', 'open',  'short', 'counter', '@RSI(period=14,series=VALUE) VALUE > 70', 4),
+    ('EMA', 'close', 'short', 'trend',   '@EMA(period=10,series=VALUE) pp > VALUE', 5)
+) AS v(ind_code, position_event, position_side, signal_kind, formula, display_order)
+JOIN indicators i ON i.code = v.ind_code
+WHERE l.name = 'SuperTrend CMO Fade'
+  AND NOT EXISTS (SELECT 1 FROM logic_indicator_signals z WHERE z.logic_id = l.id);
+
+-- Force Index Fade (CounterTrendFI)
+INSERT INTO logic_indicator_signals (
+    logic_id, indicator_id, position_event, position_side, signal_kind, formula, display_order
+)
+SELECT l.id, i.id, v.position_event, v.position_side, v.signal_kind, v.formula, v.display_order
+FROM logics l
+CROSS JOIN (VALUES
+    ('MACD', 'open',  'long',  'counter', '@MACD(fast_period=12,slow_period=26,signal_period=9,series=HISTOGRAM) VALUE < 0', 0),
+    ('RSI',  'open',  'long',  'counter', '@RSI(period=14,series=VALUE) VALUE < 40', 1),
+    ('RSI',  'close', 'long',  'trend',   '@RSI(period=14,series=VALUE) VALUE > 50', 2),
+    ('MACD', 'open',  'short', 'counter', '@MACD(fast_period=12,slow_period=26,signal_period=9,series=HISTOGRAM) VALUE > 0', 3),
+    ('RSI',  'open',  'short', 'counter', '@RSI(period=14,series=VALUE) VALUE > 60', 4),
+    ('RSI',  'close', 'short', 'trend',   '@RSI(period=14,series=VALUE) VALUE < 50', 5)
+) AS v(ind_code, position_event, position_side, signal_kind, formula, display_order)
+JOIN indicators i ON i.code = v.ind_code
+WHERE l.name = 'Force Index Fade'
+  AND NOT EXISTS (SELECT 1 FROM logic_indicator_signals z WHERE z.logic_id = l.id);
+
+-- BB StdDev Fade (CountertrendBollingerAndStdDev)
+INSERT INTO logic_indicator_signals (
+    logic_id, indicator_id, position_event, position_side, signal_kind, formula, display_order
+)
+SELECT l.id, i.id, v.position_event, v.position_side, v.signal_kind, v.formula, v.display_order
+FROM logics l
+CROSS JOIN (VALUES
+    ('BB',  'open',  'long',  'counter', '@BB(period=21,std_dev=1,series=LOWER) pp <= VALUE', 0),
+    ('ATR', 'open',  'long',  'counter', '@ATR(period=14,series=GROWTH5) VALUE > 1', 1),
+    ('BB',  'close', 'long',  'trend',   '@BB(period=21,std_dev=1,series=MIDDLE) pp > VALUE', 2),
+    ('BB',  'open',  'short', 'counter', '@BB(period=21,std_dev=1,series=UPPER) pp >= VALUE', 3),
+    ('ATR', 'open',  'short', 'counter', '@ATR(period=14,series=GROWTH5) VALUE > 1', 4),
+    ('BB',  'close', 'short', 'trend',   '@BB(period=21,std_dev=1,series=MIDDLE) pp < VALUE', 5)
+) AS v(ind_code, position_event, position_side, signal_kind, formula, display_order)
+JOIN indicators i ON i.code = v.ind_code
+WHERE l.name = 'BB StdDev Fade'
+  AND NOT EXISTS (SELECT 1 FROM logic_indicator_signals z WHERE z.logic_id = l.id);
+
+-- BB Volume Fade (CountertrendBollingerAndVolumes)
+INSERT INTO logic_indicator_signals (
+    logic_id, indicator_id, position_event, position_side, signal_kind, formula, display_order
+)
+SELECT l.id, i.id, v.position_event, v.position_side, v.signal_kind, v.formula, v.display_order
+FROM logics l
+CROSS JOIN (VALUES
+    ('BB',  'open',  'long',  'counter', '@BB(period=21,std_dev=1,series=LOWER) pp < VALUE', 0),
+    ('ADX', 'open',  'long',  'counter', '@ADX(period=14,series=ADX) VALUE < 30', 1),
+    ('BB',  'close', 'long',  'trend',   '@BB(period=21,std_dev=1,series=MIDDLE) pp > VALUE', 2),
+    ('BB',  'open',  'short', 'counter', '@BB(period=21,std_dev=1,series=UPPER) pp > VALUE', 3),
+    ('ADX', 'open',  'short', 'counter', '@ADX(period=14,series=ADX) VALUE < 30', 4),
+    ('BB',  'close', 'short', 'trend',   '@BB(period=21,std_dev=1,series=MIDDLE) pp < VALUE', 5)
+) AS v(ind_code, position_event, position_side, signal_kind, formula, display_order)
+JOIN indicators i ON i.code = v.ind_code
+WHERE l.name = 'BB Volume Fade'
+  AND NOT EXISTS (SELECT 1 FROM logic_indicator_signals z WHERE z.logic_id = l.id);
+
+INSERT INTO logic_securities (logic_id, security_id, display_order)
+SELECT l.id, q.security_id, ROW_NUMBER() OVER (PARTITION BY l.id ORDER BY q.sort_key) - 1
+FROM logics l
+CROSS JOIN LATERAL (
+    SELECT DISTINCT ON (s.id)
+        s.id AS security_id,
+        COALESCE(sp.prefix, s.name) AS sort_key
+    FROM securities s
+    JOIN security_prefixes sp ON sp.security_id = s.id AND sp.instrument_market = 'stock'
+    ORDER BY s.id, sp.prefix
+) q
+WHERE l.name IN (
+    'NRTR ROC Fade', 'RAVI BB Fade', 'Stoch Aroon Fade', 'MI SMA Reversal',
+    'SuperTrend CMO Fade', 'Force Index Fade', 'BB StdDev Fade', 'BB Volume Fade'
+)
+ON CONFLICT (logic_id, security_id) DO NOTHING;
+
+INSERT INTO logic_stops (logic_id, rule_kind, scope_type, value, value_unit, display_order, is_active)
+SELECT l.id, v.rule_kind, v.scope_type, v.value, v.value_unit, v.display_order, TRUE
+FROM logics l
+CROSS JOIN (VALUES
+    ('stop_loss',   'portfolio', 1.0, 'percent', 0),
+    ('take_profit', 'security',        3.0, 'percent', 1)
+) AS v(rule_kind, scope_type, value, value_unit, display_order)
+WHERE l.name IN (
+    'NRTR ROC Fade', 'RAVI BB Fade', 'Stoch Aroon Fade', 'MI SMA Reversal',
+    'SuperTrend CMO Fade', 'Force Index Fade', 'BB StdDev Fade', 'BB Volume Fade'
+)
+  AND NOT EXISTS (SELECT 1 FROM logic_stops z WHERE z.logic_id = l.id);
+
+-- Upgrade (01 re-run): старый seed-дефолт SL «по бумаге с resume 1%» → portfolio 1%.
+-- INSERT выше не трогает логики, у которых stops уже есть (NOT EXISTS).
+-- Этот UPDATE меняет только точное совпадение со старым seed (value=1%, unit=percent, security_resume).
+-- Ручные правки (другой %, scope security/inversion, portfolio уже) не затираются.
+UPDATE logic_stops
+SET scope_type = 'portfolio'
+WHERE rule_kind = 'stop_loss'
+  AND scope_type = 'security_resume'
+  AND value_unit = 'percent'
+  AND value = 1.0;
 
 -- Примечания ко всем seed-логикам (тип стратегии + источник)
 UPDATE logics l
@@ -2106,14 +3231,38 @@ FROM (VALUES
     (
         'L4 — шорт, боковик',
         'Контртрендовая / боковик. FINRESP L4 — short в диапазоне.'
-    )
+    ),
+    ('MACD Signal Cross', 'Трендовая. OsEngine MacdLine: long при HISTOGRAM>0 (MACD выше Signal), short при HISTOGRAM<0.'),
+    ('ADX DI Trend', 'Трендовая. OsEngine AdxTrade: ADX>25 + направление по SMA(50); выход при ADX<20.'),
+    ('SMA100 Trend', 'Трендовая. OsEngine SmaTrendSample (долгая SMA): long выше SMA(100), short ниже.'),
+    ('LinReg Slope Trend', 'Трендовая. Следование наклону LinReg + фильтр SMA(20).'),
+    ('PACC Momentum Trend', 'Трендовая. Ускорение цены PACC: long при PACC>0, short при PACC<0.'),
+    ('RSI Extreme 20/80', 'Контртрендовая. OsEngine RsiTrade (жёсткие уровни): long RSI<20, short RSI>80.'),
+    ('Stoch D Fade', 'Контртрендовая. OsEngine Stochastic по %D: long %D<20, short %D>80.'),
+    ('CCI Extreme 200', 'Контртрендовая. OsEngine CciTrade (экстремум ±200).'),
+    ('MACD Signal Fade', 'Контртрендовая. Fade против гистограммы MACD (зеркало MacdLine).'),
+    ('ADX Exhaustion Fade', 'Контртрендовая. ADX>40 + RSI-экстремум — усталость тренда.'),
+    ('ATR Quiet RSI', 'Контртрендовая. Низкая волатильность ATR + RSI fade.'),
+    ('SMA Stretch Fade', 'Контртрендовая. Отрыв от SMA(20) + RSI — возврат к средней.'),
+    ('Stoch RSI Combo', 'Контртрендовая (комбо). Stoch и RSI одновременно в экстремуме.'),
+    ('PACC Reversal', 'Контртрендовая. Разворот ускорения PACC + RSI.'),
+    ('EMA RSI Fade', 'Контртрендовая. Цена у EMA + RSI — откат к EMA.'),
+    ('NRTR ROC Fade', 'Контртрендовая. OsEngine ContrTrendNrtrAndROC; прокси SMA(24)≈NRTR, RSI≈ROC.'),
+    ('RAVI BB Fade', 'Контртрендовая. OsEngine ContrtrendRaviAndBollinger; прокси ADX<25 + BB.'),
+    ('Stoch Aroon Fade', 'Контртрендовая. OsEngine ContrtrendStochAndAroon; прокси ADX + Stoch %K.'),
+    ('MI SMA Reversal', 'Контртрендовая. OsEngine ContrtrendStrategyMiAndSma; прокси ATR GROWTH5 + SMA.'),
+    ('SuperTrend CMO Fade', 'Контртрендовая. OsEngine ContrtrendSuperTrendAndCMO; прокси EMA(10) + RSI.'),
+    ('Force Index Fade', 'Контртрендовая. OsEngine CounterTrendFI; прокси MACD HISTOGRAM + RSI.'),
+    ('BB StdDev Fade', 'Контртрендовая. OsEngine CountertrendBollingerAndStdDev; прокси BB + ATR GROWTH5.'),
+    ('BB Volume Fade', 'Контртрендовая. OsEngine CountertrendBollingerAndVolumes; прокси BB + ADX<30.')
 ) AS v(name, note)
-WHERE l.name = v.name;
+WHERE l.name = v.name
+  AND (l.note IS NULL OR btrim(l.note) = '');
 
 -- Сделки по торговой логике (исполнение по сигналам индикаторов)
 CREATE TABLE IF NOT EXISTS logic_trades (
     id BIGSERIAL PRIMARY KEY,
-    logic_id INTEGER NOT NULL REFERENCES logics(id) ON DELETE RESTRICT,
+    logic_id INTEGER NOT NULL REFERENCES logics(id) ON DELETE CASCADE,
     account_id INTEGER NOT NULL REFERENCES accounts(id) ON DELETE RESTRICT,
     security_id INTEGER NOT NULL REFERENCES securities(id) ON DELETE RESTRICT,
     timeframe_id INTEGER NOT NULL REFERENCES timeframes(id) ON DELETE RESTRICT,
@@ -2121,7 +3270,7 @@ CREATE TABLE IF NOT EXISTS logic_trades (
     action_id INTEGER NOT NULL REFERENCES actions(id) ON DELETE RESTRICT,
     position_event VARCHAR(10) NOT NULL DEFAULT 'open'
         CHECK (position_event IN ('open', 'close')),
-    signal_kind VARCHAR(10) NOT NULL CHECK (signal_kind IN ('trend', 'counter')),
+    signal_kind VARCHAR(10) NOT NULL CHECK (signal_kind IN ('trend', 'counter', 'cash_fund')),
     signal_formula TEXT NOT NULL,
     quantity NUMERIC(20, 6) NOT NULL DEFAULT 1 CHECK (quantity > 0),
     price NUMERIC(18, 6) NOT NULL CHECK (price > 0),
@@ -2141,19 +3290,63 @@ CREATE TABLE IF NOT EXISTS logic_trades (
     trade_reason TEXT,
     created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
+-- Upgrade existing DBs: CREATE IF NOT EXISTS does not add columns; keep in sync with CREATE above.
+ALTER TABLE logic_trades ADD COLUMN IF NOT EXISTS logic_id INTEGER REFERENCES logics(id) ON DELETE CASCADE;
+ALTER TABLE logic_trades ADD COLUMN IF NOT EXISTS account_id INTEGER REFERENCES accounts(id) ON DELETE RESTRICT;
+ALTER TABLE logic_trades ADD COLUMN IF NOT EXISTS security_id INTEGER REFERENCES securities(id) ON DELETE RESTRICT;
+ALTER TABLE logic_trades ADD COLUMN IF NOT EXISTS timeframe_id INTEGER REFERENCES timeframes(id) ON DELETE RESTRICT;
+ALTER TABLE logic_trades ADD COLUMN IF NOT EXISTS side_id INTEGER REFERENCES sides(id) ON DELETE RESTRICT;
+ALTER TABLE logic_trades ADD COLUMN IF NOT EXISTS action_id INTEGER REFERENCES actions(id) ON DELETE RESTRICT;
+
+-- Upgrade: удаление логики должно убирать её сделки (раньше RESTRICT → ошибка FK).
+DO $$
+BEGIN
+    ALTER TABLE logic_trades DROP CONSTRAINT IF EXISTS logic_trades_logic_id_fkey;
+    ALTER TABLE logic_trades
+      ADD CONSTRAINT logic_trades_logic_id_fkey
+      FOREIGN KEY (logic_id) REFERENCES logics(id) ON DELETE CASCADE;
+EXCEPTION
+    WHEN duplicate_object THEN NULL;
+END $$;
+ALTER TABLE logic_trades ADD COLUMN IF NOT EXISTS position_event VARCHAR(10) NOT NULL DEFAULT 'open' CHECK (position_event IN ('open', 'close'));
+ALTER TABLE logic_trades ADD COLUMN IF NOT EXISTS signal_kind VARCHAR(10) CHECK (signal_kind IN ('trend', 'counter', 'cash_fund'));
+ALTER TABLE logic_trades ADD COLUMN IF NOT EXISTS signal_formula TEXT;
+-- Upgrade: парковка денежного фонда пишет signal_kind=cash_fund
+ALTER TABLE logic_trades DROP CONSTRAINT IF EXISTS logic_trades_signal_kind_check;
+DO $$
+BEGIN
+    ALTER TABLE logic_trades ADD CONSTRAINT logic_trades_signal_kind_check
+        CHECK (signal_kind IN ('trend', 'counter', 'cash_fund'));
+EXCEPTION
+    WHEN duplicate_object THEN NULL;
+END $$;
+ALTER TABLE logic_trades ADD COLUMN IF NOT EXISTS quantity NUMERIC(20, 6) NOT NULL DEFAULT 1 CHECK (quantity > 0);
+ALTER TABLE logic_trades ADD COLUMN IF NOT EXISTS price NUMERIC(18, 6) CHECK (price > 0);
+ALTER TABLE logic_trades ADD COLUMN IF NOT EXISTS bar_dt TIMESTAMP;
+ALTER TABLE logic_trades ADD COLUMN IF NOT EXISTS executed_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP;
+ALTER TABLE logic_trades ADD COLUMN IF NOT EXISTS is_simulated BOOLEAN NOT NULL DEFAULT FALSE;
+ALTER TABLE logic_trades ADD COLUMN IF NOT EXISTS is_fictitious BOOLEAN NOT NULL DEFAULT FALSE;
+ALTER TABLE logic_trades ADD COLUMN IF NOT EXISTS is_shadow BOOLEAN NOT NULL DEFAULT FALSE;
+ALTER TABLE logic_trades ADD COLUMN IF NOT EXISTS is_test BOOLEAN NOT NULL DEFAULT FALSE;
+ALTER TABLE logic_trades ADD COLUMN IF NOT EXISTS run_id BIGINT;
+ALTER TABLE logic_trades ADD COLUMN IF NOT EXISTS broker_order_id VARCHAR(100);
+ALTER TABLE logic_trades ADD COLUMN IF NOT EXISTS status VARCHAR(20) NOT NULL DEFAULT 'filled' CHECK (status IN ('pending', 'submitted', 'filled', 'rejected', 'cancelled'));
+ALTER TABLE logic_trades ADD COLUMN IF NOT EXISTS commission NUMERIC(18, 6) NOT NULL DEFAULT 0;
+ALTER TABLE logic_trades ADD COLUMN IF NOT EXISTS financial_result NUMERIC(20, 6);
+ALTER TABLE logic_trades ADD COLUMN IF NOT EXISTS note TEXT;
+ALTER TABLE logic_trades ADD COLUMN IF NOT EXISTS trade_reason TEXT;
+ALTER TABLE logic_trades ADD COLUMN IF NOT EXISTS created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP;
+
+-- Upgrade existing DBs: CREATE IF NOT EXISTS does not add columns; keep in sync with CREATE above.
+
+
+
 
 CREATE INDEX IF NOT EXISTS idx_logic_trades_logic_id ON logic_trades(logic_id);
 CREATE INDEX IF NOT EXISTS idx_logic_trades_executed_at ON logic_trades(executed_at DESC);
 CREATE INDEX IF NOT EXISTS idx_logic_trades_security_id ON logic_trades(security_id);
 
-ALTER TABLE logic_trades ADD COLUMN IF NOT EXISTS commission NUMERIC(18, 6) NOT NULL DEFAULT 0;
-ALTER TABLE logic_trades ADD COLUMN IF NOT EXISTS financial_result NUMERIC(20, 6);
-ALTER TABLE logic_trades ADD COLUMN IF NOT EXISTS is_shadow BOOLEAN NOT NULL DEFAULT FALSE;
-ALTER TABLE logic_trades ADD COLUMN IF NOT EXISTS is_test BOOLEAN NOT NULL DEFAULT FALSE;
-ALTER TABLE logic_trades ADD COLUMN IF NOT EXISTS trade_reason TEXT;
-ALTER TABLE logic_trades ADD COLUMN IF NOT EXISTS position_event VARCHAR(10) NOT NULL DEFAULT 'open';
 -- Прогон теста, породивший сделку (NULL = бой / старые записи до v43c)
-ALTER TABLE logic_trades ADD COLUMN IF NOT EXISTS run_id BIGINT;
 
 DO $$
 BEGIN
@@ -2224,6 +3417,41 @@ CREATE TABLE IF NOT EXISTS logic_backtest_runs (
     finished_at TIMESTAMP,
     created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
+-- Upgrade existing DBs: CREATE IF NOT EXISTS does not add columns; keep in sync with CREATE above.
+ALTER TABLE logic_backtest_runs ADD COLUMN IF NOT EXISTS logic_id INTEGER REFERENCES logics(id) ON DELETE CASCADE;
+ALTER TABLE logic_backtest_runs ADD COLUMN IF NOT EXISTS date_from DATE;
+ALTER TABLE logic_backtest_runs ADD COLUMN IF NOT EXISTS date_to DATE;
+ALTER TABLE logic_backtest_runs ADD COLUMN IF NOT EXISTS status VARCHAR(30) NOT NULL DEFAULT 'pending' CHECK (status IN ( 'pending', 'loading_prices', 'loading_indicators', 'running', 'completed', 'cancelled', 'failed' ));
+ALTER TABLE logic_backtest_runs ADD COLUMN IF NOT EXISTS progress_pct NUMERIC(5, 2) NOT NULL DEFAULT 0;
+ALTER TABLE logic_backtest_runs ADD COLUMN IF NOT EXISTS phase_message TEXT;
+ALTER TABLE logic_backtest_runs ADD COLUMN IF NOT EXISTS phase_detail TEXT;
+ALTER TABLE logic_backtest_runs ADD COLUMN IF NOT EXISTS current_bar_dt TIMESTAMP;
+ALTER TABLE logic_backtest_runs ADD COLUMN IF NOT EXISTS total_bars INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE logic_backtest_runs ADD COLUMN IF NOT EXISTS processed_bars INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE logic_backtest_runs ADD COLUMN IF NOT EXISTS trades_created INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE logic_backtest_runs ADD COLUMN IF NOT EXISTS test_balance NUMERIC(20, 6);
+ALTER TABLE logic_backtest_runs ADD COLUMN IF NOT EXISTS financial_result NUMERIC(20, 6);
+ALTER TABLE logic_backtest_runs ADD COLUMN IF NOT EXISTS cancel_requested BOOLEAN NOT NULL DEFAULT FALSE;
+ALTER TABLE logic_backtest_runs ADD COLUMN IF NOT EXISTS error_message TEXT;
+ALTER TABLE logic_backtest_runs ADD COLUMN IF NOT EXISTS portfolio_trading_paused BOOLEAN NOT NULL DEFAULT FALSE;
+ALTER TABLE logic_backtest_runs ADD COLUMN IF NOT EXISTS portfolio_equity_peak NUMERIC(20, 6);
+ALTER TABLE logic_backtest_runs ADD COLUMN IF NOT EXISTS portfolio_stop_resume_equity NUMERIC(20, 6);
+ALTER TABLE logic_backtest_runs ADD COLUMN IF NOT EXISTS portfolio_stop_resume_baseline NUMERIC(20, 6);
+ALTER TABLE logic_backtest_runs ADD COLUMN IF NOT EXISTS portfolio_tp_latched BOOLEAN NOT NULL DEFAULT FALSE;
+ALTER TABLE logic_backtest_runs ADD COLUMN IF NOT EXISTS portfolio_linear_tp_armed BOOLEAN NOT NULL DEFAULT FALSE;
+ALTER TABLE logic_backtest_runs ADD COLUMN IF NOT EXISTS portfolio_linear_tp_peak_equity NUMERIC(20, 6);
+ALTER TABLE logic_backtest_runs ADD COLUMN IF NOT EXISTS portfolio_linear_tp_arm_bar_dt TIMESTAMP;
+ALTER TABLE logic_backtest_runs ADD COLUMN IF NOT EXISTS portfolio_linear_tp_latched BOOLEAN NOT NULL DEFAULT FALSE;
+COMMENT ON COLUMN logic_backtest_runs.portfolio_linear_tp_latched IS
+'После LTP close: не взводить снова, пока track% < arm%';
+ALTER TABLE logic_backtest_runs ADD COLUMN IF NOT EXISTS started_at TIMESTAMP;
+ALTER TABLE logic_backtest_runs ADD COLUMN IF NOT EXISTS finished_at TIMESTAMP;
+ALTER TABLE logic_backtest_runs ADD COLUMN IF NOT EXISTS created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP;
+
+-- Upgrade existing DBs: CREATE IF NOT EXISTS does not add columns; keep in sync with CREATE above.
+
+
+
 
 CREATE INDEX IF NOT EXISTS idx_logic_backtest_runs_logic ON logic_backtest_runs(logic_id, created_at DESC);
 
@@ -2248,13 +3476,62 @@ CREATE TABLE IF NOT EXISTS logic_backtest_security_state (
     run_id BIGINT NOT NULL REFERENCES logic_backtest_runs(id) ON DELETE CASCADE,
     security_id INTEGER NOT NULL REFERENCES securities(id) ON DELETE CASCADE,
     real_trading_paused BOOLEAN NOT NULL DEFAULT FALSE,
+    real_trading_paused_long BOOLEAN NOT NULL DEFAULT FALSE,
+    real_trading_paused_short BOOLEAN NOT NULL DEFAULT FALSE,
+    real_trading_inverted BOOLEAN NOT NULL DEFAULT FALSE,
     stop_resume_equity NUMERIC(20, 6),
     stop_resume_baseline NUMERIC(20, 6),
+    stop_resume_equity_long NUMERIC(20, 6),
+    stop_resume_baseline_long NUMERIC(20, 6),
+    stop_resume_equity_short NUMERIC(20, 6),
+    stop_resume_baseline_short NUMERIC(20, 6),
+    linear_tp_armed BOOLEAN NOT NULL DEFAULT FALSE,
+    linear_tp_last_price NUMERIC(18, 6),
+    linear_tp_arm_bar_dt TIMESTAMP,
     PRIMARY KEY (run_id, security_id)
 );
+-- Upgrade existing DBs: CREATE IF NOT EXISTS does not add columns; keep in sync with CREATE above.
+ALTER TABLE logic_backtest_security_state ADD COLUMN IF NOT EXISTS run_id BIGINT REFERENCES logic_backtest_runs(id) ON DELETE CASCADE;
+ALTER TABLE logic_backtest_security_state ADD COLUMN IF NOT EXISTS security_id INTEGER REFERENCES securities(id) ON DELETE CASCADE;
+ALTER TABLE logic_backtest_security_state ADD COLUMN IF NOT EXISTS real_trading_paused BOOLEAN NOT NULL DEFAULT FALSE;
+ALTER TABLE logic_backtest_security_state ADD COLUMN IF NOT EXISTS real_trading_paused_long BOOLEAN NOT NULL DEFAULT FALSE;
+ALTER TABLE logic_backtest_security_state ADD COLUMN IF NOT EXISTS real_trading_paused_short BOOLEAN NOT NULL DEFAULT FALSE;
+ALTER TABLE logic_backtest_security_state ADD COLUMN IF NOT EXISTS real_trading_inverted BOOLEAN NOT NULL DEFAULT FALSE;
+ALTER TABLE logic_backtest_security_state ADD COLUMN IF NOT EXISTS stop_resume_equity NUMERIC(20, 6);
+ALTER TABLE logic_backtest_security_state ADD COLUMN IF NOT EXISTS stop_resume_baseline NUMERIC(20, 6);
+ALTER TABLE logic_backtest_security_state ADD COLUMN IF NOT EXISTS stop_resume_equity_long NUMERIC(20, 6);
+ALTER TABLE logic_backtest_security_state ADD COLUMN IF NOT EXISTS stop_resume_baseline_long NUMERIC(20, 6);
+ALTER TABLE logic_backtest_security_state ADD COLUMN IF NOT EXISTS stop_resume_equity_short NUMERIC(20, 6);
+ALTER TABLE logic_backtest_security_state ADD COLUMN IF NOT EXISTS stop_resume_baseline_short NUMERIC(20, 6);
+ALTER TABLE logic_backtest_security_state ADD COLUMN IF NOT EXISTS linear_tp_armed BOOLEAN NOT NULL DEFAULT FALSE;
+ALTER TABLE logic_backtest_security_state ADD COLUMN IF NOT EXISTS linear_tp_last_price NUMERIC(18, 6);
+ALTER TABLE logic_backtest_security_state ADD COLUMN IF NOT EXISTS linear_tp_arm_bar_dt TIMESTAMP;
+
+-- v48: migrate paper-level backtest pause → both sides (once)
+UPDATE logic_backtest_security_state
+SET
+    real_trading_paused_long = TRUE,
+    real_trading_paused_short = TRUE,
+    stop_resume_equity_long = COALESCE(stop_resume_equity_long, stop_resume_equity),
+    stop_resume_baseline_long = COALESCE(stop_resume_baseline_long, stop_resume_baseline),
+    stop_resume_equity_short = COALESCE(stop_resume_equity_short, stop_resume_equity),
+    stop_resume_baseline_short = COALESCE(stop_resume_baseline_short, stop_resume_baseline)
+WHERE COALESCE(real_trading_paused, FALSE)
+  AND NOT COALESCE(real_trading_paused_long, FALSE)
+  AND NOT COALESCE(real_trading_paused_short, FALSE);
+
+-- Upgrade existing DBs: CREATE IF NOT EXISTS does not add columns; keep in sync with CREATE above.
+
+
+
 
 COMMENT ON TABLE logic_backtest_security_state IS
-'Пауза security_resume внутри backtest (не меняет live logic_securities)';
+'Пауза security_resume по бумаге×стороне (long/short) и локальная инверсия security_inversion внутри backtest (не меняет live logic_securities)';
+COMMENT ON COLUMN logic_backtest_security_state.real_trading_paused_long IS
+'Теневой режим Long внутри backtest после security_resume';
+COMMENT ON COLUMN logic_backtest_security_state.real_trading_paused_short IS
+'Теневой режим Short внутри backtest после security_resume';
+
 
 -- Пакеты закрытия (FIFO / средняя): связь продажи с покупками
 CREATE TABLE IF NOT EXISTS logic_trade_lots (
@@ -2273,6 +3550,24 @@ CREATE TABLE IF NOT EXISTS logic_trade_lots (
     financial_result NUMERIC(20, 6) NOT NULL,
     created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
+-- Upgrade existing DBs: CREATE IF NOT EXISTS does not add columns; keep in sync with CREATE above.
+ALTER TABLE logic_trade_lots ADD COLUMN IF NOT EXISTS logic_id INTEGER REFERENCES logics(id) ON DELETE CASCADE;
+ALTER TABLE logic_trade_lots ADD COLUMN IF NOT EXISTS close_trade_id BIGINT REFERENCES logic_trades(id) ON DELETE CASCADE;
+ALTER TABLE logic_trade_lots ADD COLUMN IF NOT EXISTS open_trade_id BIGINT REFERENCES logic_trades(id) ON DELETE SET NULL;
+ALTER TABLE logic_trade_lots ADD COLUMN IF NOT EXISTS action_id INTEGER REFERENCES actions(id) ON DELETE RESTRICT;
+ALTER TABLE logic_trade_lots ADD COLUMN IF NOT EXISTS cost_method VARCHAR(10) NOT NULL DEFAULT 'FIFO' CHECK (cost_method IN ('FIFO', 'AVERAGE'));
+ALTER TABLE logic_trade_lots ADD COLUMN IF NOT EXISTS quantity NUMERIC(20, 6) CHECK (quantity > 0);
+ALTER TABLE logic_trade_lots ADD COLUMN IF NOT EXISTS close_amount NUMERIC(20, 6);
+ALTER TABLE logic_trade_lots ADD COLUMN IF NOT EXISTS open_amount NUMERIC(20, 6);
+ALTER TABLE logic_trade_lots ADD COLUMN IF NOT EXISTS close_commission NUMERIC(18, 6) NOT NULL DEFAULT 0;
+ALTER TABLE logic_trade_lots ADD COLUMN IF NOT EXISTS open_commission NUMERIC(18, 6) NOT NULL DEFAULT 0;
+ALTER TABLE logic_trade_lots ADD COLUMN IF NOT EXISTS financial_result NUMERIC(20, 6);
+ALTER TABLE logic_trade_lots ADD COLUMN IF NOT EXISTS created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP;
+
+-- Upgrade existing DBs: CREATE IF NOT EXISTS does not add columns; keep in sync with CREATE above.
+
+
+
 
 CREATE INDEX IF NOT EXISTS idx_logic_trade_lots_close ON logic_trade_lots(close_trade_id);
 CREATE INDEX IF NOT EXISTS idx_logic_trade_lots_open ON logic_trade_lots(open_trade_id);
@@ -2295,13 +3590,25 @@ CREATE TABLE IF NOT EXISTS futures_expirations (
     is_active BOOLEAN NOT NULL DEFAULT TRUE,
     created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
+-- Upgrade existing DBs: CREATE IF NOT EXISTS does not add columns; keep in sync with CREATE above.
+ALTER TABLE futures_expirations ADD COLUMN IF NOT EXISTS security_id INTEGER REFERENCES securities(id) ON DELETE CASCADE;
+ALTER TABLE futures_expirations ADD COLUMN IF NOT EXISTS prefix VARCHAR(50);
+ALTER TABLE futures_expirations ADD COLUMN IF NOT EXISTS moex_secid VARCHAR(20);
+ALTER TABLE futures_expirations ADD COLUMN IF NOT EXISTS expiration_date DATE;
+ALTER TABLE futures_expirations ADD COLUMN IF NOT EXISTS tbank_figi VARCHAR(50);
+ALTER TABLE futures_expirations ADD COLUMN IF NOT EXISTS is_active BOOLEAN NOT NULL DEFAULT TRUE;
+ALTER TABLE futures_expirations ADD COLUMN IF NOT EXISTS created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP;
+
+-- Upgrade existing DBs: CREATE IF NOT EXISTS does not add columns; keep in sync with CREATE above.
+
+
+
 
 CREATE INDEX IF NOT EXISTS idx_futures_exp_security_id ON futures_expirations(security_id);
 CREATE INDEX IF NOT EXISTS idx_futures_exp_prefix ON futures_expirations(prefix);
 CREATE INDEX IF NOT EXISTS idx_futures_exp_date ON futures_expirations(expiration_date);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_futures_exp_security_prefix ON futures_expirations(security_id, prefix);
 
-ALTER TABLE futures_expirations ADD COLUMN IF NOT EXISTS moex_secid VARCHAR(20);
 
 COMMENT ON TABLE futures_expirations IS 'Контракты фьючерсов; prefix — SHORTNAME MOEX (CNY-9.26), moex_secid — SECID (CRU6) для T-Bank/MOEX. Sync из MOEX ISS.';
 
@@ -2321,8 +3628,22 @@ CREATE TABLE IF NOT EXISTS price_load_log (
     error_message TEXT,
     loaded_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
-
+-- Upgrade existing DBs: CREATE IF NOT EXISTS does not add columns; keep in sync with CREATE above.
+ALTER TABLE price_load_log ADD COLUMN IF NOT EXISTS security_id INTEGER REFERENCES securities(id);
+ALTER TABLE price_load_log ADD COLUMN IF NOT EXISTS timeframe_id INTEGER REFERENCES timeframes(id);
+ALTER TABLE price_load_log ADD COLUMN IF NOT EXISTS date_from DATE;
+ALTER TABLE price_load_log ADD COLUMN IF NOT EXISTS date_to DATE;
+ALTER TABLE price_load_log ADD COLUMN IF NOT EXISTS source VARCHAR(20);
+ALTER TABLE price_load_log ADD COLUMN IF NOT EXISTS records_loaded INTEGER DEFAULT 0;
 ALTER TABLE price_load_log ADD COLUMN IF NOT EXISTS contract_prefix VARCHAR(50);
+ALTER TABLE price_load_log ADD COLUMN IF NOT EXISTS error_message TEXT;
+ALTER TABLE price_load_log ADD COLUMN IF NOT EXISTS loaded_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP;
+
+-- Upgrade existing DBs: CREATE IF NOT EXISTS does not add columns; keep in sync with CREATE above.
+
+
+
+
 
 CREATE INDEX IF NOT EXISTS idx_price_load_log_security ON price_load_log(security_id, timeframe_id);
 CREATE INDEX IF NOT EXISTS idx_price_load_log_loaded_at ON price_load_log(loaded_at);
@@ -2350,8 +3671,30 @@ CREATE TABLE IF NOT EXISTS app_tech_log (
     payload JSONB,
     created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
-
+-- Upgrade existing DBs: CREATE IF NOT EXISTS does not add columns; keep in sync with CREATE above.
+ALTER TABLE app_tech_log ADD COLUMN IF NOT EXISTS trace_id UUID NOT NULL DEFAULT gen_random_uuid();
+ALTER TABLE app_tech_log ADD COLUMN IF NOT EXISTS span_id VARCHAR(64);
+ALTER TABLE app_tech_log ADD COLUMN IF NOT EXISTS parent_span_id VARCHAR(64);
+ALTER TABLE app_tech_log ADD COLUMN IF NOT EXISTS thread_key VARCHAR(128);
+ALTER TABLE app_tech_log ADD COLUMN IF NOT EXISTS source VARCHAR(32) NOT NULL DEFAULT 'web';
+ALTER TABLE app_tech_log ADD COLUMN IF NOT EXISTS operation VARCHAR(128);
+ALTER TABLE app_tech_log ADD COLUMN IF NOT EXISTS phase VARCHAR(16) CHECK (phase IN ('start', 'end', 'event'));
+ALTER TABLE app_tech_log ADD COLUMN IF NOT EXISTS started_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP;
+ALTER TABLE app_tech_log ADD COLUMN IF NOT EXISTS finished_at TIMESTAMPTZ;
+ALTER TABLE app_tech_log ADD COLUMN IF NOT EXISTS duration_ms INTEGER;
+ALTER TABLE app_tech_log ADD COLUMN IF NOT EXISTS security_id INTEGER REFERENCES securities(id) ON DELETE SET NULL;
+ALTER TABLE app_tech_log ADD COLUMN IF NOT EXISTS timeframe_id INTEGER REFERENCES timeframes(id) ON DELETE SET NULL;
 ALTER TABLE app_tech_log ADD COLUMN IF NOT EXISTS logic_id INTEGER REFERENCES logics(id) ON DELETE SET NULL;
+ALTER TABLE app_tech_log ADD COLUMN IF NOT EXISTS sync_gen INTEGER;
+ALTER TABLE app_tech_log ADD COLUMN IF NOT EXISTS message TEXT;
+ALTER TABLE app_tech_log ADD COLUMN IF NOT EXISTS payload JSONB;
+ALTER TABLE app_tech_log ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP;
+
+-- Upgrade existing DBs: CREATE IF NOT EXISTS does not add columns; keep in sync with CREATE above.
+
+
+
+
 
 CREATE INDEX IF NOT EXISTS idx_app_tech_log_created_at ON app_tech_log(created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_app_tech_log_trace_id ON app_tech_log(trace_id);
@@ -2561,6 +3904,7 @@ COMMENT ON COLUMN logic_securities.id IS 'Surrogate PK';
 COMMENT ON COLUMN logic_securities.logic_id IS 'FK → logics';
 COMMENT ON COLUMN logic_securities.security_id IS 'FK → securities — бумага в портфеле логики';
 COMMENT ON COLUMN logic_securities.is_active IS 'Бумага участвует в торговле/тесте';
+COMMENT ON COLUMN logic_securities.real_trading_inverted IS 'Локальная инверсия сигналов по бумаге внутри логики';
 COMMENT ON COLUMN logic_securities.stop_resume_triggered_at IS 'Когда сработал security_resume SL';
 COMMENT ON COLUMN logic_securities.created_at IS 'Дата добавления в портфель';
 
@@ -2573,7 +3917,7 @@ COMMENT ON COLUMN logic_trades.timeframe_id IS 'FK → timeframes — TF сиг�
 COMMENT ON COLUMN logic_trades.side_id IS 'FK → sides: Open | Close';
 COMMENT ON COLUMN logic_trades.action_id IS 'FK → actions: Long | Short';
 COMMENT ON COLUMN logic_trades.position_event IS 'open | close — действие сигнала (копия с logic_indicator_signals)';
-COMMENT ON COLUMN logic_trades.signal_kind IS 'trend | counter — какой тип сигнала сработал';
+COMMENT ON COLUMN logic_trades.signal_kind IS 'trend | counter | cash_fund — сигнал или парковка денежного фонда';
 COMMENT ON COLUMN logic_trades.signal_formula IS 'Копия формулы logic_indicator_signals на момент сделки';
 COMMENT ON COLUMN logic_trades.quantity IS 'Объём в лотах/штуках';
 COMMENT ON COLUMN logic_trades.price IS 'Цена исполнения';
@@ -2609,6 +3953,7 @@ COMMENT ON COLUMN logic_backtest_runs.created_at IS 'Создание запис
 COMMENT ON COLUMN logic_backtest_security_state.run_id IS 'FK → logic_backtest_runs';
 COMMENT ON COLUMN logic_backtest_security_state.security_id IS 'FK → securities';
 COMMENT ON COLUMN logic_backtest_security_state.real_trading_paused IS 'Теневой режим внутри backtest';
+COMMENT ON COLUMN logic_backtest_security_state.real_trading_inverted IS 'Локальная инверсия сигналов по бумаге внутри backtest';
 COMMENT ON COLUMN logic_backtest_security_state.stop_resume_equity IS 'Цель возобновления (копия logic_securities)';
 COMMENT ON COLUMN logic_backtest_security_state.stop_resume_baseline IS 'База после SL в тесте';
 
@@ -2664,6 +4009,38 @@ COMMENT ON COLUMN app_tech_log.sync_gen IS 'Поколение sync график
 COMMENT ON COLUMN app_tech_log.message IS 'Краткое сообщение';
 COMMENT ON COLUMN app_tech_log.payload IS 'JSON с деталями';
 COMMENT ON COLUMN app_tech_log.created_at IS 'Время записи в журнал';
+
+-- Неторговые периоды MOEX TQBR по умолчанию (если у логики ещё пусто)
+INSERT INTO logic_non_trading_intervals (
+    logic_id, day_of_week, time_from, time_to, note, display_order, is_active
+)
+SELECT
+    l.id,
+    v.day_of_week,
+    v.time_from,
+    v.time_to,
+    v.note,
+    v.ord,
+    TRUE
+FROM logics l
+CROSS JOIN (
+    VALUES
+        (1::SMALLINT, TIME '00:00', TIME '09:59:59', 'Пн до открытия', 1),
+        (1::SMALLINT, TIME '18:40', TIME '23:59:59', 'Пн после сессии', 2),
+        (2::SMALLINT, TIME '00:00', TIME '09:59:59', 'Вт до открытия', 3),
+        (2::SMALLINT, TIME '18:40', TIME '23:59:59', 'Вт после сессии', 4),
+        (3::SMALLINT, TIME '00:00', TIME '09:59:59', 'Ср до открытия', 5),
+        (3::SMALLINT, TIME '18:40', TIME '23:59:59', 'Ср после сессии', 6),
+        (4::SMALLINT, TIME '00:00', TIME '09:59:59', 'Чт до открытия', 7),
+        (4::SMALLINT, TIME '18:40', TIME '23:59:59', 'Чт после сессии', 8),
+        (5::SMALLINT, TIME '00:00', TIME '09:59:59', 'Пт до открытия', 9),
+        (5::SMALLINT, TIME '18:40', TIME '23:59:59', 'Пт после сессии', 10),
+        (6::SMALLINT, TIME '00:00', TIME '23:59:59', 'Суббота', 11),
+        (7::SMALLINT, TIME '00:00', TIME '23:59:59', 'Воскресенье', 12)
+) AS v(day_of_week, time_from, time_to, note, ord)
+WHERE NOT EXISTS (
+    SELECT 1 FROM logic_non_trading_intervals x WHERE x.logic_id = l.id
+);
 
 -- ============================================
 -- Готово: шаг 1 завершён

@@ -1,5 +1,13 @@
 export type LogicStopRuleKind = 'stop_loss' | 'take_profit';
-export type LogicStopScopeType = 'security' | 'security_resume' | 'portfolio';
+export type LogicStopScopeType =
+  | 'security'
+  | 'security_resume'
+  | 'security_inversion'
+  | 'portfolio'
+  | 'portfolio_resume'
+  | 'portfolio_ltp_renew'
+  /** @deprecated migrated to portfolio_ltp_renew */
+  | 'security_ltp_renew';
 export type LogicStopValueUnit = 'percent' | 'atr';
 
 export function ruleKindLabel(kind: LogicStopRuleKind): string {
@@ -16,6 +24,9 @@ export function scopeTypeLabel(
         return 'По бумаге';
       case 'portfolio':
         return 'По всему портфелю логики';
+      case 'portfolio_ltp_renew':
+      case 'security_ltp_renew':
+        return 'Линейный TP по портфелю с возобновлением (продажа при откате от пика ≥ %)';
       default:
         return scope;
     }
@@ -24,9 +35,16 @@ export function scopeTypeLabel(
     case 'security':
       return 'По бумаге (обычный)';
     case 'security_resume':
-      return 'По бумаге (возобновление при достижении суммы прерывания)';
+      return 'По бумаге и стороне (возобновление при достижении суммы прерывания)';
+    case 'security_inversion':
+      return 'По бумаге (инверсия при повторной просадке)';
     case 'portfolio':
       return 'По всему портфелю логики';
+    case 'portfolio_resume':
+      return 'По портфелю с обновлением (пауза → shadow → возобновление)';
+    case 'portfolio_ltp_renew':
+    case 'security_ltp_renew':
+      return 'Линейный TP по портфелю с возобновлением (продажа при откате от пика ≥ %)';
   }
 }
 
@@ -34,17 +52,20 @@ export function valueUnitLabel(unit: LogicStopValueUnit): string {
   return unit === 'percent' ? '%' : 'ATR';
 }
 
-/** Типы scope для стоп-лосса (все три). */
+/** Типы scope для стоп-лосса. */
 export const LOGIC_STOP_SCOPES_STOP_LOSS: LogicStopScopeType[] = [
   'security',
   'security_resume',
+  'security_inversion',
   'portfolio',
+  'portfolio_resume',
 ];
 
-/** Типы scope для тейк-профита — только по бумаге или по портфелю. */
+/** Типы scope для тейк-профита. */
 export const LOGIC_STOP_SCOPES_TAKE_PROFIT: LogicStopScopeType[] = [
   'security',
   'portfolio',
+  'portfolio_ltp_renew',
 ];
 
 export function stopScopesForRuleKind(
